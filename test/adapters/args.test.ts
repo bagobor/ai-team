@@ -28,7 +28,7 @@ describe('buildClaudeInvocation', () => {
       '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}',
       '--setting-sources', 'user',
       '--max-turns', '60', '--max-budget-usd', '3',
-      '--settings', '{"sandbox":{"enabled":true,"allowUnsandboxedCommands":false,"network":{"allowedDomains":[]},"filesystem":{"denyRead":["/secret"]}}}',
+      '--settings', '{"sandbox":{"enabled":true,"allowUnsandboxedCommands":false,"network":{"allowedDomains":[]},"filesystem":{"denyRead":["/secret"],"allowRead":["/w"]}}}',
     ]);
     expect(env.CLAUDE_CONFIG_DIR).toBe('/home/agent');
     expect(env.CLAUDE_CODE_DISABLE_AUTO_MEMORY).toBe('1');
@@ -59,6 +59,12 @@ describe('buildClaudeInvocation', () => {
     const { argv } = buildClaudeInvocation({ ...manifest, tools: ['run_commands'] }, ws, { ...cfg, denyRead: ['/a', '/b'] });
 
     expect(JSON.parse(argv[argv.indexOf('--settings') + 1]!)).toMatchObject({ sandbox: { filesystem: { denyRead: ['/a', '/b'] } } });
+  });
+
+  it('gives the attempt back its own worktree and nothing else', () => {
+    const { argv } = buildClaudeInvocation(manifest, { ...ws, path: '/worktrees/p/T-1-a2' }, cfg);
+
+    expect(JSON.parse(argv[argv.indexOf('--settings') + 1]!).sandbox.filesystem.allowRead).toEqual(['/worktrees/p/T-1-a2']);
   });
 
   it('keeps the sandbox on for a role without the network tool', () => {

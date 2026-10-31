@@ -26,8 +26,7 @@ describe('workerDenyRead', () => {
     ]));
   });
 
-  it('leaves worktrees readable, because the worker runs in one', () => {
-    expect(denied.some((path) => paths.worktrees.startsWith(path) || path.startsWith(paths.worktrees))).toBe(false);
-    expect(denied).not.toContain(paths.root);
+  it('covers every worktree, since each attempt only gets its own back', () => {
+    expect(denied).toContain(paths.worktrees);
   });
 });

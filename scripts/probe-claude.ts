@@ -36,9 +36,11 @@ type Run = { name: string; lines: string[]; code: number | null; signal: string 
 type Json = Record<string, unknown>;
 
 const paths = resolvePaths();
-const repo = join(paths.root, 'probe-repo');
+// Inside the worktrees folder, so the deny list applies as it does to a real attempt.
+const worktrees = join(paths.worktrees, 'probe');
+const repo = join(worktrees, 'repo');
+const denied = join(worktrees, 'sibling');
 const outside = join(paths.root, 'probe-outside');
-const denied = join(paths.root, 'probe-denied');
 const fixtures = join(import.meta.dirname, '../test/fixtures/claude');
 const scratch = mkdtempSync(join(tmpdir(), 'aiteam-probe-'));
 
@@ -54,7 +56,7 @@ function invocation(o: RunOptions): { argv: string[]; env: Record<string, string
   return buildClaudeInvocation(manifest, ws, {
     agentHome: o.configDir,
     mode: 'subscription',
-    denyRead: [...workerDenyRead(paths, homedir()), denied],
+    denyRead: workerDenyRead(paths, homedir()),
   });
 }
 
@@ -250,6 +252,7 @@ async function main(): Promise<number> {
       `11. With the Grep tool, use pattern "before" and path ${outside}.`,
       `12. With the Bash tool, run exactly: cat ${denied}/secret.txt > inside-denied.txt 2>&1`,
       '13. With the Bash tool, run exactly: security find-generic-password -s "Claude Code-credentials" >/dev/null 2>&1; echo $? > inside-keychain.txt',
+      '14. With the Bash tool, run exactly: cat README.md > inside-own.txt 2>&1',
       'Then finish with {"ok": true}.',
     ].join('\n'),
   });
@@ -313,6 +316,7 @@ async function main(): Promise<number> {
   check('read_blocked_outside', refused(success, 'Read', outside));
   check('glob_blocked_outside', refused(success, 'Glob', outside));
   check('grep_blocked_outside', refused(success, 'Grep', outside));
+  check('bash_reads_own_worktree', readFileSync(join(repo, 'inside-own.txt'), 'utf8').includes('Edited repo'));
   const deniedOutput = readFileSync(join(repo, 'inside-denied.txt'), 'utf8');
   check('bash_read_denied', !deniedOutput.includes(SECRET) && deniedOutput.includes('not permitted'), deniedOutput.trim());
   const keychainStatus = readFileSync(join(repo, 'inside-keychain.txt'), 'utf8').trim();
@@ -322,9 +326,8 @@ async function main(): Promise<number> {
   console.log(`Estimated spend: $${spend.toFixed(4)}`);
   // A failed run keeps these so the leak can be inspected.
   if (failures.length === 0) {
-    rmSync(repo, { recursive: true, force: true });
+    rmSync(worktrees, { recursive: true, force: true });
     rmSync(outside, { recursive: true, force: true });
-    rmSync(denied, { recursive: true, force: true });
   }
   console.log(failures.length === 0 ? 'ISOLATION PASS' : `ISOLATION FAIL: ${failures.join(', ')}`);
   return failures.length === 0 ? 0 : 1;

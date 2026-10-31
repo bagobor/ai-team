@@ -29,7 +29,7 @@ export function buildClaudeInvocation(m: TaskManifest, ws: Workspace, cfg: Claud
   const tools = [...read, ...edit, ...bash];
   const allowed = [...read.map(inWorktree), ...bash, ...edit.map(inWorktree)];
   const settings = {
-    sandbox: { enabled: true, allowUnsandboxedCommands: false, network: { allowedDomains: [] }, filesystem: { denyRead: cfg.denyRead } },
+    sandbox: { enabled: true, allowUnsandboxedCommands: false, network: { allowedDomains: [] }, filesystem: { denyRead: cfg.denyRead, allowRead: [ws.path] } },
   };
 
   const argv = [

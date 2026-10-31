@@ -36,7 +36,9 @@ The environment is only `PATH, HOME, USER, LOGNAME, SHELL, TMPDIR, LANG, LC_ALL,
 | Keychain from Bash | **Reachable until `~/Library/Keychains` is denied.** `security find-generic-password` exits 0 in the sandbox without it and 44 with it. Only the exit status was tested; no secret was read. |
 | Oversized Bash output | Saved under the agent home, and `Read` can still open it under the scoped rule, so the CLI exempts its own files. |
 
-**Not closed: other Bash reads.** `denyRead` is a list, so anything not on it stays readable by Bash: other repos, other attempts' worktrees, files in the home folder that aren't named. Network-blocked Bash limits where such a file can go, but a worker could still copy it into the diff.
+| Other attempts' worktrees from Bash | Blocked by denying the worktrees folder and giving the attempt its own back with `filesystem.allowRead`. Bash still reads its own worktree, and `git` and `node` still run. |
+
+**Not closed: other Bash reads.** `denyRead` is a list, so anything not on it stays readable by Bash: other repos, and files in the home folder that aren't named. Denying all of `$HOME` would break toolchains installed there, so it wasn't done. Network-blocked Bash limits where such a file can go, but a worker could still copy it into the diff.
 
 `--bare` can't be proved here: it refuses OAuth, so it needs an API key. `--setting-sources user` is passed in both modes so the subscription result covers both as far as it can.
 

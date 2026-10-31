@@ -28,7 +28,8 @@ export function resolvePaths(env: NodeJS.ProcessEnv = process.env): Paths {
 
 const HOME_SECRETS = ['.ssh', '.aws', '.gnupg', '.config/gh', '.netrc', '.npmrc', '.pypirc', '.docker', '.kube', '.git-credentials', '.claude', '.claude.json', '.codex', 'Library/Keychains'];
 
-// What a worker's commands have no reason to read. It can't name every secret on a machine, so it is one line of defence.
+// What a worker's commands have no reason to read, apart from the one worktree each attempt gets back.
+// It can't name every secret on a machine, so it is one line of defence.
 export function workerDenyRead(p: Paths, home: string): string[] {
   return [
     p.claudeHome,
@@ -39,6 +40,7 @@ export function workerDenyRead(p: Paths, home: string): string[] {
     p.knowledge,
     p.projects,
     p.transcripts,
+    p.worktrees,
     ...HOME_SECRETS.map((name) => join(home, name)),
   ];
 }
