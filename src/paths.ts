@@ -26,6 +26,23 @@ export function resolvePaths(env: NodeJS.ProcessEnv = process.env): Paths {
   };
 }
 
+const HOME_SECRETS = ['.ssh', '.aws', '.gnupg', '.config/gh', '.netrc', '.npmrc', '.pypirc', '.docker', '.kube', '.git-credentials', '.claude', '.claude.json', '.codex', 'Library/Keychains'];
+
+// What a worker's commands have no reason to read. It can't name every secret on a machine, so it is one line of defence.
+export function workerDenyRead(p: Paths, home: string): string[] {
+  return [
+    p.claudeHome,
+    p.db,
+    `${p.db}-wal`,
+    `${p.db}-shm`,
+    p.config,
+    p.knowledge,
+    p.projects,
+    p.transcripts,
+    ...HOME_SECRETS.map((name) => join(home, name)),
+  ];
+}
+
 // True when child is parent or lies under it. Both paths are compared as written, without following symlinks.
 export function isWithin(parent: string, child: string): boolean {
   const rel = relative(parent, child);

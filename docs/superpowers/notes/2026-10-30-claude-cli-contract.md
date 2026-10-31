@@ -9,10 +9,11 @@ CLAUDE_CONFIG_DIR=<agent home> CLAUDE_CODE_DISABLE_AUTO_MEMORY=1 \
 claude -p --output-format stream-json --verbose --model <model>
   --append-system-prompt-file <path> --json-schema '<JSON string>'
   --tools Read,Glob,Grep,Edit,Write,Bash
-  --allowedTools 'Read,Glob,Grep,Bash,Edit(./**),Write(./**)'
+  --allowedTools 'Read(./**),Glob(./**),Grep(./**),Bash,Edit(./**),Write(./**)'
   --permission-mode dontAsk --strict-mcp-config --mcp-config '{"mcpServers":{}}'
+  --setting-sources user
   --max-turns <n> --max-budget-usd <n>
-  --settings '{"sandbox":{"enabled":true,"allowUnsandboxedCommands":false,"network":{"allowedDomains":[]}}}'
+  --settings '{"sandbox":{"enabled":true,"allowUnsandboxedCommands":false,"network":{"allowedDomains":[]},"filesystem":{"denyRead":[...]}}}'
   < task
 ```
 
@@ -28,10 +29,16 @@ The environment is only `PATH, HOME, USER, LOGNAME, SHELL, TMPDIR, LANG, LC_ALL,
 | Write and Edit outside the cwd | **Not blocked by the sandbox.** With `--allowedTools ...,Write,...` the outside file was created. Scoping to `Edit(./**)` and `Write(./**)` under `dontAsk` denies them. |
 | Writes inside the cwd | Bash, Write and Edit all work. |
 | Bash network | Blocked: `curl: (56) CONNECT tunnel failed, response 403`. |
+| Settings planted in the worktree | **Load unless `--setting-sources user` is passed.** Without it, in `-p` mode, hooks in `.claude/settings.json` and `.claude/settings.local.json` ran outside the Bash sandbox and wrote outside the cwd, `CLAUDE.md` reached the model, and planted skills, agents and commands appeared in `init`. With it, none of these load, and `~/.aiteam/agent-home/claude/settings.json` is still the only settings file read. The manifest delivers the repo's instructions instead, as text in the system prompt. |
+| Read, Glob, Grep outside the cwd | Unscoped they all work. `Read(./**)`, `Glob(./**)`, `Grep(./**)` under `dontAsk` refuse them, and all three still work inside the cwd. |
+| Symlink in the cwd pointing outside | Read, Write and Edit refuse it, through a file link and a folder link. Bash follows it unless the target is in `denyRead`. |
+| Bash reads | `sandbox.filesystem.denyRead` blocks them with `Operation not permitted`. The CLI itself isn't limited by it: it still reads its own config and login under a denied agent home, and `node` and `git` still run. |
+| Keychain from Bash | **Reachable until `~/Library/Keychains` is denied.** `security find-generic-password` exits 0 in the sandbox without it and 44 with it. Only the exit status was tested; no secret was read. |
+| Oversized Bash output | Saved under the agent home, and `Read` can still open it under the scoped rule, so the CLI exempts its own files. |
 
-**Not closed: reads.** `Read` opened a file outside the cwd, and Bash reads are not limited by this sandbox config. A worker can read whatever the user can, so it could pull a secret from elsewhere on the machine into its own transcript. Spec §14 only limits writes, so this passes the gate. Network-blocked Bash limits where such a secret can go.
+**Not closed: other Bash reads.** `denyRead` is a list, so anything not on it stays readable by Bash: other repos, other attempts' worktrees, files in the home folder that aren't named. Network-blocked Bash limits where such a file can go, but a worker could still copy it into the diff.
 
-Not tested: a symlink inside the cwd pointing outside, used as a Write target.
+`--bare` can't be proved here: it refuses OAuth, so it needs an API key. `--setting-sources user` is passed in both modes so the subscription result covers both as far as it can.
 
 ## Stream
 

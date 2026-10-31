@@ -12,6 +12,7 @@ export type ClaudeAdapterConfig = {
   binary: string;
   agentHome: string;
   mode: 'subscription' | 'api-key';
+  denyRead: string[];
   graceS: number;
   timeoutS: number;
   parentEnv?: NodeJS.ProcessEnv;

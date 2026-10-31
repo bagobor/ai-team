@@ -11,7 +11,7 @@ const manifest = {
 } as TaskManifest;
 
 const ws: Workspace = { path: '/w', transcriptPath: '/t/1.jsonl', manifestDir: '/m/T-1-a1' };
-const cfg = { agentHome: '/home/agent', mode: 'subscription' as const, parentEnv: { PATH: '/b', ANTHROPIC_API_KEY: 'k' } };
+const cfg = { agentHome: '/home/agent', mode: 'subscription' as const, denyRead: ['/secret'], parentEnv: { PATH: '/b', ANTHROPIC_API_KEY: 'k' } };
 
 describe('buildClaudeInvocation', () => {
   it('builds the §6.2 subscription invocation', () => {
@@ -24,10 +24,11 @@ describe('buildClaudeInvocation', () => {
       '--json-schema', JSON.stringify(manifest.outputSchema),
       '--permission-mode', 'dontAsk',
       '--tools', 'Read,Glob,Grep,Edit,Write,Bash',
-      '--allowedTools', 'Read,Glob,Grep,Bash,Edit(./**),Write(./**)',
+      '--allowedTools', 'Read(./**),Glob(./**),Grep(./**),Bash,Edit(./**),Write(./**)',
       '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}',
+      '--setting-sources', 'user',
       '--max-turns', '60', '--max-budget-usd', '3',
-      '--settings', '{"sandbox":{"enabled":true,"allowUnsandboxedCommands":false,"network":{"allowedDomains":[]}}}',
+      '--settings', '{"sandbox":{"enabled":true,"allowUnsandboxedCommands":false,"network":{"allowedDomains":[]},"filesystem":{"denyRead":["/secret"]}}}',
     ]);
     expect(env.CLAUDE_CONFIG_DIR).toBe('/home/agent');
     expect(env.CLAUDE_CODE_DISABLE_AUTO_MEMORY).toBe('1');
@@ -43,7 +44,21 @@ describe('buildClaudeInvocation', () => {
     const { argv } = buildClaudeInvocation({ ...manifest, tools: ['read_repo'] }, ws, cfg);
 
     expect(argv[argv.indexOf('--tools') + 1]).toBe('Read,Glob,Grep');
-    expect(argv[argv.indexOf('--allowedTools') + 1]).toBe('Read,Glob,Grep');
+    expect(argv[argv.indexOf('--allowedTools') + 1]).toBe('Read(./**),Glob(./**),Grep(./**)');
+  });
+
+  // A worktree's settings can hold hooks, and hooks run outside the Bash sandbox.
+  it('never loads settings from the worktree, in either mode', () => {
+    for (const mode of ['subscription', 'api-key'] as const) {
+      const { argv } = buildClaudeInvocation(manifest, ws, { ...cfg, mode });
+      expect(argv[argv.indexOf('--setting-sources') + 1]).toBe('user');
+    }
+  });
+
+  it('keeps every denied path out of the sandbox for any role', () => {
+    const { argv } = buildClaudeInvocation({ ...manifest, tools: ['run_commands'] }, ws, { ...cfg, denyRead: ['/a', '/b'] });
+
+    expect(JSON.parse(argv[argv.indexOf('--settings') + 1]!)).toMatchObject({ sandbox: { filesystem: { denyRead: ['/a', '/b'] } } });
   });
 
   it('keeps the sandbox on for a role without the network tool', () => {

@@ -65,6 +65,7 @@ describe('ClaudeCodeAdapter process', () => {
       binary: fakeClaude,
       agentHome: join(root, 'agent-home'),
       mode: 'subscription',
+      denyRead: [],
       graceS: 2,
       timeoutS: 30,
       parentEnv: process.env,
@@ -90,7 +91,8 @@ describe('ClaudeCodeAdapter process', () => {
 
     expect(JSON.parse(readFileSync(spawnLog, 'utf8').trim()).cwd).toBe(realpathSync(ws.path));
     expect(readFileSync(stdinDump, 'utf8')).toBe('the task\n');
-    expect(readFileSync(ws.transcriptPath, 'utf8').trim().split('\n').length).toBe(43);
+    const fixture = readFileSync(new URL('../fixtures/claude/success.jsonl', import.meta.url), 'utf8');
+    expect(readFileSync(ws.transcriptPath, 'utf8')).toBe(fixture);
     expect(events[0]).toMatchObject({ t: 'init' });
     expect(result.status).toBe('succeeded');
     expect(result.output).toEqual({ ok: true });

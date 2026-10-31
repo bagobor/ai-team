@@ -6,11 +6,10 @@ import type { Workspace } from './types.ts';
 export type ClaudeInvocationConfig = {
   agentHome: string;
   mode: 'subscription' | 'api-key';
+  denyRead: string[];
   parentEnv?: NodeJS.ProcessEnv;
   extraEnv?: Record<string, string>;
 };
-
-const SANDBOX = { sandbox: { enabled: true, allowUnsandboxedCommands: false, network: { allowedDomains: [] } } };
 
 export function claudeEnv(cfg: ClaudeInvocationConfig): Record<string, string> {
   return {
@@ -22,12 +21,16 @@ export function claudeEnv(cfg: ClaudeInvocationConfig): Record<string, string> {
 
 export function buildClaudeInvocation(m: TaskManifest, ws: Workspace, cfg: ClaudeInvocationConfig): { argv: string[]; env: Record<string, string> } {
   const read = m.tools.includes('read_repo') ? ['Read', 'Glob', 'Grep'] : [];
-  const edit = m.tools.includes('edit_repo');
+  const edit = m.tools.includes('edit_repo') ? ['Edit', 'Write'] : [];
   const bash = m.tools.includes('run_commands') ? ['Bash'] : [];
+  const inWorktree = (tool: string) => `${tool}(./**)`;
 
-  // The OS sandbox covers only Bash, so Edit and Write carry their own path rule.
-  const tools = [...read, ...(edit ? ['Edit', 'Write'] : []), ...bash];
-  const allowed = [...read, ...bash, ...(edit ? ['Edit(./**)', 'Write(./**)'] : [])];
+  // The OS sandbox covers only Bash, so the file tools carry their own path rule.
+  const tools = [...read, ...edit, ...bash];
+  const allowed = [...read.map(inWorktree), ...bash, ...edit.map(inWorktree)];
+  const settings = {
+    sandbox: { enabled: true, allowUnsandboxedCommands: false, network: { allowedDomains: [] }, filesystem: { denyRead: cfg.denyRead } },
+  };
 
   const argv = [
     '-p', '--output-format', 'stream-json', '--verbose',
@@ -38,8 +41,10 @@ export function buildClaudeInvocation(m: TaskManifest, ws: Workspace, cfg: Claud
     '--tools', tools.join(','),
     '--allowedTools', allowed.join(','),
     '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}',
+    // Settings in a worktree can hold hooks, which run outside the sandbox. The manifest carries the repo's instructions instead.
+    '--setting-sources', 'user',
     '--max-turns', String(m.budgets.max_turns), '--max-budget-usd', String(m.budgets.max_usd),
-    '--settings', JSON.stringify(SANDBOX),
+    '--settings', JSON.stringify(settings),
     ...(cfg.mode === 'api-key' ? ['--bare'] : []),
   ];
 
