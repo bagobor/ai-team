@@ -1,8 +1,11 @@
 import { mkdir, writeFile } from 'node:fs/promises';
-import { dirname, relative, resolve, sep } from 'node:path';
-import { isWithin } from '../paths.ts';
+import { dirname, join } from 'node:path';
 import { commitStaged, engineGit } from './git.ts';
 import { prepareRepo } from './workspace.ts';
+
+// Allow-listed rather than checked for ".." and ".git": macOS treats .GIT, and names with some invisible
+// characters, as .git. No leading dot, no trailing dot or space, nothing git or a shell reads specially.
+const SAFE_SEGMENT = /^[A-Za-z0-9_](?:[A-Za-z0-9._ -]*[A-Za-z0-9_-])?$/;
 
 // Tasks finish in parallel, and two git commands on one index would collide on its lock.
 const queues = new Map<string, Promise<unknown>>();
@@ -18,16 +21,15 @@ export async function initStateRepo(dir: string): Promise<void> {
 }
 
 export async function commitArtifact(dir: string, relPath: string, content: string, message: string): Promise<{ sha: string }> {
-  const target = resolve(dir, relPath);
-  const rel = relative(resolve(dir), target);
-  if (rel === '' || !isWithin(resolve(dir), target) || rel.split(sep)[0] === '.git') {
-    throw new Error(`Artifact path ${relPath} is outside the state repo`);
+  if (!relPath.split('/').every((segment) => SAFE_SEGMENT.test(segment))) {
+    throw new Error(`${relPath} is not a safe artifact path`);
   }
 
   return inTurn(dir, async () => {
+    const target = join(dir, relPath);
     await mkdir(dirname(target), { recursive: true });
     await writeFile(target, content);
-    await engineGit(dir, ['--literal-pathspecs', 'add', '--', rel]);
+    await engineGit(dir, ['add', '--', relPath]);
     return { sha: await commitStaged(dir, message) };
   });
 }

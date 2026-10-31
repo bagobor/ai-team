@@ -12,6 +12,8 @@ export const ENGINE_CONFIG = [
   'core.hooksPath=/dev/null',
   '-c',
   'commit.gpgsign=false',
+  '-c',
+  'core.fsmonitor=false',
 ];
 
 const MAX_OUTPUT_BYTES = 64 * 1024 * 1024;
@@ -43,9 +45,10 @@ export function engineGit(cwd: string, args: string[]): Promise<string> {
 }
 
 // Commits the index if it differs from HEAD and returns the resulting HEAD.
-export async function commitStaged(cwd: string, message: string): Promise<string> {
-  const diff = await git(cwd, ['diff', '--cached', '--quiet']);
+// location holds git options naming the repo, for a cwd whose own .git can't be trusted.
+export async function commitStaged(cwd: string, message: string, location: string[] = []): Promise<string> {
+  const diff = await git(cwd, [...location, 'diff', '--no-ext-diff', '--cached', '--quiet']);
   if (diff.code > 1) throw new Error(`git diff --cached failed in ${cwd} (exit ${diff.code}): ${diff.stderr.trim()}`);
-  if (diff.code === 1) await engineGit(cwd, ['commit', '-q', '-m', message]);
-  return gitOk(cwd, ['rev-parse', 'HEAD']);
+  if (diff.code === 1) await engineGit(cwd, [...location, 'commit', '-q', '-m', message]);
+  return gitOk(cwd, [...location, 'rev-parse', 'HEAD']);
 }

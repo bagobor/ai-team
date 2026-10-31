@@ -51,7 +51,7 @@ describe('attempt worktrees', () => {
     const { headSha } = await ensureIntegrationBranch(repo, 1, 'main');
     await addAttemptWorktree(repo, wt, BRANCH, headSha);
     writeFileSync(join(wt, 'new.txt'), 'x');
-    await snapshotAttempt(wt, 'aiteam: T-1 a1');
+    await snapshotAttempt(repo, wt, 'aiteam: T-1 a1');
     await removeAttemptWorktree(repo, wt, BRANCH);
 
     expect([await porcelain(repo), await symbolicHead(repo), await revParse(repo)]).toEqual(before);
@@ -100,27 +100,27 @@ describe('attempt worktrees', () => {
     rmSync(join(wt, 'deleted.txt'));
     writeFileSync(join(wt, 'new.txt'), 'new\n');
     writeFileSync(join(wt, 'ignored.log'), 'noise\n');
-    const { headSha } = await snapshotAttempt(wt, 'aiteam: T-1 a1');
+    const { headSha } = await snapshotAttempt(repo, wt, 'aiteam: T-1 a1');
 
     expect(headSha).toBe(await revParse(wt));
     expect(headSha).not.toBe(start);
-    expect((await changedPaths(wt, start)).sort()).toEqual(['deleted.txt', 'edited.txt', 'new.txt']);
+    expect((await changedPaths(repo, wt, start)).sort()).toEqual(['deleted.txt', 'edited.txt', 'new.txt']);
   });
 
   it('makes no commit when the worker changed nothing', async () => {
     await addAttemptWorktree(repo, wt, BRANCH, base);
 
-    const { headSha } = await snapshotAttempt(wt, 'aiteam: T-1 a1');
+    const { headSha } = await snapshotAttempt(repo, wt, 'aiteam: T-1 a1');
 
     expect(headSha).toBe(base);
-    expect(await changedPaths(wt, base)).toEqual([]);
+    expect(await changedPaths(repo, wt, base)).toEqual([]);
   });
 
   it('commits as the engine, not as the stakeholder', async () => {
     await addAttemptWorktree(repo, wt, BRANCH, base);
     writeFileSync(join(wt, 'new.txt'), 'x');
 
-    await snapshotAttempt(wt, 'aiteam: T-1 a1');
+    await snapshotAttempt(repo, wt, 'aiteam: T-1 a1');
 
     expect(run(wt, 'log', '-1', '--format=%an <%ae>')).toBe('aiteam <aiteam@localhost>');
   });
@@ -130,7 +130,7 @@ describe('attempt worktrees', () => {
     await addAttemptWorktree(repo, wt, BRANCH, base);
     writeFileSync(join(wt, 'new.txt'), 'x');
 
-    const { headSha } = await snapshotAttempt(wt, 'aiteam: T-1 a1');
+    const { headSha } = await snapshotAttempt(repo, wt, 'aiteam: T-1 a1');
 
     expect(headSha).not.toBe(base);
   });
@@ -141,7 +141,7 @@ describe('attempt worktrees', () => {
     await addAttemptWorktree(repo, wt, BRANCH, base);
     writeFileSync(join(wt, 'new.txt'), 'x');
 
-    const { headSha } = await snapshotAttempt(wt, 'aiteam: T-1 a1');
+    const { headSha } = await snapshotAttempt(repo, wt, 'aiteam: T-1 a1');
 
     expect(headSha).not.toBe(base);
   });
@@ -163,8 +163,8 @@ describe('attempt worktrees', () => {
     await addAttemptWorktree(repo, wt, BRANCH, start);
 
     renameSync(join(wt, 'a.txt'), join(wt, 'b.txt'));
-    await snapshotAttempt(wt, 'rename');
-    const paths = await changedPaths(wt, start);
+    await snapshotAttempt(repo, wt, 'rename');
+    const paths = await changedPaths(repo, wt, start);
 
     expect(paths.sort()).toEqual(['a.txt', 'b.txt']);
   });
@@ -174,9 +174,56 @@ describe('attempt worktrees', () => {
     mkdirSync(join(wt, 'with space'));
     writeFileSync(join(wt, 'with space', 'naïve "quoted".txt'), 'x');
 
-    await snapshotAttempt(wt, 'names');
+    await snapshotAttempt(repo, wt, 'names');
 
-    expect(await changedPaths(wt, base)).toEqual(['with space/naïve "quoted".txt']);
+    expect(await changedPaths(repo, wt, base)).toEqual(['with space/naïve "quoted".txt']);
+  });
+
+  describe('a worker that rewrites .git in its worktree', () => {
+    it('cannot make the engine run its git config', async () => {
+      const marker = join(tempDir(), 'filter-ran');
+      await addAttemptWorktree(repo, wt, BRANCH, base);
+      rmSync(join(wt, '.git'));
+      run(wt, 'init', '-q');
+      run(wt, 'config', 'filter.evil.clean', `touch "${marker}"; cat`);
+      writeFileSync(join(wt, '.gitattributes'), '* filter=evil\n');
+      writeFileSync(join(wt, 'new.txt'), 'x');
+
+      const { headSha } = await snapshotAttempt(repo, wt, 'aiteam: T-1 a1');
+
+      expect(existsSync(marker)).toBe(false);
+      expect(await revParse(repo, `refs/heads/${BRANCH}`)).toBe(headSha);
+      expect(headSha).not.toBe(base);
+    });
+
+    it('cannot redirect the snapshot into another repo', async () => {
+      const other = await makeRepo();
+      await addAttemptWorktree(repo, wt, BRANCH, base);
+      writeFileSync(join(wt, '.git'), `gitdir: ${join(other.path, '.git')}\n`);
+      writeFileSync(join(wt, 'new.txt'), 'x');
+
+      const { headSha } = await snapshotAttempt(repo, wt, 'aiteam: T-1 a1');
+
+      expect(await revParse(other.path)).toBe(other.headSha);
+      expect(await revParse(repo, `refs/heads/${BRANCH}`)).toBe(headSha);
+      expect(await changedPaths(repo, wt, base)).toEqual(['new.txt']);
+    });
+
+    it('cannot hide its changes by deleting .git', async () => {
+      await addAttemptWorktree(repo, wt, BRANCH, base);
+      rmSync(join(wt, '.git'));
+      writeFileSync(join(wt, 'new.txt'), 'x');
+
+      await snapshotAttempt(repo, wt, 'aiteam: T-1 a1');
+
+      expect(await changedPaths(repo, wt, base)).toEqual(['new.txt']);
+    });
+  });
+
+  it('refuses to snapshot a folder that is not a worktree of the repo', async () => {
+    const stranger = tempDir();
+    await expect(snapshotAttempt(repo, stranger, 'nope')).rejects.toThrow(/not a worktree of/);
+    await expect(changedPaths(repo, stranger, base)).rejects.toThrow(/not a worktree of/);
   });
 
   it('removeAttemptWorktree is idempotent and deletes the branch', async () => {

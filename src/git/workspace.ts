@@ -1,5 +1,5 @@
-import { mkdir, realpath, rm, stat } from 'node:fs/promises';
-import { dirname, resolve } from 'node:path';
+import { mkdir, readdir, readFile, realpath, rm, stat } from 'node:fs/promises';
+import { dirname, join, resolve } from 'node:path';
 import { isWithin } from '../paths.ts';
 import { commitStaged, ENGINE_CONFIG, engineGit, git, gitOk } from './git.ts';
 
@@ -61,13 +61,32 @@ export async function addAttemptWorktree(repoPath: string, wtPath: string, branc
   await engineGit(repoPath, ['worktree', 'add', '--quiet', wtPath, branch]);
 }
 
-export async function snapshotAttempt(wtPath: string, message: string): Promise<{ headSha: string }> {
-  await engineGit(wtPath, ['add', '-A']);
-  return { headSha: await commitStaged(wtPath, message) };
+// A worker can rewrite anything in its worktree, .git included, and engine git runs outside the sandbox.
+// A planted .git would run its config's filters here or aim the commit elsewhere, so the attempt's git
+// dir is found from the repo's side, and git is told where it is instead of reading the worktree's .git.
+async function attemptLocation(repoPath: string, wtPath: string): Promise<string[]> {
+  const common = resolve(repoPath, await gitOk(repoPath, ['rev-parse', '--git-common-dir']));
+  const adminRoot = join(common, 'worktrees');
+  const expected = join(await realpath(wtPath), '.git');
+  for (const name of await readdir(adminRoot).catch(() => [])) {
+    const adminDir = join(adminRoot, name);
+    const pointer = await readFile(join(adminDir, 'gitdir'), 'utf8').catch(() => null);
+    if (pointer !== null && resolve(adminDir, pointer.trim()) === expected) {
+      return [`--git-dir=${adminDir}`, `--work-tree=${wtPath}`];
+    }
+  }
+  throw new Error(`${wtPath} is not a worktree of ${repoPath}`);
 }
 
-export async function changedPaths(wtPath: string, baseSha: string): Promise<string[]> {
-  const out = await gitOk(wtPath, ['diff', '--no-renames', '--name-only', '-z', baseSha, 'HEAD']);
+export async function snapshotAttempt(repoPath: string, wtPath: string, message: string): Promise<{ headSha: string }> {
+  const location = await attemptLocation(repoPath, wtPath);
+  await engineGit(wtPath, [...location, 'add', '-A']);
+  return { headSha: await commitStaged(wtPath, message, location) };
+}
+
+export async function changedPaths(repoPath: string, wtPath: string, baseSha: string): Promise<string[]> {
+  const location = await attemptLocation(repoPath, wtPath);
+  const out = await gitOk(wtPath, [...location, 'diff', '--no-ext-diff', '--no-renames', '--name-only', '-z', baseSha, 'HEAD']);
   return out.split('\0').filter(Boolean);
 }
 

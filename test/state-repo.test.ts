@@ -49,19 +49,25 @@ describe('project state repo', () => {
   });
 
   it('refuses a path outside the repo and writes nothing', async () => {
-    await expect(commitArtifact(dir, '../outside.md', 'x', 'escape')).rejects.toThrow(/outside the state repo/);
-    await expect(commitArtifact(dir, '/tmp/absolute.md', 'x', 'escape')).rejects.toThrow(/outside the state repo/);
+    await expect(commitArtifact(dir, '../outside.md', 'x', 'escape')).rejects.toThrow(/not a safe artifact path/);
+    await expect(commitArtifact(dir, '/tmp/absolute.md', 'x', 'escape')).rejects.toThrow(/not a safe artifact path/);
     expect(existsSync(join(dir, '..', 'outside.md'))).toBe(false);
   });
 
-  it('refuses to write into the git metadata', async () => {
-    await expect(commitArtifact(dir, '.git/hooks/post-commit', 'x', 'escape')).rejects.toThrow(/outside the state repo/);
-    expect(existsSync(join(dir, '.git/hooks/post-commit'))).toBe(false);
-  });
+  it.each(['.git/hooks/post-commit', '.GIT/config', 'a/.git/x', 'git~1/config', '.git‌/config', 'a./b', 'a /b', 'a*[b].md'])(
+    'refuses the risky path %s and writes nothing',
+    async (path) => {
+      const head = await revParse(dir);
+      await expect(commitArtifact(dir, path, 'PLANTED', 'escape')).rejects.toThrow(/not a safe artifact path/);
+      // On a case-insensitive disk .GIT/config is the real .git/config, so it exists; it must be unchanged.
+      const target = join(dir, path);
+      expect(existsSync(target) ? readFileSync(target, 'utf8') : '').not.toContain('PLANTED');
+      expect(await revParse(dir)).toBe(head);
+    },
+  );
 
-  it('treats special characters in a path literally', async () => {
-    const { sha } = await commitArtifact(dir, 'a*[b].md', 'x\n', 'odd name');
+  it('accepts ordinary artifact paths with ids, dots and dashes', async () => {
+    const { sha } = await commitArtifact(dir, 'artifacts/ticket/T-1_a.v2.md', 'x\n', 'ordinary');
     expect(sha).toBe(await revParse(dir));
-    expect(run(dir, 'ls-tree', '--name-only', 'HEAD')).toBe('a*[b].md');
   });
 });
