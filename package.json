@@ -13,9 +13,12 @@
     "aiteam": "tsx src/cli.ts"
   },
   "dependencies": {
+    "better-sqlite3": "^13.0.3",
+    "kysely": "^0.29.7",
     "yaml": "^2.9.1"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^9.6.0",
     "@types/node": "^26.6.6",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2",
