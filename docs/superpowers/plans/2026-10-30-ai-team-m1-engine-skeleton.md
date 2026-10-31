@@ -576,13 +576,15 @@ Result mapping:
 | `success`, valid JSON failing the role schema | `invalid_output` |
 | `success`, no `structured_output` | `failed` / `no_structured_output` |
 | `is_error` with `/not logged in\|please run \/login/i`, or `assistant.error == "authentication_failed"` | `failed` / `auth_required` |
-| `rate_limit_event` with `status:"rejected"`, or `is_error` with `/usage limit\|hit your limit/i`, or `api_error_status: 429` | `usage_limited`, `resetAt` as ISO when given |
+| `rate_limit_event` with `rate_limit_info.status:"rejected"` (ignore `overageStatus`), or `is_error` with `/usage limit\|hit your limit/i`, or `api_error_status: 429` | `usage_limited`, `resetAt` as ISO from `rate_limit_info.resetsAt` (epoch seconds) when given |
 | `error_max_turns` | `failed` / `max_turns` |
 | `error_max_budget_usd` | `budget_exceeded` |
 | `error_max_structured_output_retries` | `invalid_output` |
-| any other `error_*`, or `is_error` | `failed` / `worker_error`, `message` set |
+| any other `error_*`, or `is_error` | `failed` / `worker_error`, `message` from `errors[0]` or `result` |
 | exit with no `result` line | `failed` / `no_result`, `message` = stderr tail |
 | spawn error (ENOENT) | `failed` / `spawn_error` |
+
+A real SIGINT produces `error_during_execution` and exit code 0, so `cancelled` comes from the adapter's record that it sent the signal, never from the stream or the exit code. `buildClaudeInvocation` writes `--allowedTools` as the tool list with `Edit` and `Write` scoped to `./**`, because the OS sandbox covers only Bash. Field names are in `docs/superpowers/notes/2026-10-30-claude-cli-contract.md`.
 
 `capabilities` for M1: `{ repoTools: true, structuredOutput: true, resume: false, costReport: 'estimate', sandbox: 'os' }`. Turn-cap continuation arrives with M3.
 
@@ -597,7 +599,7 @@ it('builds the §6.2 subscription invocation', () => {
     '--append-system-prompt-file', `${ws.manifestDir}/system.md`,
     '--json-schema', JSON.stringify(manifest.outputSchema),
     '--permission-mode', 'dontAsk',
-    '--tools', 'Read,Glob,Grep,Edit,Write,Bash', '--allowedTools', 'Read,Glob,Grep,Edit,Write,Bash',
+    '--tools', 'Read,Glob,Grep,Edit,Write,Bash', '--allowedTools', 'Read,Glob,Grep,Bash,Edit(./**),Write(./**)',
     '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}',
     '--max-turns', '60', '--max-budget-usd', '3',
     '--settings', '{"sandbox":{"enabled":true,"allowUnsandboxedCommands":false,"network":{"allowedDomains":[]}}}']);

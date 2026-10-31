@@ -264,7 +264,7 @@ claude -p --output-format stream-json --verbose
   --append-system-prompt-file <manifest/system.md>
   --json-schema <role output schema, as a JSON string>
   --permission-mode <per role, dontAsk by default>
-  --tools <mapped from role.tools> --allowedTools <same list>
+  --tools <mapped from role.tools> --allowedTools <same list, Edit and Write as Edit(./**), Write(./**)>
   --settings <sandbox JSON for network: restricted>
   --strict-mcp-config --mcp-config <role MCP config, usually empty>
   --max-turns <budget> --max-budget-usd <budget>
@@ -272,9 +272,9 @@ claude -p --output-format stream-json --verbose
   < manifest/task.md
 ```
 
-- **Isolation in subscription mode.** **[call]** `--bare` needs an API key, so subscription mode isolates workers by giving them their own **agent home**: a clean `CLAUDE_CONFIG_DIR` with no user CLAUDE.md, plugins, skills, hooks or auto-memory. It's logged in once, as a setup Human Task. `--strict-mcp-config` limits MCP servers to the ones the role declares. The target repo's own `CLAUDE.md` and `AGENTS.md` still load; the context builder counts their tokens against the role budget and records them in the manifest. *Risk:* M1 must prove this isolation works with subscription login, since keychain-stored credentials may not follow the config dir. If it doesn't, repo workers fall back to API keys.
+- **Isolation in subscription mode.** **[call]** `--bare` needs an API key, so subscription mode isolates workers by giving them their own **agent home**: a clean `CLAUDE_CONFIG_DIR` with no user CLAUDE.md, plugins, skills, hooks or auto-memory. It's logged in once, as a setup Human Task. `--strict-mcp-config` limits MCP servers to the ones the role declares. The target repo's own `CLAUDE.md` and `AGENTS.md` still load; the context builder counts their tokens against the role budget and records them in the manifest. *Proved 2026-10-31 on CLI 2.1.109:* subscription login follows the config dir, and no user config reaches the worker ([contract notes](../notes/2026-10-30-claude-cli-contract.md)). If a later CLI breaks this, repo workers fall back to API keys.
 - **Session and results.** Capture `session_id` from `init`. A result whose `subtype` isn't `success`, a `success` with `is_error: true` (a failed login arrives this way), or a `success` with no `structured_output` means the attempt failed. Keep reading past `result`, because hook events can follow it, and ignore unknown event types.
-- **Flags, from probing CLI 2.1.109.** `--allowedTools` only auto-approves, so `--tools` is what limits the tool list. `--json-schema` takes a JSON string, not a file. `--max-turns` and `--append-system-prompt-file` work though `--help` omits them. M1 records the verified result fields.
+- **Flags, from probing CLI 2.1.109.** `--allowedTools` only auto-approves, so `--tools` is what limits the tool list. `--json-schema` takes a JSON string, not a file. `--max-turns` and `--append-system-prompt-file` work though `--help` omits them. The OS sandbox covers only Bash, so Edit and Write are confined to the worktree by permission rules. The verified result fields are in the contract notes.
 - **Environment.** Workers get an allow-listed environment. `ANTHROPIC_API_KEY` would override the subscription login and `CLAUDECODE` blocks nested runs, so neither passes through.
 - **Stopping.** Stop with SIGINT; SIGTERM records no result.
 - **Turn-cap continuation.** Continue with `--resume <id>` only inside the same attempt.
