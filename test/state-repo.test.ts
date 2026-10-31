@@ -1,0 +1,67 @@
+import { existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { commitArtifact, initStateRepo } from '../src/git/state-repo.ts';
+import { revParse, run, tempDir } from './helpers/repo.ts';
+
+describe('project state repo', () => {
+  let dir: string;
+
+  beforeEach(async () => {
+    dir = join(tempDir(), 'projects', 'p', 'state');
+    await initStateRepo(dir);
+  });
+
+  it('init is safe to repeat', async () => {
+    const head = await revParse(dir);
+    await initStateRepo(dir);
+    expect(await revParse(dir)).toBe(head);
+  });
+
+  it('commitArtifact returns the HEAD sha', async () => {
+    const { sha } = await commitArtifact(dir, 'artifacts/tickets/T-1.md', '# T-1\n', 'ticket T-1');
+
+    expect(sha).toBe(await revParse(dir));
+    expect(readFileSync(join(dir, 'artifacts/tickets/T-1.md'), 'utf8')).toBe('# T-1\n');
+    expect(run(dir, 'log', '-1', '--format=%s %an')).toBe('ticket T-1 aiteam');
+  });
+
+  it('identical content is not an error and returns HEAD', async () => {
+    const first = await commitArtifact(dir, 'a.md', 'same\n', 'first');
+    const count = run(dir, 'rev-list', '--count', 'HEAD');
+
+    const second = await commitArtifact(dir, 'a.md', 'same\n', 'second');
+
+    expect(second.sha).toBe(first.sha);
+    expect(run(dir, 'rev-list', '--count', 'HEAD')).toBe(count);
+  });
+
+  it('keeps one history when two artifacts are committed at once', async () => {
+    const count = Number(run(dir, 'rev-list', '--count', 'HEAD'));
+
+    const results = await Promise.all([
+      commitArtifact(dir, 'a.md', 'a\n', 'a'),
+      commitArtifact(dir, 'b.md', 'b\n', 'b'),
+      commitArtifact(dir, 'c.md', 'c\n', 'c'),
+    ]);
+
+    expect(new Set(results.map((r) => r.sha)).size).toBe(3);
+    expect(Number(run(dir, 'rev-list', '--count', 'HEAD'))).toBe(count + 3);
+  });
+
+  it('refuses a path outside the repo and writes nothing', async () => {
+    await expect(commitArtifact(dir, '../outside.md', 'x', 'escape')).rejects.toThrow(/outside the state repo/);
+    await expect(commitArtifact(dir, '/tmp/absolute.md', 'x', 'escape')).rejects.toThrow(/outside the state repo/);
+    expect(existsSync(join(dir, '..', 'outside.md'))).toBe(false);
+  });
+
+  it('refuses to write into the git metadata', async () => {
+    await expect(commitArtifact(dir, '.git/hooks/post-commit', 'x', 'escape')).rejects.toThrow(/outside the state repo/);
+    expect(existsSync(join(dir, '.git/hooks/post-commit'))).toBe(false);
+  });
+
+  it('treats special characters in a path literally', async () => {
+    const { sha } = await commitArtifact(dir, 'a*[b].md', 'x\n', 'odd name');
+    expect(sha).toBe(await revParse(dir));
+    expect(run(dir, 'ls-tree', '--name-only', 'HEAD')).toBe('a*[b].md');
+  });
+});

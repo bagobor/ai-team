@@ -1,5 +1,5 @@
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { isAbsolute, join, relative, sep } from 'node:path';
 
 export type Paths = {
   root: string;
@@ -24,6 +24,12 @@ export function resolvePaths(env: NodeJS.ProcessEnv = process.env): Paths {
     transcripts: join(root, 'transcripts'),
     claudeHome: join(root, 'agent-home', 'claude'),
   };
+}
+
+// True when child is parent or lies under it. Both paths are compared as written, without following symlinks.
+export function isWithin(parent: string, child: string): boolean {
+  const rel = relative(parent, child);
+  return rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
 }
 
 export function stateRepoDir(p: Paths, project: string): string {
