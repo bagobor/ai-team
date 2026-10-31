@@ -19,7 +19,7 @@ export const migrations: Record<string, Migration> = {
           project_id INTEGER NOT NULL REFERENCES projects(id),
           ticket_id TEXT NOT NULL,
           title TEXT NOT NULL,
-          milestone TEXT NOT NULL,
+          milestone INTEGER NOT NULL,
           role_id TEXT NOT NULL,
           state TEXT NOT NULL,
           blocked_on TEXT,

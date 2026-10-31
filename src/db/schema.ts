@@ -14,7 +14,7 @@ export type TasksTable = {
   project_id: number;
   ticket_id: string;
   title: string;
-  milestone: string;
+  milestone: number;
   role_id: string;
   state: string;
   blocked_on: string | null;

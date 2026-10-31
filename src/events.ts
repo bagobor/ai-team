@@ -52,7 +52,14 @@ export class EventLog {
   constructor(private readonly db: Kysely<DB>) {}
 
   async append(e: NewEvent): Promise<EventRow> {
-    const inserted = await this.db
+    const row = await this.insert(this.db, e);
+    this.publish(row);
+    return row;
+  }
+
+  // For an event that commits with other writes: pass the transaction, then publish after commit.
+  async insert(db: Kysely<DB>, e: NewEvent): Promise<EventRow> {
+    const inserted = await db
       .insertInto('events')
       .values({
         ts: new Date().toISOString(),
@@ -64,8 +71,10 @@ export class EventLog {
       })
       .returningAll()
       .executeTakeFirstOrThrow();
+    return toEventRow(inserted);
+  }
 
-    const row = toEventRow(inserted);
+  publish(row: EventRow): void {
     for (const fn of [...this.subscribers]) {
       try {
         fn(row);
@@ -73,7 +82,6 @@ export class EventLog {
         console.error(`Event subscriber failed on ${row.type}:`, err);
       }
     }
-    return row;
   }
 
   async list(q: { taskId?: number; afterSeq?: number; limit?: number }): Promise<EventRow[]> {
