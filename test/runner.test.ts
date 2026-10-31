@@ -416,6 +416,25 @@ describe('Runner', () => {
     for (const a of await e.store.listAttempts(t.id)) expect(a.state).toBe('cancelled');
   });
 
+  it('cancel after the attempt was created still spawns nothing', async () => {
+    const e = await engine({ steps: [okStep({ 'src/a.mjs': '' })] });
+    const t = await e.addTicket(ticket());
+    let cancelling: Promise<void> | undefined;
+    const unsubscribe = e.log.subscribe((event) => {
+      if (event.type === 'manifest.built') cancelling = e.runner.cancel(t.id);
+    });
+
+    await runOnce(e, t.id);
+    await cancelling;
+    unsubscribe();
+
+    expect(e.spawnCount()).toBe(0);
+    expect((await task(e, t.id)).state).toBe('cancelled');
+    const [a] = await e.store.listAttempts(t.id);
+    expect(a!.state).toBe('cancelled');
+    expect(existsSync(a!.worktree_path)).toBe(false);
+  });
+
   it('shutdown interrupts instead of cancelling', async () => {
     const e = await engine({ steps: [SLOW_STEP] });
     const t = await e.addTicket(ticket());
