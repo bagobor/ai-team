@@ -1,0 +1,12 @@
+this line is not JSON
+{"type":"something_new","payload":{"a":1}}
+{"type":"system","subtype":"hook_started","hook_name":"x"}
+null
+42
+{"type":"assistant","message":"not an object with content"}
+{"type":"user","message":{"content":"plain text, not blocks"}}
+{"type":"rate_limit_event"}
+{"type":"system","subtype":"init","session_id":"s-1","model":"m"}
+{"type":"result","subtype":"success","is_error":false,"session_id":"s-1","total_cost_usd":0.01,"usage":{"input_tokens":1,"output_tokens":2},"structured_output":{"ok":true}}
+{"type":"system","subtype":"hook_response"}
+{"type":"something_after_the_result"}
