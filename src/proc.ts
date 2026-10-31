@@ -18,6 +18,10 @@ function signalGroup(pid: number, signal: NodeJS.Signals | 0): boolean {
   }
 }
 
+export function groupAlive(pid: number): boolean {
+  return signalGroup(pid, 0);
+}
+
 export function killGroupNow(pid: number): void {
   signalGroup(pid, 'SIGKILL');
 }
@@ -34,9 +38,10 @@ export async function killGroup(pid: number, graceS: number): Promise<void> {
   signalGroup(pid, 'SIGKILL');
 }
 
+// The result is compared across daemon runs, so the format mustn't depend on the locale or zone each was started in.
 export function processStartTime(pid: number): Promise<string | null> {
   return new Promise((resolve) => {
-    execFile('ps', ['-o', 'lstart=', '-p', String(pid)], (err, stdout) => {
+    execFile('ps', ['-o', 'lstart=', '-p', String(pid)], { env: { ...process.env, LC_ALL: 'C', TZ: 'UTC' } }, (err, stdout) => {
       const started = stdout.trim();
       resolve(err || !started ? null : started);
     });
