@@ -69,7 +69,10 @@ if (step.spawnEscapee) {
 const lines = step.fixture
   ? readFileSync(join(import.meta.dirname, 'claude', step.fixture), 'utf8').split('\n').filter(Boolean)
   : (step.lines ?? []);
-for (const line of lines) process.stdout.write(`${line}\n`);
+for (const line of lines) {
+  process.stdout.write(`${line}\n`);
+  if (step.lineDelayMs) await new Promise((resolve) => setTimeout(resolve, step.lineDelayMs));
+}
 
 if (step.delayMs) await new Promise((resolve) => setTimeout(resolve, step.delayMs));
 

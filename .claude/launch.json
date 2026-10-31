@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "aiteam-demo",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "demo"],
+      "port": 4780
+    }
+  ]
+}
