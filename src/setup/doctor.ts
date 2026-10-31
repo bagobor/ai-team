@@ -1,8 +1,6 @@
 import { execFile } from 'node:child_process';
-import { join } from 'node:path';
 import { claudeAdapterFor } from '../adapters/claude-code.ts';
 import type { Config } from '../config.ts';
-import { findAncestorInstructions } from '../manifest/build.ts';
 import type { Paths } from '../paths.ts';
 
 export type DoctorCheck = { name: string; ok: boolean; detail: string };
@@ -44,14 +42,6 @@ async function checkLogin(paths: Paths, config: Config): Promise<DoctorCheck> {
     : { name: 'agent-home login', ok: false, detail: `${result.reason}. Run: ${result.fix}` };
 }
 
-// Whether the CLI would load these for a worker is up to the CLI, so none should be there to load.
-async function checkInstructions(paths: Paths): Promise<DoctorCheck> {
-  const found = await findAncestorInstructions(join(paths.worktrees, 'project', 'attempt'));
-  return found.length === 0
-    ? { name: 'instruction files', ok: true, detail: `None above ${paths.worktrees}` }
-    : { name: 'instruction files', ok: false, detail: `Workers could pick these up, so move them: ${found.join(', ')}` };
-}
-
 export async function runDoctor(paths: Paths, config: Config): Promise<DoctorCheck[]> {
-  return [checkNode(), await checkGit(), await checkClaudeBinary(config), await checkLogin(paths, config), await checkInstructions(paths)];
+  return [checkNode(), await checkGit(), await checkClaudeBinary(config), await checkLogin(paths, config)];
 }

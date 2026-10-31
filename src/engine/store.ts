@@ -40,6 +40,8 @@ export type VendorPause = Selectable<VendorPausesTable>;
 const LIVE_ATTEMPT_STATES: AttemptState[] = ['starting', 'running'];
 // Interrupted and cancelled attempts say nothing about the work, so they don't use up retries.
 const FAILED_ATTEMPT_STATES: AttemptState[] = ['failed', 'timeout', 'budget_exceeded', 'invalid_output'];
+// Nor do these, each of which escalates at once for a person to fix something other than the work.
+const FAILURES_NOT_ABOUT_THE_WORK = ['auth_required', 'context_over_budget', 'engine_error'];
 const ATTEMPT_JSON_FIELDS = ['manifest', 'output', 'failure_evidence', 'usage'] as const;
 
 function parseJson(value: string | null): unknown {
@@ -271,6 +273,7 @@ export class Store {
       .select((eb) => eb.fn.countAll<number>().as('n'))
       .where('task_id', '=', taskId)
       .where('state', 'in', FAILED_ATTEMPT_STATES)
+      .where((eb) => eb.or([eb('failure_kind', 'is', null), eb('failure_kind', 'not in', FAILURES_NOT_ABOUT_THE_WORK)]))
       .executeTakeFirstOrThrow();
     return n;
   }

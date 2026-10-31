@@ -213,6 +213,27 @@ describe('Store', () => {
 
       expect(await store.failedAttemptCount(task.id)).toBe(4);
     });
+
+    const failWith = async (kinds: string[]) => {
+      for (const failure_kind of kinds) {
+        const a = await store.createAttempt(attempt(task.id));
+        await store.setAttemptState(a.id, 'running');
+        await store.setAttemptState(a.id, 'failed', { failure_kind });
+      }
+    };
+
+    it('does not count a failure that escalates at once for a person to fix', async () => {
+      await failWith(['auth_required', 'context_over_budget', 'engine_error']);
+
+      expect(await store.failedAttemptCount(task.id)).toBe(0);
+    });
+
+    it('counts a failure that goes round to another attempt, or the runner would never stop', async () => {
+      const kinds = ['check_failed', 'scope_violation', 'no_changes', 'spawn_error', 'max_turns', 'no_result', 'no_structured_output', 'worker_error'];
+      await failWith(kinds);
+
+      expect(await store.failedAttemptCount(task.id)).toBe(kinds.length);
+    });
   });
 
   describe('vendor pauses', () => {

@@ -1,7 +1,7 @@
 import { mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { buildManifest, findAncestorInstructions, readRepoInstructions, type BuildInput, type TaskManifest } from '../src/manifest/build.ts';
+import { buildManifest, readRepoInstructions, type BuildInput, type TaskManifest } from '../src/manifest/build.ts';
 import { loadRole } from '../src/roles/role.ts';
 import { parseTicket } from '../src/tickets/ticket.ts';
 import { tempDir } from './helpers/repo.ts';
@@ -72,12 +72,12 @@ describe('buildManifest', () => {
     const instructionsPart = (m: TaskManifest) => m.parts.find((p) => p.name === 'repo_instructions')!;
 
     it('refuses a manifest whose instructions are over budget', () => {
-      const repoInstructions = [{ path: 'CLAUDE.md', content: 'x'.repeat(70000), inRepo: true }];
+      const repoInstructions = [{ path: 'CLAUDE.md', content: 'x'.repeat(70000) }];
       expect(buildManifest({ ...input, repoInstructions })).toMatchObject({ ok: false, reason: 'context_over_budget' });
     });
 
     it('delivers the files in the repo through the system prompt', () => {
-      const m = built({ ...input, repoInstructions: [{ path: 'CLAUDE.md', content, inRepo: true }] });
+      const m = built({ ...input, repoInstructions: [{ path: 'CLAUDE.md', content }] });
 
       expect(m.system).toContain(content);
       expect(m.system).toContain('### CLAUDE.md');
@@ -85,23 +85,16 @@ describe('buildManifest', () => {
     });
 
     it('counts all that it delivers', () => {
-      const m = built({ ...input, repoInstructions: [{ path: 'CLAUDE.md', content, inRepo: true }] });
+      const m = built({ ...input, repoInstructions: [{ path: 'CLAUDE.md', content }] });
 
       expect(instructionsPart(m).sources).toEqual(['CLAUDE.md']);
       expect(instructionsPart(m).tokens).toBeGreaterThan(200);
     });
 
     it('puts the output contract ahead of them', () => {
-      const m = built({ ...input, repoInstructions: [{ path: 'CLAUDE.md', content, inRepo: true }] });
+      const m = built({ ...input, repoInstructions: [{ path: 'CLAUDE.md', content }] });
 
       expect(m.system.indexOf('## Output contract')).toBeLessThan(m.system.indexOf('INSTRUCTION'));
-    });
-
-    it('counts a file above the repo without copying it', () => {
-      const m = built({ ...input, repoInstructions: [{ path: '/above/CLAUDE.md', content, inRepo: false }] });
-
-      expect(instructionsPart(m)).toMatchObject({ tokens: 200, sources: ['/above/CLAUDE.md'] });
-      expect(m.system).not.toContain('INSTRUCTION');
     });
 
     it('adds no section when the repo has none', () => {
@@ -164,52 +157,30 @@ describe('buildManifest', () => {
 });
 
 describe('repo instruction files', () => {
-  it('finds instruction files above the worktree', async () => {
-    const root = tempDir();
-    const parentFile = join(root, 'CLAUDE.md');
-    const nestedFile = join(root, 'a', 'AGENTS.md');
-    const dotClaudeFile = join(root, 'a', '.claude', 'CLAUDE.md');
-    const worktree = join(root, 'a', 'b', 'wt');
-    mkdirSync(worktree, { recursive: true });
-    mkdirSync(join(root, 'a', '.claude'));
-    writeFileSync(parentFile, 'p');
-    writeFileSync(nestedFile, 'n');
-    writeFileSync(dotClaudeFile, 'd');
-    writeFileSync(join(worktree, 'CLAUDE.md'), 'own');
-
-    const found = await findAncestorInstructions(worktree);
-
-    expect(found).toContain(parentFile);
-    expect(found).toContain(nestedFile);
-    expect(found).toContain(dotClaudeFile);
-    expect(found).not.toContain(join(worktree, 'CLAUDE.md'));
-  });
-
-  it('reads the worktree files and any above it', async () => {
+  it('reads the worktree files and none above it, since those never reach a worker', async () => {
     const root = tempDir();
     const worktree = join(root, 'wt');
     mkdirSync(join(worktree, '.claude'), { recursive: true });
+    mkdirSync(join(root, '.claude'));
     writeFileSync(join(root, 'AGENTS.md'), 'above');
+    writeFileSync(join(root, 'CLAUDE.md'), 'above');
+    writeFileSync(join(root, '.claude', 'CLAUDE.md'), 'above');
     writeFileSync(join(worktree, 'CLAUDE.md'), 'one');
     writeFileSync(join(worktree, '.claude', 'CLAUDE.md'), 'two');
     writeFileSync(join(worktree, 'AGENTS.md'), 'three');
 
     const files = await readRepoInstructions(worktree);
 
-    expect(files).toEqual(
-      expect.arrayContaining([
-        { path: 'CLAUDE.md', content: 'one', inRepo: true },
-        { path: join('.claude', 'CLAUDE.md'), content: 'two', inRepo: true },
-        { path: 'AGENTS.md', content: 'three', inRepo: true },
-        { path: join(root, 'AGENTS.md'), content: 'above', inRepo: false },
-      ]),
-    );
+    expect(files.map(({ path, content }) => [path, content])).toEqual([
+      ['CLAUDE.md', 'one'],
+      [join('.claude', 'CLAUDE.md'), 'two'],
+      ['AGENTS.md', 'three'],
+    ]);
   });
 
   describe('symlinks', () => {
     let root: string;
     let worktree: string;
-    const inRepo = async (dir = worktree) => (await readRepoInstructions(dir)).filter((f) => f.inRepo);
 
     beforeEach(() => {
       root = tempDir();
@@ -223,36 +194,36 @@ describe('repo instruction files', () => {
     it('does not read a link to a file outside the worktree', async () => {
       symlinkSync(join(root, 'outside', 'secret'), join(worktree, 'CLAUDE.md'));
 
-      expect(await inRepo()).toEqual([]);
+      expect(await readRepoInstructions(worktree)).toEqual([]);
     });
 
     it('does not read through a linked folder outside the worktree', async () => {
       symlinkSync(join(root, 'outside'), join(worktree, '.claude'));
 
-      expect(await inRepo()).toEqual([]);
+      expect(await readRepoInstructions(worktree)).toEqual([]);
     });
 
     it('does not read a chain of links that ends outside the worktree', async () => {
       symlinkSync(join(root, 'outside', 'secret'), join(worktree, 'hop'));
       symlinkSync('hop', join(worktree, 'CLAUDE.md'));
 
-      expect(await inRepo()).toEqual([]);
+      expect(await readRepoInstructions(worktree)).toEqual([]);
     });
 
     it('does not read a link to a device', async () => {
       symlinkSync('/dev/zero', join(worktree, 'CLAUDE.md'));
 
-      expect(await inRepo()).toEqual([]);
+      expect(await readRepoInstructions(worktree)).toEqual([]);
     });
 
     it('reads a link that stays inside the worktree', async () => {
       writeFileSync(join(worktree, 'AGENTS.md'), 'shared');
       symlinkSync('AGENTS.md', join(worktree, 'CLAUDE.md'));
 
-      expect(await inRepo()).toEqual(
+      expect(await readRepoInstructions(worktree)).toEqual(
         expect.arrayContaining([
-          { path: 'CLAUDE.md', content: 'shared', inRepo: true },
-          { path: 'AGENTS.md', content: 'shared', inRepo: true },
+          { path: 'CLAUDE.md', content: 'shared' },
+          { path: 'AGENTS.md', content: 'shared' },
         ]),
       );
     });
@@ -261,7 +232,7 @@ describe('repo instruction files', () => {
       writeFileSync(join(worktree, 'CLAUDE.md'), 'mine');
       symlinkSync(worktree, join(root, 'alias'));
 
-      expect(await inRepo(join(root, 'alias'))).toEqual([{ path: 'CLAUDE.md', content: 'mine', inRepo: true }]);
+      expect(await readRepoInstructions(join(root, 'alias'))).toEqual([{ path: 'CLAUDE.md', content: 'mine' }]);
     });
   });
 

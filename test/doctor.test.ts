@@ -29,10 +29,10 @@ describe('runDoctor', () => {
     return found;
   }
 
-  it('runs the five checks and passes them on a healthy machine', async () => {
+  it('runs the four checks and passes them on a healthy machine', async () => {
     const checks = await runDoctor(paths, config());
 
-    expect(checks.map((c) => c.name)).toEqual(['node', 'git', 'claude binary', 'agent-home login', 'instruction files']);
+    expect(checks.map((c) => c.name)).toEqual(['node', 'git', 'claude binary', 'agent-home login']);
     expect(checks.filter((c) => !c.ok)).toEqual([]);
   });
 
@@ -82,20 +82,14 @@ describe('runDoctor', () => {
     expect((await check('agent-home login', config({ FAKE_AUTH_HOME: join(tempDir(), 'some-other-home') }))).ok).toBe(false);
   });
 
-  it('flags a CLAUDE.md above the worktree root', async () => {
-    const file = join(paths.root, 'CLAUDE.md');
-    writeFileSync(file, 'instructions');
+  it('has no complaint about instruction files above the worktrees, which workers never load', async () => {
+    writeFileSync(join(paths.root, 'CLAUDE.md'), 'instructions');
+    mkdirSync(join(paths.root, '.claude'));
+    writeFileSync(join(paths.root, '.claude', 'CLAUDE.md'), 'instructions');
+    writeFileSync(join(paths.worktrees, 'AGENTS.md'), 'instructions');
 
-    const instructions = await check('instruction files');
+    const failing = (await runDoctor(paths, config({ FAKE_AUTH_HOME: paths.claudeHome }))).filter((c) => !c.ok);
 
-    expect(instructions.ok).toBe(false);
-    expect(instructions.detail).toContain(file);
-  });
-
-  it('looks in the folder right above the worktrees', async () => {
-    const file = join(paths.worktrees, 'AGENTS.md');
-    writeFileSync(file, 'instructions');
-
-    expect((await check('instruction files')).detail).toContain(file);
+    expect(failing).toEqual([]);
   });
 });

@@ -44,7 +44,7 @@ Run 2 cost $0.3213, against the $3.00 limit and the $3 expected for the task. Ac
   | `--setting-sources user`, as a worker runs | `NONE` | $0.060 |
   | Default sources, the positive control | `HERON-7142`, the `CLAUDE.md` canary | $0.037 |
 
-  This CLI doesn't read `AGENTS.md` under either setting. `doctor` still fails if such files sit above the worktrees folder, because the manifest would count them.
+  This CLI doesn't read `AGENTS.md` under either setting. Neither `doctor` nor the manifest looks at files above the worktree any more, since there is nothing for a person to fix. `scripts/probe-claude.ts` plants a parent `CLAUDE.md` and re-proves this for a new CLI version (`parent_instructions_ignored`, passed on 2.1.109).
 
 ## Crash drill
 
@@ -85,6 +85,15 @@ All three attempts wrote working code, then failed their check with `EPERM: oper
 Denying the worktrees folder to checks (`11270d6`) also denied `lstat` on the folders above each worktree. Node resolves the path of anything it runs, so it could not start. The earlier tests never ran a path-resolving program under a denied parent, which is why only a real run showed it.
 
 `2203df7` allows `file-read-metadata` on those exact folders. Listing them and reading other attempts stay refused, each with its own test, and both widening mutations were caught.
+
+## What the final review changed
+
+The whole-branch review found two things, both fixed after this run:
+
+- **A login failure used up an attempt.** After a person logged in and pressed Retry, the task had one attempt fewer. `auth_required`, `context_over_budget` and `engine_error` escalate at once and say nothing about the work, so they no longer count. `spawn_error` still counts, because it goes round to another attempt and the runner would otherwise never stop.
+- **`doctor` failed on a personal `~/.claude/CLAUDE.md`**, and the manifest charged its tokens to the budget, although workers never load it. The check and the counting are gone, and the probe guards the claim instead.
+
+The acceptance run above predates these fixes and was not repeated. The test suite and the probe ran after them.
 
 ## What it leaves behind
 

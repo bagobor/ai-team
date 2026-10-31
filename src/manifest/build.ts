@@ -1,5 +1,5 @@
 import { readFile, realpath, stat } from 'node:fs/promises';
-import { dirname, join, resolve } from 'node:path';
+import { join } from 'node:path';
 import { isWithin } from '../paths.ts';
 import { CHARTER_TOKEN_LIMIT, type Budgets, type Role, type RoleTool } from '../roles/role.ts';
 import type { Ticket } from '../tickets/ticket.ts';
@@ -31,7 +31,7 @@ export type TaskManifest = {
   flags?: readonly string[];
 };
 
-export type RepoInstruction = { path: string; content: string; inRepo: boolean };
+export type RepoInstruction = { path: string; content: string };
 
 export type BuildInput = {
   project: string;
@@ -54,7 +54,7 @@ const EVIDENCE_HEADING = '\n\n### Evidence\n';
 const PREVIOUS_ATTEMPT_SOURCE = 'previous attempt';
 
 // A worker doesn't load these by itself, since its settings sources exclude the project's, so the ones in the repo
-// are copied into its prompt. The ones above the repo are the stakeholder's own and are only counted, in case they load.
+// are copied into its prompt. The same flag keeps out any above the repo, which scripts/probe-claude.ts re-proves for a new CLI.
 const INSTRUCTION_FILES = ['CLAUDE.md', join('.claude', 'CLAUDE.md'), 'AGENTS.md'];
 
 function outputContract(i: BuildInput): string {
@@ -75,13 +75,12 @@ function outputContract(i: BuildInput): string {
 }
 
 function instructionsSection(files: RepoInstruction[]): string {
-  const inRepo = files.filter((file) => file.inRepo);
-  if (inRepo.length === 0) return '';
+  if (files.length === 0) return '';
   return [
     '## Repository instructions',
     '',
     "The repository's notes on how to work in it. The output contract above comes first where they disagree.",
-    ...inRepo.flatMap((file) => ['', `### ${file.path}`, '', file.content.trimEnd()]),
+    ...files.flatMap((file) => ['', `### ${file.path}`, '', file.content.trimEnd()]),
   ].join('\n');
 }
 
@@ -118,9 +117,7 @@ export function buildManifest(i: BuildInput): BuildResult {
   // The schema reaches the model too, through the adapter, so it counts even though it isn't in the system prompt.
   const contractTokens = estimateTokens(`${contract}\n\n${JSON.stringify(i.schema)}`);
   const instructions = instructionsSection(i.repoInstructions);
-  const instructionTokens = i.repoInstructions
-    .filter((file) => !file.inRepo)
-    .reduce((sum, file) => sum + estimateTokens(file.content), estimateTokens(instructions));
+  const instructionTokens = estimateTokens(instructions);
   const taskBudget = contextBudget - charterTokens - contractTokens - instructionTokens;
 
   const task = retry ? taskWithPreviousAttempt(i.ticketMarkdown, retry, charsForTokens(taskBudget)) : i.ticketMarkdown;
@@ -178,32 +175,12 @@ async function readInside(root: string, path: string): Promise<string | undefine
   return real !== undefined && isWithin(root, real) ? readIfFile(real) : undefined;
 }
 
-async function isFile(path: string): Promise<boolean> {
-  return (await stat(path).catch(() => undefined))?.isFile() ?? false;
-}
-
-export async function findAncestorInstructions(dir: string): Promise<string[]> {
-  const found: string[] = [];
-  let current = resolve(dir);
-  for (let parent = dirname(current); parent !== current; current = parent, parent = dirname(current)) {
-    for (const name of INSTRUCTION_FILES) {
-      const path = join(parent, name);
-      if (await isFile(path)) found.push(path);
-    }
-  }
-  return found;
-}
-
 export async function readRepoInstructions(worktree: string): Promise<RepoInstruction[]> {
   const root = await realpath(worktree);
   const files: RepoInstruction[] = [];
   for (const name of INSTRUCTION_FILES) {
     const content = await readInside(root, join(worktree, name));
-    if (content !== undefined) files.push({ path: name, content, inRepo: true });
-  }
-  for (const path of await findAncestorInstructions(worktree)) {
-    const content = await readIfFile(path);
-    if (content !== undefined) files.push({ path, content, inRepo: false });
+    if (content !== undefined) files.push({ path: name, content });
   }
   return files;
 }

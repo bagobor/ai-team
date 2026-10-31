@@ -245,6 +245,19 @@ describe('Runner', () => {
     expect(a).toMatchObject({ state: 'failed', failure_kind: 'auth_required' });
   });
 
+  it('a login failure leaves all three attempts for after the person has logged in and retried', async () => {
+    const e = await engine({ steps: [{ fixture: 'auth-failed.jsonl', exitCode: 1 }, okStep({ 'src/a.mjs': '' })] });
+    const t = await e.addTicket(ticket({ definition_of_done: ['false'] }));
+    await runToSettled(e, t.id);
+    expect(e.spawnCount()).toBe(1);
+
+    await e.runner.retry(t.id);
+    await runToSettled(e, t.id);
+
+    expect(await task(e, t.id)).toMatchObject({ state: 'escalated', escalation_reason: 'attempts_exhausted' });
+    expect(e.spawnCount()).toBe(4);
+  });
+
   it('logged-out preflight creates no attempt', async () => {
     const e = await engine({ steps: [okStep({ 'src/a.mjs': '' })], env: { FAKE_AUTH: '{"loggedIn":false}' } });
     const t = await e.addTicket(ticket());

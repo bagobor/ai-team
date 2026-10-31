@@ -86,7 +86,7 @@ describe('the aiteam command', () => {
     const { code, stdout } = await aiteam(['doctor']);
 
     expect(stdout).toMatch(/ok\s+node/);
-    expect(stdout).toMatch(/ok\s+instruction files/);
+    expect(stdout).toMatch(/ok\s+agent-home login/);
     expect(code).toBe(0);
   });
 
