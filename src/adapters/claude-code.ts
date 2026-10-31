@@ -70,6 +70,10 @@ export class ClaudeCodeAdapter implements WorkerAdapter {
 
   constructor(private readonly cfg: ClaudeAdapterConfig) {}
 
+  get loginFix(): string {
+    return `CLAUDE_CONFIG_DIR=${this.cfg.agentHome} claude auth login`;
+  }
+
   // Never cached: a login can expire between two attempts.
   preflight(): Promise<{ ok: true } | { ok: false; reason: string; fix: string }> {
     const { binary, agentHome } = this.cfg;
@@ -83,7 +87,7 @@ export class ClaudeCodeAdapter implements WorkerAdapter {
         resolve(
           parseLoggedIn(stdout)
             ? { ok: true }
-            : { ok: false, reason: `Claude Code is not logged in under ${agentHome}`, fix: `CLAUDE_CONFIG_DIR=${agentHome} claude auth login` },
+            : { ok: false, reason: `Claude Code is not logged in under ${agentHome}`, fix: this.loginFix },
         );
       });
     });

@@ -42,6 +42,8 @@ export interface WorkerAdapter {
     costReport: 'exact' | 'estimate' | 'none';
     sandbox: 'os' | 'flags' | 'none';
   };
+  // What the stakeholder runs when a login has expired.
+  loginFix: string;
   preflight(): Promise<{ ok: true } | { ok: false; reason: string; fix: string }>;
   start(m: TaskManifest, ws: Workspace): AttemptHandle;
 }

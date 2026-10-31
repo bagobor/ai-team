@@ -104,6 +104,10 @@ export class Store {
     return this.db.selectFrom('projects').selectAll().where('name', '=', name).executeTakeFirst();
   }
 
+  async getProjectById(id: number): Promise<ProjectRow | undefined> {
+    return this.db.selectFrom('projects').selectAll().where('id', '=', id).executeTakeFirst();
+  }
+
   async listProjects(): Promise<ProjectRow[]> {
     return this.db.selectFrom('projects').selectAll().orderBy('id').execute();
   }
