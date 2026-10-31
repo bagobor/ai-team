@@ -1,0 +1,24 @@
+{
+  "name": "ai-team",
+  "version": "0.1.0",
+  "description": "A reusable pipeline of specialized AI agents, organized like a product team",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc",
+    "aiteam": "tsx src/cli.ts"
+  },
+  "dependencies": {
+    "yaml": "^2.9.1"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.12"
+  }
+}

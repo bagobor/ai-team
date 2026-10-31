@@ -1,0 +1,20 @@
+id: engineer
+specialty_of: null            # e.g. engineer.watchos has specialty_of: engineer
+department: engineering
+mission: >
+  Implement exactly one ticket. Satisfy its definition of done. Report evidence.
+consumes: [ticket, tech_design#sections, interface_contract, ux_design#sections]
+produces: [change_report]
+write_scope:                  # enforced by post-run diff validation (§11.2)
+  allow: ["**"]
+  deny: [".aiteam/**"]        # artifacts and memory are engine-owned
+tools:                        # adapter-mapped capability names
+  - read_repo
+  - edit_repo
+  - run_commands
+  - network: restricted
+defaults:
+  adapter: claude-code
+  model: claude-sonnet-5-5
+  budgets: { max_turns: 60, max_usd: 3.00, context_tokens: 12000, playbook_tokens: 2000, memory_tokens: 1000 }
+output_schema: schemas/change_report.json
