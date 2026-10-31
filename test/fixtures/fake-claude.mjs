@@ -68,4 +68,6 @@ for (const line of lines) process.stdout.write(`${line}\n`);
 
 if (step.delayMs) await new Promise((resolve) => setTimeout(resolve, step.delayMs));
 
+// Exiting with output still queued would drop whatever didn't fit in the pipe's buffer.
+await new Promise((resolve) => process.stdout.write('', resolve));
 process.exit(step.exitCode ?? 0);
