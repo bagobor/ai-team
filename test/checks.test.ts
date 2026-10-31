@@ -301,6 +301,47 @@ describe('runChecks', () => {
       expect((await checks({ commands: ['node --test'] })).ok).toBe(true);
     });
 
+    describe('with the worktrees folder denied, as for a real attempt', () => {
+      let worktrees: string;
+      let attempt: string;
+      let sibling: string;
+
+      beforeEach(async () => {
+        worktrees = join(tempDir(), 'worktrees');
+        attempt = join(worktrees, 'project', 'T-2-a1');
+        sibling = join(worktrees, 'project', 'T-3-a1');
+        await addAttemptWorktree(repoPath, attempt, 'aiteam/T-2-a1', baseSha);
+        mkdirSync(sibling);
+        writeFileSync(join(sibling, 'secret'), 'SECRET-VALUE\n');
+        writeFileSync(join(attempt, 'a.test.mjs'), `import test from 'node:test'; test('ok', () => {});\n`);
+        await snapshotAttempt(repoPath, attempt, 'work');
+      });
+
+      const denied = (command: string) => checks({ worktree: attempt, denyRead: [worktrees], commands: [command] });
+
+      // Node resolves the real path of what it runs, which takes an lstat of each folder above it.
+      it('runs a program that resolves its own path', async () => {
+        const r = await denied('node --test a.test.mjs');
+
+        expect(r.runs[0]?.outputTail).not.toContain('EPERM');
+        expect(r.ok).toBe(true);
+      });
+
+      it.each(['worktrees folder', 'project folder'])('still refuses to list the %s', async (folder) => {
+        const path = folder === 'worktrees folder' ? worktrees : join(worktrees, 'project');
+
+        const r = await denied(`ls ${path}`);
+
+        expect(r.ok).toBe(false);
+        expect(r.runs[0]?.outputTail).not.toContain('T-3-a1');
+      });
+
+      it('still refuses to read or stat another attempt', async () => {
+        expect((await denied(`cat ${join(sibling, 'secret')}`)).ok).toBe(false);
+        expect((await denied(`stat ${sibling}`)).ok).toBe(false);
+      });
+    });
+
     it('handles a worktree path that needs escaping', async () => {
       const odd = join(tempDir(), 'odd "name" (x)', 'wt');
       await addAttemptWorktree(repoPath, odd, 'aiteam/T-2-a1', baseSha);

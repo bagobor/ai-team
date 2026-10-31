@@ -1,5 +1,6 @@
 import { realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { dirname } from 'node:path';
 import picomatch from 'picomatch';
 import { workerEnv } from '../adapters/env.ts';
 import type { EventType } from '../events.ts';
@@ -48,9 +49,16 @@ function realOrAsWritten(path: string): string {
   }
 }
 
+function foldersAbove(path: string): string[] {
+  const parent = dirname(path);
+  return parent === path ? [] : [parent, ...foldersAbove(parent)];
+}
+
 // Checks run code the worker wrote, so they get the limits its own Bash has. Later rules win, so the worktree comes back last.
 function sandboxArgs(i: ChecksInput, command: string): string[] {
   const denyRules = i.denyRead.map((_, k) => `(deny file-read* (subpath (param "DENY${k}")))`);
+  const realWorktree = realOrAsWritten(i.worktree);
+  const above = foldersAbove(realWorktree);
   const profile = [
     '(version 1)',
     '(allow default)',
@@ -62,12 +70,15 @@ function sandboxArgs(i: ChecksInput, command: string): string[] {
     '(allow file-write* (subpath (param "WORKTREE")))',
     ...denyRules,
     '(allow file-read* (subpath (param "WORKTREE")))',
+    // Resolving a path takes an lstat of each folder above it, as Node does for anything it runs. Their listings stay denied.
+    ...above.map((_, k) => `(allow file-read-metadata (literal (param "ABOVE${k}")))`),
   ].join('\n');
   const params = [
-    ['WORKTREE', realOrAsWritten(i.worktree)],
+    ['WORKTREE', realWorktree],
     ['REPO', realOrAsWritten(i.repoPath)],
     ['TMP', realOrAsWritten(tmpdir())],
     ...i.denyRead.map((path, k) => [`DENY${k}`, realOrAsWritten(path)]),
+    ...above.map((path, k) => [`ABOVE${k}`, path]),
   ];
   return [...params.flatMap(([name, value]) => ['-D', `${name}=${value}`]), '-p', profile, 'sh', '-c', command];
 }
