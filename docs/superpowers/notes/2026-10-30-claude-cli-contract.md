@@ -13,7 +13,7 @@ claude -p --output-format stream-json --verbose --model <model>
   --permission-mode dontAsk --strict-mcp-config --mcp-config '{"mcpServers":{}}'
   --setting-sources user
   --max-turns <n> --max-budget-usd <n>
-  --settings '{"sandbox":{"enabled":true,"allowUnsandboxedCommands":false,"network":{"allowedDomains":[]},"filesystem":{"denyRead":[...]}}}'
+  --settings '{"sandbox":{"enabled":true,"allowUnsandboxedCommands":false,"network":{"allowedDomains":[]},"filesystem":{"denyRead":[...],"allowRead":[<worktree>]}}}'
   < task
 ```
 
@@ -35,7 +35,6 @@ The environment is only `PATH, HOME, USER, LOGNAME, SHELL, TMPDIR, LANG, LC_ALL,
 | Bash reads | `sandbox.filesystem.denyRead` blocks them with `Operation not permitted`. The CLI itself isn't limited by it: it still reads its own config and login under a denied agent home, and `node` and `git` still run. |
 | Keychain from Bash | **Reachable until `~/Library/Keychains` is denied.** `security find-generic-password` exits 0 in the sandbox without it and 44 with it. Only the exit status was tested; no secret was read. |
 | Oversized Bash output | Saved under the agent home, and `Read` can still open it under the scoped rule, so the CLI exempts its own files. |
-
 | Other attempts' worktrees from Bash | Blocked by denying the worktrees folder and giving the attempt its own back with `filesystem.allowRead`. Bash still reads its own worktree, and `git` and `node` still run. |
 
 **Not closed: other Bash reads.** `denyRead` is a list, so anything not on it stays readable by Bash: other repos, and files in the home folder that aren't named. Denying all of `$HOME` would break toolchains installed there, so it wasn't done. Network-blocked Bash limits where such a file can go, but a worker could still copy it into the diff.
