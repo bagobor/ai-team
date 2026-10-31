@@ -39,11 +39,21 @@ export async function prepareRepo(repoPath: string, opts: { create: boolean }): 
   return { baseBranch };
 }
 
-export async function ensureIntegrationBranch(
+// Attempts start side by side and the first to reach a milestone creates its branch, so finding it missing and
+// creating it must not interleave. Only the daemon runs this, so a queue in this process is enough.
+const branchQueues = new Map<string, Promise<unknown>>();
+
+export function ensureIntegrationBranch(
   repoPath: string,
   milestone: number,
   baseBranch: string,
 ): Promise<{ branch: string; headSha: string }> {
+  const work = (branchQueues.get(repoPath) ?? Promise.resolve()).then(() => findOrCreateBranch(repoPath, milestone, baseBranch));
+  branchQueues.set(repoPath, work.catch(() => {}));
+  return work;
+}
+
+async function findOrCreateBranch(repoPath: string, milestone: number, baseBranch: string): Promise<{ branch: string; headSha: string }> {
   const branch = `aiteam/m${milestone}`;
   const existing = await git(repoPath, ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}^{commit}`]);
   if (existing.code === 0) return { branch, headSha: existing.stdout.trim() };

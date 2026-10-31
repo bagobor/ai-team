@@ -74,6 +74,12 @@ describe('attempt worktrees', () => {
     expect(await revParse(repo, 'refs/heads/aiteam/m3')).toBe(base);
   });
 
+  it('creates the integration branch once when several attempts ask at the same moment', async () => {
+    const results = await Promise.all(Array.from({ length: 8 }, () => ensureIntegrationBranch(repo, 1, 'main')));
+
+    expect(results).toEqual(Array.from({ length: 8 }, () => ({ branch: 'aiteam/m1', headSha: base })));
+  });
+
   it('does not move the integration branch when main advances', async () => {
     const first = await ensureIntegrationBranch(repo, 1, 'main');
     writeFileSync(join(repo, 'later.txt'), 'later\n');
