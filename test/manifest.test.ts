@@ -1,7 +1,7 @@
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { buildManifest, findAncestorInstructions, readRepoInstructions, type BuildInput } from '../src/manifest/build.ts';
+import { buildManifest, findAncestorInstructions, readRepoInstructions, type BuildInput, type TaskManifest } from '../src/manifest/build.ts';
 import { loadRole } from '../src/roles/role.ts';
 import { parseTicket } from '../src/tickets/ticket.ts';
 import { tempDir } from './helpers/repo.ts';
@@ -67,15 +67,46 @@ describe('buildManifest', () => {
     expect(r.parts.find((p) => p.name === 'task_inputs')!.tokens).toBeGreaterThan(12000);
   });
 
-  it('counts repo instructions without copying them', () => {
-    const huge = buildManifest({ ...input, repoInstructions: [{ path: 'CLAUDE.md', content: 'x'.repeat(70000) }] });
-    expect(huge).toMatchObject({ ok: false, reason: 'context_over_budget' });
-
+  describe('repo instructions', () => {
     const content = 'INSTRUCTION'.padEnd(700, 'x');
-    const m = built({ ...input, repoInstructions: [{ path: 'CLAUDE.md', content }] });
-    expect(m.parts.find((p) => p.name === 'repo_instructions')).toMatchObject({ tokens: 200, sources: ['CLAUDE.md'] });
-    expect(m.task).not.toContain('INSTRUCTION');
-    expect(m.system).not.toContain('INSTRUCTION');
+    const instructionsPart = (m: TaskManifest) => m.parts.find((p) => p.name === 'repo_instructions')!;
+
+    it('refuses a manifest whose instructions are over budget', () => {
+      const repoInstructions = [{ path: 'CLAUDE.md', content: 'x'.repeat(70000), inRepo: true }];
+      expect(buildManifest({ ...input, repoInstructions })).toMatchObject({ ok: false, reason: 'context_over_budget' });
+    });
+
+    it('delivers the files in the repo through the system prompt', () => {
+      const m = built({ ...input, repoInstructions: [{ path: 'CLAUDE.md', content, inRepo: true }] });
+
+      expect(m.system).toContain(content);
+      expect(m.system).toContain('### CLAUDE.md');
+      expect(m.task).not.toContain('INSTRUCTION');
+    });
+
+    it('counts all that it delivers', () => {
+      const m = built({ ...input, repoInstructions: [{ path: 'CLAUDE.md', content, inRepo: true }] });
+
+      expect(instructionsPart(m).sources).toEqual(['CLAUDE.md']);
+      expect(instructionsPart(m).tokens).toBeGreaterThan(200);
+    });
+
+    it('puts the output contract ahead of them', () => {
+      const m = built({ ...input, repoInstructions: [{ path: 'CLAUDE.md', content, inRepo: true }] });
+
+      expect(m.system.indexOf('## Output contract')).toBeLessThan(m.system.indexOf('INSTRUCTION'));
+    });
+
+    it('counts a file above the repo without copying it', () => {
+      const m = built({ ...input, repoInstructions: [{ path: '/above/CLAUDE.md', content, inRepo: false }] });
+
+      expect(instructionsPart(m)).toMatchObject({ tokens: 200, sources: ['/above/CLAUDE.md'] });
+      expect(m.system).not.toContain('INSTRUCTION');
+    });
+
+    it('adds no section when the repo has none', () => {
+      expect(built(input).system).not.toContain('Repository instructions');
+    });
   });
 
   it('counts the output schema, which the worker also sees', () => {
@@ -167,12 +198,71 @@ describe('repo instruction files', () => {
 
     expect(files).toEqual(
       expect.arrayContaining([
-        { path: 'CLAUDE.md', content: 'one' },
-        { path: join('.claude', 'CLAUDE.md'), content: 'two' },
-        { path: 'AGENTS.md', content: 'three' },
-        { path: join(root, 'AGENTS.md'), content: 'above' },
+        { path: 'CLAUDE.md', content: 'one', inRepo: true },
+        { path: join('.claude', 'CLAUDE.md'), content: 'two', inRepo: true },
+        { path: 'AGENTS.md', content: 'three', inRepo: true },
+        { path: join(root, 'AGENTS.md'), content: 'above', inRepo: false },
       ]),
     );
+  });
+
+  describe('symlinks', () => {
+    let root: string;
+    let worktree: string;
+    const inRepo = async (dir = worktree) => (await readRepoInstructions(dir)).filter((f) => f.inRepo);
+
+    beforeEach(() => {
+      root = tempDir();
+      worktree = join(root, 'wt');
+      mkdirSync(worktree);
+      mkdirSync(join(root, 'outside'));
+      writeFileSync(join(root, 'outside', 'secret'), 'SECRET');
+      writeFileSync(join(root, 'outside', 'CLAUDE.md'), 'SECRET');
+    });
+
+    it('does not read a link to a file outside the worktree', async () => {
+      symlinkSync(join(root, 'outside', 'secret'), join(worktree, 'CLAUDE.md'));
+
+      expect(await inRepo()).toEqual([]);
+    });
+
+    it('does not read through a linked folder outside the worktree', async () => {
+      symlinkSync(join(root, 'outside'), join(worktree, '.claude'));
+
+      expect(await inRepo()).toEqual([]);
+    });
+
+    it('does not read a chain of links that ends outside the worktree', async () => {
+      symlinkSync(join(root, 'outside', 'secret'), join(worktree, 'hop'));
+      symlinkSync('hop', join(worktree, 'CLAUDE.md'));
+
+      expect(await inRepo()).toEqual([]);
+    });
+
+    it('does not read a link to a device', async () => {
+      symlinkSync('/dev/zero', join(worktree, 'CLAUDE.md'));
+
+      expect(await inRepo()).toEqual([]);
+    });
+
+    it('reads a link that stays inside the worktree', async () => {
+      writeFileSync(join(worktree, 'AGENTS.md'), 'shared');
+      symlinkSync('AGENTS.md', join(worktree, 'CLAUDE.md'));
+
+      expect(await inRepo()).toEqual(
+        expect.arrayContaining([
+          { path: 'CLAUDE.md', content: 'shared', inRepo: true },
+          { path: 'AGENTS.md', content: 'shared', inRepo: true },
+        ]),
+      );
+    });
+
+    it('reads a worktree that is itself reached through a link', async () => {
+      writeFileSync(join(worktree, 'CLAUDE.md'), 'mine');
+      symlinkSync(worktree, join(root, 'alias'));
+
+      expect(await inRepo(join(root, 'alias'))).toEqual([{ path: 'CLAUDE.md', content: 'mine', inRepo: true }]);
+    });
   });
 
   it('treats a folder named CLAUDE.md as no instructions', async () => {

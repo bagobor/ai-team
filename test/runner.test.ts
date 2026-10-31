@@ -1,10 +1,11 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { AttemptRow } from '../src/engine/store.ts';
 import type { TaskManifest } from '../src/manifest/build.ts';
 import { manifestDir, transcriptPath, worktreePath } from '../src/paths.ts';
 import { eventTypes, makeEngine, okStep, resultLine, runOnce, runToSettled, ticket, until, type TestEngine } from './helpers/engine.ts';
+import { commitAll, tempDir } from './helpers/repo.ts';
 
 const INIT = JSON.stringify({ type: 'system', subtype: 'init', session_id: 's', model: 'm' });
 const SLOW_STEP = { lines: [INIT], delayMs: 120_000 };
@@ -28,6 +29,7 @@ describe('Runner', () => {
   }
 
   const task = async (e: TestEngine, id: number) => (await e.store.getTask(id))!;
+  const systemPrompt = (e: TestEngine, ticketId: string) => readFileSync(join(manifestDir(e.paths, 'p', ticketId, 1), 'system.md'), 'utf8');
 
   // Wrapped because an async function would otherwise wait for the promise it returns, and so for the whole attempt.
   async function startRunning(e: TestEngine, id: number): Promise<{ running: Promise<void>; attempt: AttemptRow }> {
@@ -37,6 +39,31 @@ describe('Runner', () => {
     const attempt = await until(async () => (await e.store.listAttempts(id)).find((a) => a.state === 'running'));
     return { running, attempt };
   }
+
+  it("hands the repo's CLAUDE.md to the worker in its system prompt", async () => {
+    const e = await engine({ steps: [okStep({ 'src/a.mjs': '' })] });
+    writeFileSync(join(e.repoPath, 'CLAUDE.md'), 'House rule: tabs.');
+    commitAll(e.repoPath, 'instructions');
+    const t = await e.addTicket(ticket());
+
+    await runOnce(e, t.id);
+
+    expect(systemPrompt(e, t.ticket_id)).toContain('House rule: tabs.');
+  });
+
+  it('keeps a file behind a committed link out of the system prompt', async () => {
+    const e = await engine({ steps: [okStep({ 'src/a.mjs': '' })] });
+    const secret = join(tempDir(), 'secret');
+    writeFileSync(secret, 'TOP-SECRET');
+    symlinkSync(secret, join(e.repoPath, 'CLAUDE.md'));
+    commitAll(e.repoPath, 'a link out of the repo');
+    const t = await e.addTicket(ticket());
+
+    await runOnce(e, t.id);
+
+    expect(systemPrompt(e, t.ticket_id)).not.toContain('TOP-SECRET');
+    expect((await task(e, t.id)).state).toBe('review');
+  });
 
   afterEach(async () => {
     await Promise.all(engines.splice(0).map((e) => e.cleanup()));

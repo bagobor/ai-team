@@ -1,5 +1,6 @@
-import { readFile, stat } from 'node:fs/promises';
+import { readFile, realpath, stat } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
+import { isWithin } from '../paths.ts';
 import { CHARTER_TOKEN_LIMIT, type Budgets, type Role, type RoleTool } from '../roles/role.ts';
 import type { Ticket } from '../tickets/ticket.ts';
 import { charsForTokens, estimateTokens } from './tokens.ts';
@@ -30,7 +31,7 @@ export type TaskManifest = {
   flags?: readonly string[];
 };
 
-export type RepoInstruction = { path: string; content: string };
+export type RepoInstruction = { path: string; content: string; inRepo: boolean };
 
 export type BuildInput = {
   project: string;
@@ -52,8 +53,8 @@ const REPORT_HEADING = '\n\n## Previous attempt\n\n### Change Report\n';
 const EVIDENCE_HEADING = '\n\n### Evidence\n';
 const PREVIOUS_ATTEMPT_SOURCE = 'previous attempt';
 
-// Claude Code loads these by itself, so they use up the budget without being copied into the prompt.
-// The pinned rule names .claude/CLAUDE.md only for the worktree, but it loads from ancestors as well.
+// A worker doesn't load these by itself, since its settings sources exclude the project's, so the ones in the repo
+// are copied into its prompt. The ones above the repo are the stakeholder's own and are only counted, in case they load.
 const INSTRUCTION_FILES = ['CLAUDE.md', join('.claude', 'CLAUDE.md'), 'AGENTS.md'];
 
 function outputContract(i: BuildInput): string {
@@ -71,6 +72,17 @@ function outputContract(i: BuildInput): string {
     ...ticket.definition_of_done.map((command) => `- \`${command}\``),
   ];
   return lines.join('\n');
+}
+
+function instructionsSection(files: RepoInstruction[]): string {
+  const inRepo = files.filter((file) => file.inRepo);
+  if (inRepo.length === 0) return '';
+  return [
+    '## Repository instructions',
+    '',
+    "The repository's notes on how to work in it. The output contract above comes first where they disagree.",
+    ...inRepo.flatMap((file) => ['', `### ${file.path}`, '', file.content.trimEnd()]),
+  ].join('\n');
 }
 
 const trimMarker = (chars: number) => `[… ${chars} chars trimmed]\n`;
@@ -105,7 +117,10 @@ export function buildManifest(i: BuildInput): BuildResult {
   const charterTokens = estimateTokens(i.charter);
   // The schema reaches the model too, through the adapter, so it counts even though it isn't in the system prompt.
   const contractTokens = estimateTokens(`${contract}\n\n${JSON.stringify(i.schema)}`);
-  const instructionTokens = i.repoInstructions.reduce((sum, file) => sum + estimateTokens(file.content), 0);
+  const instructions = instructionsSection(i.repoInstructions);
+  const instructionTokens = i.repoInstructions
+    .filter((file) => !file.inRepo)
+    .reduce((sum, file) => sum + estimateTokens(file.content), estimateTokens(instructions));
   const taskBudget = contextBudget - charterTokens - contractTokens - instructionTokens;
 
   const task = retry ? taskWithPreviousAttempt(i.ticketMarkdown, retry, charsForTokens(taskBudget)) : i.ticketMarkdown;
@@ -139,7 +154,7 @@ export function buildManifest(i: BuildInput): BuildResult {
       model: role.defaults.model,
       budgets,
       tools: role.tools,
-      system: `${i.charter.trimEnd()}\n\n${contract}\n`,
+      system: `${i.charter.trimEnd()}\n\n${contract}\n${instructions && `\n${instructions}\n`}`,
       task,
       outputSchema: i.schema,
       writeScope: role.write_scope,
@@ -150,10 +165,17 @@ export function buildManifest(i: BuildInput): BuildResult {
   };
 }
 
-// A worktree can hold anything the integration branch does, so only a regular file is read: a symlink to /dev/zero would never end.
+// Only a regular file is read: a link to /dev/zero would never end.
 async function readIfFile(path: string): Promise<string | undefined> {
   const found = await stat(path).catch(() => undefined);
   return found?.isFile() ? readFile(path, 'utf8') : undefined;
+}
+
+// This text goes into a prompt and a worktree holds anything the integration branch does, so a link may name a secret
+// elsewhere on the machine. One that stays inside is fine, and common: CLAUDE.md -> AGENTS.md.
+async function readInside(root: string, path: string): Promise<string | undefined> {
+  const real = await realpath(path).catch(() => undefined);
+  return real !== undefined && isWithin(root, real) ? readIfFile(real) : undefined;
 }
 
 async function isFile(path: string): Promise<boolean> {
@@ -173,12 +195,15 @@ export async function findAncestorInstructions(dir: string): Promise<string[]> {
 }
 
 export async function readRepoInstructions(worktree: string): Promise<RepoInstruction[]> {
+  const root = await realpath(worktree);
   const files: RepoInstruction[] = [];
-  const add = async (path: string, shownAs: string) => {
+  for (const name of INSTRUCTION_FILES) {
+    const content = await readInside(root, join(worktree, name));
+    if (content !== undefined) files.push({ path: name, content, inRepo: true });
+  }
+  for (const path of await findAncestorInstructions(worktree)) {
     const content = await readIfFile(path);
-    if (content !== undefined) files.push({ path: shownAs, content });
-  };
-  for (const name of INSTRUCTION_FILES) await add(join(worktree, name), name);
-  for (const path of await findAncestorInstructions(worktree)) await add(path, path);
+    if (content !== undefined) files.push({ path, content, inRepo: false });
+  }
   return files;
 }
