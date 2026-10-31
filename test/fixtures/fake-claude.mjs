@@ -6,6 +6,11 @@ import { dirname, join } from 'node:path';
 
 const args = process.argv.slice(2);
 
+if (args[0] === '--version') {
+  process.stdout.write('2.1.109 (Claude Code)\n');
+  process.exit(0);
+}
+
 if (args[0] === 'auth' && args[1] === 'status') {
   const wrongHome = process.env.FAKE_AUTH_HOME && process.env.FAKE_AUTH_HOME !== process.env.CLAUDE_CONFIG_DIR;
   const auth = wrongHome

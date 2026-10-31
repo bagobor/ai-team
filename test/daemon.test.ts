@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
-import { rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { request } from 'node:http';
 import { connect, createServer } from 'node:net';
 import { networkInterfaces } from 'node:os';
 import { join } from 'node:path';
@@ -51,6 +52,18 @@ async function statusOf(port: number): Promise<number | null> {
     (response) => response.status,
     () => null,
   );
+}
+
+// Sets Host by hand, so the request reaches the socket with exactly the header given.
+function requestWithHost(port: number, host: string, path = '/api/tasks'): Promise<number | undefined> {
+  return new Promise((resolve, reject) => {
+    const out = request({ host: '127.0.0.1', port, path, headers: { host } }, (res) => {
+      res.resume();
+      resolve(res.statusCode);
+    });
+    out.on('error', reject);
+    out.end();
+  });
 }
 
 describe('the daemon', () => {
@@ -242,6 +255,104 @@ describe('the daemon', () => {
 
       expect(await statusOf(daemon.port)).toBeNull();
       client.destroy();
+    });
+
+    it('binds to 127.0.0.1 only', async () => {
+      const daemon = await startDaemon({ paths, config: config() });
+
+      expect(daemon.address.address).toBe('127.0.0.1');
+
+      await daemon.stop();
+    });
+
+    it('serves the API through the guard', async () => {
+      const daemon = await startDaemon({ paths, config: { ...config(), port: 0 } });
+
+      const tasks = await fetch(`http://127.0.0.1:${daemon.port}/api/tasks`);
+      const forged = await requestWithHost(daemon.port, 'evil.example');
+
+      expect(tasks.status).toBe(200);
+      expect(forged).toBe(403);
+      await daemon.stop();
+    });
+
+    it('stops with an event stream open', async () => {
+      const t = await addTask();
+      const daemon = await startDaemon({ paths, config: config() });
+      const stream = await fetch(`http://127.0.0.1:${daemon.port}/api/tasks/${t.id}/events`);
+      await stream.body!.getReader().read();
+
+      await daemon.stop();
+
+      expect(await statusOf(daemon.port)).toBeNull();
+    });
+
+    describe('the web build', () => {
+      let webDist: string;
+
+      beforeEach(() => {
+        webDist = join(root, 'dist');
+        mkdirSync(join(webDist, 'assets'), { recursive: true });
+        writeFileSync(join(webDist, 'index.html'), '<title>the app</title>');
+        writeFileSync(join(webDist, 'assets', 'app.js'), 'the script');
+        writeFileSync(join(root, 'secret.txt'), 'the secret');
+      });
+
+      const get = async (port: number, path: string) => {
+        const res = await fetch(`http://127.0.0.1:${port}${path}`);
+        return { status: res.status, text: await res.text() };
+      };
+
+      it('serves the app, its files, and the app again for its own routes', async () => {
+        const daemon = await startDaemon({ paths, config: config(), webDist });
+
+        expect((await get(daemon.port, '/')).text).toContain('the app');
+        expect((await get(daemon.port, '/assets/app.js')).text).toBe('the script');
+        expect((await get(daemon.port, '/tasks/3')).text).toContain('the app');
+        await daemon.stop();
+      });
+
+      it('keeps unknown API routes as 404', async () => {
+        const daemon = await startDaemon({ paths, config: config(), webDist });
+
+        const res = await get(daemon.port, '/api/nothing');
+
+        expect(res.status).toBe(404);
+        expect(res.text).not.toContain('the app');
+        await daemon.stop();
+      });
+
+      it('guards the app too', async () => {
+        const daemon = await startDaemon({ paths, config: config(), webDist });
+
+        expect(await requestWithHost(daemon.port, 'evil.example', '/')).toBe(403);
+        await daemon.stop();
+      });
+
+      it.each([['/../secret.txt'], ['/..%2fsecret.txt'], ['/assets/..%2f..%2fsecret.txt']])('serves nothing outside the build for %s', async (path) => {
+        const daemon = await startDaemon({ paths, config: config(), webDist });
+
+        const body = await new Promise<string>((resolve, reject) => {
+          const out = request({ host: '127.0.0.1', port: daemon.port, path, headers: { host: `127.0.0.1:${daemon.port}` } }, (res) => {
+            let text = '';
+            res.on('data', (chunk: Buffer) => (text += chunk.toString()));
+            res.on('end', () => resolve(text));
+          });
+          out.on('error', reject);
+          out.end();
+        });
+
+        expect(body).not.toContain('the secret');
+        await daemon.stop();
+      });
+
+      it('runs without a build', async () => {
+        const daemon = await startDaemon({ paths, config: config(), webDist: join(root, 'not-built') });
+
+        expect((await get(daemon.port, '/')).status).toBe(404);
+        expect((await get(daemon.port, '/api/health')).status).toBe(200);
+        await daemon.stop();
+      });
     });
 
     const external = Object.values(networkInterfaces())

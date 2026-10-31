@@ -10,14 +10,22 @@ export type IntakeDeps = { store: Store; paths: Paths };
 
 const sameId = (a: string, b: string) => a.toLowerCase() === b.toLowerCase(); // These ids name files, and macOS ignores case.
 
+// The caller's input can't make a project: a bad name, or a path that can't be a repo.
+export class ProjectError extends Error {}
+
+// A name that is already taken, for a project or a ticket.
+export class DuplicateError extends TicketError {}
+
 export async function addProject(deps: IntakeDeps, input: { name: string; repoPath: string; create: boolean }): Promise<ProjectRow> {
   const { name, repoPath, create } = input;
-  if (!SAFE_ID.test(name)) throw new Error(`"${name}" is not a valid project name`);
+  if (!SAFE_ID.test(name)) throw new ProjectError(`"${name}" is not a valid project name`);
 
   const existing = (await deps.store.listProjects()).find((project) => sameId(project.name, name));
-  if (existing) throw new Error(`A project named ${existing.name} already exists`);
+  if (existing) throw new DuplicateError(`A project named ${existing.name} already exists`);
 
-  const { baseBranch } = await prepareRepo(repoPath, { create });
+  const { baseBranch } = await prepareRepo(repoPath, { create }).catch((cause: unknown) => {
+    throw new ProjectError(cause instanceof Error ? cause.message : String(cause), { cause });
+  });
   await initStateRepo(stateRepoDir(deps.paths, name));
   return deps.store.createProject({ name, repo_path: resolve(repoPath), base_branch: baseBranch });
 }
@@ -30,7 +38,7 @@ export async function addTicket(deps: IntakeDeps, projectName: string, markdown:
   const tasks = await deps.store.listTasks(project.id);
 
   const duplicate = tasks.find((task) => sameId(task.ticket_id, ticket.id));
-  if (duplicate) throw new TicketError(`Ticket ${duplicate.ticket_id} already exists in ${project.name}`);
+  if (duplicate) throw new DuplicateError(`Ticket ${duplicate.ticket_id} already exists in ${project.name}`);
 
   // Requiring tickets that are already imported rules out cycles.
   for (const dependency of ticket.depends_on) {

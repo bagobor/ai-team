@@ -1,8 +1,11 @@
 import { execFile, type ChildProcess } from 'node:child_process';
 import { closeSync, createWriteStream, existsSync, mkdirSync, openSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { createInterface } from 'node:readline';
+import type { Config } from '../config.ts';
 import type { TaskManifest } from '../manifest/build.ts';
+import { workerDenyRead, type Paths } from '../paths.ts';
 import { killGroup, killGroupNow, spawnGroup } from '../proc.ts';
 import { buildClaudeInvocation, claudeEnv } from './claude-args.ts';
 import { ClaudeStreamParser } from './claude-stream.ts';
@@ -213,4 +216,16 @@ function parseLoggedIn(stdout: string): boolean {
   } catch {
     return false;
   }
+}
+
+export function claudeAdapterFor(paths: Paths, config: Config): ClaudeCodeAdapter {
+  return new ClaudeCodeAdapter({
+    binary: config.claude.binary,
+    agentHome: paths.claudeHome,
+    mode: config.claude.mode,
+    denyRead: workerDenyRead(paths, homedir()),
+    graceS: config.cancelGraceS,
+    timeoutS: config.attemptTimeoutS,
+    ...(config.claude.extraEnv ? { extraEnv: config.claude.extraEnv } : {}),
+  });
 }

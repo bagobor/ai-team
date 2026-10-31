@@ -1,8 +1,8 @@
 import type { Server } from 'node:http';
-import { homedir } from 'node:os';
+import type { AddressInfo } from 'node:net';
+import { fileURLToPath } from 'node:url';
 import { serve } from '@hono/node-server';
-import { Hono } from 'hono';
-import { ClaudeCodeAdapter } from './adapters/claude-code.ts';
+import { claudeAdapterFor } from './adapters/claude-code.ts';
 import type { Config } from './config.ts';
 import { openDb } from './db/open.ts';
 import { recover } from './engine/recovery.ts';
@@ -11,10 +11,14 @@ import { Runner, type EngineDeps } from './engine/runner.ts';
 import { Scheduler } from './engine/scheduler.ts';
 import { Store } from './engine/store.ts';
 import { EventLog } from './events.ts';
-import { workerDenyRead, type Paths } from './paths.ts';
+import type { Paths } from './paths.ts';
+import { createApp, serveWeb } from './server/app.ts';
 
 const PRUNE_INTERVAL_MS = 3_600_000;
 const HOST = '127.0.0.1';
+const WEB_DIST = fileURLToPath(new URL('../web/dist', import.meta.url));
+
+type Handler = (request: Request, env: object) => Response | Promise<Response>;
 
 export class DaemonAlreadyRunning extends Error {
   constructor(port: number) {
@@ -23,9 +27,9 @@ export class DaemonAlreadyRunning extends Error {
   }
 }
 
-function listen(app: Hono, port: number): Promise<{ server: Server; port: number }> {
+function listen(handler: Handler, port: number): Promise<{ server: Server; port: number }> {
   return new Promise((resolve, reject) => {
-    const server = serve({ fetch: app.fetch, port, hostname: HOST }, (info) => resolve({ server: server as Server, port: info.port }));
+    const server = serve({ fetch: handler, port, hostname: HOST }, (info) => resolve({ server: server as Server, port: info.port }));
     server.once('error', (err: NodeJS.ErrnoException) => reject(err.code === 'EADDRINUSE' ? new DaemonAlreadyRunning(port) : err));
   });
 }
@@ -40,33 +44,22 @@ function close(server: Server): Promise<void> {
 
 function engineDeps(db: EngineDeps['db'], paths: Paths, config: Config): EngineDeps {
   const log = new EventLog(db);
-  const adapter = new ClaudeCodeAdapter({
-    binary: config.claude.binary,
-    agentHome: paths.claudeHome,
-    mode: config.claude.mode,
-    denyRead: workerDenyRead(paths, homedir()),
-    graceS: config.cancelGraceS,
-    timeoutS: config.attemptTimeoutS,
-    ...(config.claude.extraEnv ? { extraEnv: config.claude.extraEnv } : {}),
-  });
+  const adapter = claudeAdapterFor(paths, config);
   return { db, log, store: new Store(db, log), paths, config, adapters: { [adapter.id]: adapter } };
 }
 
-export async function startDaemon(opts: { paths: Paths; config: Config }): Promise<{ port: number; stop(): Promise<void> }> {
-  const { paths, config } = opts;
-  let started = false;
-
-  const app = new Hono();
-  app.use('*', async (c, next) => (started ? next() : c.text('Starting up', 503)));
-  app.get('/api/health', (c) => c.json({ ok: true }));
+export async function startDaemon(opts: { paths: Paths; config: Config; webDist?: string }): Promise<{ port: number; address: AddressInfo; stop(): Promise<void> }> {
+  const { paths, config, webDist = WEB_DIST } = opts;
+  let handler: Handler = () => new Response('Starting up', { status: 503 });
 
   // The port comes first because it is what tells a second daemon to leave: past this point a daemon
   // writes to the database, and marking a live daemon's attempts interrupted can't be undone.
-  const { server, port } = await listen(app, config.port);
+  const { server, port } = await listen((request, env) => handler(request, env), config.port);
 
   try {
     const db = await openDb(paths.db);
-    const deps = engineDeps(db, paths, config);
+    // The port asked for can be 0, and the API's guard has to know the real one.
+    const deps = engineDeps(db, paths, { ...config, port });
     const runner = new Runner(deps);
     const scheduler = new Scheduler(deps, runner);
 
@@ -75,10 +68,14 @@ export async function startDaemon(opts: { paths: Paths; config: Config }): Promi
     await pruneQuietly();
     scheduler.start();
     const pruning = setInterval(() => void pruneQuietly(), PRUNE_INTERVAL_MS);
-    started = true;
+
+    const app = createApp({ ...deps, runner });
+    serveWeb(app, webDist);
+    handler = app.fetch;
 
     return {
       port,
+      address: server.address() as AddressInfo,
       stop: async () => {
         clearInterval(pruning);
         await scheduler.stop();

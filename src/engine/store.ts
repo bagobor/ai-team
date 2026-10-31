@@ -1,4 +1,4 @@
-import type { Kysely, Selectable, Updateable } from 'kysely';
+import { sql, type Kysely, type Selectable, type Updateable } from 'kysely';
 import type { AttemptsTable, DB, ProjectsTable, TasksTable, VendorPausesTable } from '../db/schema.ts';
 import type { EventLog } from '../events.ts';
 import {
@@ -239,6 +239,20 @@ export class Store {
       .executeTakeFirst();
     if (!row) throw new Error(`No attempt ${id}`);
     return toAttemptRow(row);
+  }
+
+  async getAttempt(id: number): Promise<AttemptRow | undefined> {
+    const row = await this.db.selectFrom('attempts').selectAll().where('id', '=', id).executeTakeFirst();
+    return row && toAttemptRow(row);
+  }
+
+  async attemptTotals(): Promise<Map<number, { attempts: number; usdEst: number | null }>> {
+    const rows = await this.db
+      .selectFrom('attempts')
+      .select((eb) => ['task_id', eb.fn.countAll<number>().as('attempts'), sql<number | null>`sum(json_extract(usage, '$.usdEst'))`.as('usdEst')])
+      .groupBy('task_id')
+      .execute();
+    return new Map(rows.map(({ task_id, attempts, usdEst }) => [task_id, { attempts, usdEst }]));
   }
 
   async listAttempts(taskId: number): Promise<AttemptRow[]> {
