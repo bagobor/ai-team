@@ -1,7 +1,9 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
+import type { ArtifactDoc } from '../../src/artifacts/format.ts';
+import type { LineageGraph } from '../../src/artifacts/lineage.ts';
 import type { InboxAnswer } from '../../src/engine/inbox.ts';
-import type { AttemptRow, MilestoneRow, ProjectRow, TaskRow } from '../../src/engine/store.ts';
+import type { ArtifactVersionRow, AttemptRow, CriterionRow, MilestoneRow, ProjectRow, TaskRow } from '../../src/engine/store.ts';
 import type { EventRow } from '../../src/events.ts';
 import type { TaskManifest } from '../../src/manifest/build.ts';
 import type { InboxItem } from './lib/inbox.ts';
@@ -14,6 +16,9 @@ export type StoredManifest = TaskManifest & { flags?: string[] };
 export type ProjectSummary = ProjectRow & { milestone: MilestoneRow | null; pending: number };
 export type ProjectDetails = ProjectRow & { milestones: MilestoneRow[]; totals: { attempts: number; usdEst: number | null; seconds: number } };
 export type InboxList = { items: InboxItem[]; count: number };
+export type ArtifactSummary = ArtifactVersionRow;
+export type ArtifactDetails = ArtifactDoc & { versions: ArtifactSummary[] };
+export type CriterionSummary = CriterionRow & { tickets: string[]; commands: string[] };
 
 const REOPEN_MS = 2000;
 const FLUSH_MS = 50;
@@ -66,6 +71,14 @@ export const addBrief = (name: string, markdown: string) => post<unknown>(`${pro
 export const haltProject = (name: string, reason: string) => post<unknown>(`${projectApi(name)}/halt`, { reason });
 export const listInbox = (project?: string) => request<InboxList>(project === undefined ? '/api/inbox' : `/api/inbox?project=${encodeURIComponent(project)}`);
 export const answerInbox = (id: number, answer: InboxAnswer) => post<unknown>(`/api/inbox/${id}/answer`, answer);
+
+const artifactApi = (name: string, id: string) => `${projectApi(name)}/artifacts/${encodeURIComponent(id)}`;
+
+export const listArtifacts = (name: string) => request<ArtifactSummary[]>(`${projectApi(name)}/artifacts`);
+export const getArtifact = (name: string, id: string, version: number | null) => request<ArtifactDetails>(`${artifactApi(name, id)}${version === null ? '' : `?version=${version}`}`);
+export const getArtifactDiff = (name: string, id: string, from: number, to: number) => request<{ diff: string }>(`${artifactApi(name, id)}/diff?from=${from}&to=${to}`);
+export const getLineage = (name: string) => request<LineageGraph>(`${projectApi(name)}/lineage`);
+export const listCriteria = (name: string, milestone: number) => request<CriterionSummary[]>(`${projectApi(name)}/acs?milestone=${milestone}`);
 
 // The badge and the Inbox page share one poll, so they can't disagree. It covers every project: the page narrows it down itself.
 export const useInbox = () => useQuery({ queryKey: ['inbox'], queryFn: () => listInbox(), refetchInterval: INBOX_POLL_MS });

@@ -34,3 +34,19 @@ export function inboxLabel({ id, ref }: { id: number; ref: InboxRef }): string {
 export const projectPath = (project: string, page: 'inbox' | 'board' | 'documents') => `/projects/${encodeURIComponent(project)}/${page}`;
 
 export const documentLink = (project: string, pin: string) => `${projectPath(project, 'documents')}#${encodeURIComponent(pin)}`;
+
+export type DocumentPin = { id: string; version: number | null };
+
+// A pin is SPEC-M1, SPEC-M1@2 or SPEC-M1@2#scope. This page shows whole documents, so the section isn't kept.
+export function pinParts(pin: string): DocumentPin | null {
+  const match = /^([A-Za-z0-9][\w.-]*)(?:@(\d+))?(?:#.*)?$/.exec(pin);
+  return match?.[1] ? { id: match[1], version: match[2] === undefined ? null : Number(match[2]) } : null;
+}
+
+export function documentPin(hash: string): DocumentPin | null {
+  try {
+    return pinParts(decodeURIComponent(hash.replace(/^#/, '')));
+  } catch {
+    return null;
+  }
+}

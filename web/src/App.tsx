@@ -2,6 +2,7 @@ import { useEffect, useRef, type ReactNode } from 'react';
 import { useInbox } from './api.ts';
 import { newPendingIds, projectPath } from './lib/inbox.ts';
 import { Board } from './pages/Board.tsx';
+import { Documents } from './pages/Documents.tsx';
 import { Inbox } from './pages/Inbox.tsx';
 import { Projects } from './pages/Projects.tsx';
 import { TaskDetail } from './pages/TaskDetail.tsx';
@@ -28,6 +29,7 @@ function Page({ path }: { path: string }) {
   const name = decoded(project?.[1]);
   if (name !== undefined && project?.[2] === 'inbox') return <Inbox key={name} project={name} />;
   if (name !== undefined && project?.[2] === 'board') return <Board key={name} project={name} />;
+  if (name !== undefined && project?.[2] === 'documents') return <Documents key={name} project={name} />;
 
   const id = /^\/tasks\/(\d+)\/?$/.exec(path)?.[1];
   // The key starts a new task's live log from nothing.
@@ -112,6 +114,9 @@ export function App() {
               </NavLink>
               <NavLink to={projectPath(project, 'board')} active={path === projectPath(project, 'board')}>
                 Board
+              </NavLink>
+              <NavLink to={projectPath(project, 'documents')} active={path === projectPath(project, 'documents')}>
+                Documents
               </NavLink>
             </>
           )}
