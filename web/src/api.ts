@@ -7,7 +7,7 @@ import type { TaskManifest } from '../../src/manifest/build.ts';
 import type { InboxItem } from './lib/inbox.ts';
 import { applyEvent, EMPTY_LOG, EVENT_TYPES, type LogState } from './logState.ts';
 
-export type TaskSummary = TaskRow & { attempts: number; usdEst: number | null };
+export type TaskSummary = TaskRow & { specialty: string; attempts: number; usdEst: number | null };
 export type Attempt = Omit<AttemptRow, 'manifest'>;
 export type TaskDetails = { task: TaskRow; attempts: Attempt[] };
 export type StoredManifest = TaskManifest & { flags?: string[] };
@@ -47,6 +47,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const listTasks = () => request<TaskSummary[]>('/api/tasks');
 export const getTask = (id: number) => request<TaskDetails>(`/api/tasks/${id}`);
+export const listProjectTasks = (project: string) => request<TaskSummary[]>(`/api/tasks?project=${encodeURIComponent(project)}`);
+export const getAttemptDiff = (id: number) => request<{ diff: string | null }>(`/api/attempts/${id}/diff`);
 export const getManifest = (attemptId: number) => request<StoredManifest>(`/api/attempts/${attemptId}/manifest`);
 
 const post = <T,>(path: string, body: unknown = {}) => request<T>(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });

@@ -3,6 +3,7 @@ import { useState } from 'react';
 import { TASK_TRANSITIONS, type AttemptState } from '../../../src/engine/fsm.ts';
 import type { TaskRow } from '../../../src/engine/store.ts';
 import { cancelTask, getTask, retryTask, useTaskLog, type Attempt, type TaskDetails } from '../api.ts';
+import { DiffTab } from '../components/DiffTab.tsx';
 import { EvidenceTab } from '../components/EvidenceTab.tsx';
 import { LiveLog } from '../components/LiveLog.tsx';
 import { ManifestTab } from '../components/ManifestTab.tsx';
@@ -15,6 +16,7 @@ const POLL_MS = 5000;
 const TABS = [
   { id: 'log', label: 'Live log' },
   { id: 'manifest', label: 'Manifest' },
+  { id: 'diff', label: 'Diff' },
   { id: 'evidence', label: 'Evidence' },
 ] as const;
 type TabId = (typeof TABS)[number]['id'];
@@ -113,7 +115,7 @@ function TaskView({ details: { task, attempts } }: { details: TaskDetails }) {
         </div>
         <div className="ph-actions">
           {action.error && <span className="err">{action.error.message}</span>}
-          {TASK_TRANSITIONS[task.state].includes('cancelled') && (
+          {task.kind === 'ticket' && TASK_TRANSITIONS[task.state].includes('cancelled') && (
             <button type="button" className="btn danger" onClick={() => action.mutate(cancelTask)} disabled={action.isPending}>
               {action.isPending ? 'Working…' : 'Cancel'}
             </button>
@@ -125,7 +127,7 @@ function TaskView({ details: { task, attempts } }: { details: TaskDetails }) {
         {task.state === 'escalated' && <Escalation task={task} onRetry={() => action.mutate(retryTask)} busy={action.isPending} />}
         {task.state === 'review' && (
           <div className="banner">
-            <p>Waiting for review. The Code Reviewer arrives in M2.</p>
+            <p>Waiting for the Code Reviewer.</p>
           </div>
         )}
 
@@ -149,6 +151,7 @@ function TaskView({ details: { task, attempts } }: { details: TaskDetails }) {
           </div>
           {tab === 'log' && <LiveLog rows={log.rows} connected={connected} />}
           {tab === 'manifest' && <ManifestTab attempts={attempts} />}
+          {tab === 'diff' && <DiffTab attempts={attempts} />}
           {tab === 'evidence' && <EvidenceTab evidence={log.evidence} attempts={attempts} />}
         </div>
       </div>
