@@ -7,8 +7,11 @@ import { ClaudeCodeAdapter } from '../../src/adapters/claude-code.ts';
 import { ArtifactStore } from '../../src/artifacts/store.ts';
 import { DEFAULT_CONFIG, type Config } from '../../src/config.ts';
 import { openDb } from '../../src/db/open.ts';
+import { Conductor } from '../../src/engine/conductor/index.ts';
 import { addProject, addTicket } from '../../src/engine/intake.ts';
+import { recover } from '../../src/engine/recovery.ts';
 import { Runner, type EngineDeps } from '../../src/engine/runner.ts';
+import { Scheduler } from '../../src/engine/scheduler.ts';
 import { Store, type TaskRow } from '../../src/engine/store.ts';
 import { EventLog } from '../../src/events.ts';
 import { resolvePaths, workerDenyRead } from '../../src/paths.ts';
@@ -22,6 +25,7 @@ export type TestEngine = EngineDeps & {
   runner: Runner;
   repoPath: string;
   spawnCount(): number;
+  spawns(): { argv: string[]; cwd: string; pid: number }[];
   addTicket(markdown: string): Promise<TaskRow>;
   cleanup(): Promise<void>;
 };
@@ -29,7 +33,7 @@ export type TestEngine = EngineDeps & {
 const SETTLED = ['review', 'done', 'escalated', 'cancelled'];
 
 export async function makeEngine(opts: {
-  steps: unknown[];
+  steps: unknown[] | { byTask: Record<string, unknown> };
   config?: Partial<Config>;
   env?: Record<string, string>;
   now?: () => Date;
@@ -62,12 +66,14 @@ export async function makeEngine(opts: {
 
   const deps: EngineDeps = { db, store, log, paths, config, adapters: { [adapter.id]: adapter }, artifacts: new ArtifactStore(store, paths), ...(opts.now ? { now: opts.now } : {}) };
   const runner = new Runner(deps);
+  const spawnLines = () => (existsSync(spawnLog) ? readFileSync(spawnLog, 'utf8').trim().split('\n').filter(Boolean) : []);
 
   return {
     ...deps,
     runner,
     repoPath: repo.path,
-    spawnCount: () => (existsSync(spawnLog) ? readFileSync(spawnLog, 'utf8').trim().split('\n').filter(Boolean).length : 0),
+    spawnCount: () => spawnLines().length,
+    spawns: () => spawnLines().map((line) => JSON.parse(line) as { argv: string[]; cwd: string; pid: number }),
     addTicket: (markdown) => addTicket({ store, paths }, 'p', markdown),
     cleanup: async () => {
       await runner.shutdown();
@@ -76,6 +82,67 @@ export async function makeEngine(opts: {
       rmSync(repo.path, { recursive: true, force: true });
     },
   };
+}
+
+export type ProjectEngine = TestEngine & {
+  drive(condition: () => Promise<boolean>): Promise<void>;
+  // What a daemon does when it stops, then what the next one does when it starts. Use what this returns from then on.
+  restart(): Promise<ProjectEngine>;
+};
+
+const DRIVE_MS = 30_000;
+
+async function whereThingsAre(e: TestEngine): Promise<string> {
+  const tasks = (await e.store.listTasks()).map((task) => `${task.ticket_id}: ${task.state}${task.escalation_reason ? ` (${task.escalation_reason})` : ''}`);
+  const asks = (await e.store.listInbox({ state: 'pending' })).map((item) => `${item.title}: ${item.why}`);
+  return [...tasks, ...asks].join('\n');
+}
+
+function driven(e: TestEngine): ProjectEngine {
+  const scheduler = new Scheduler(e, e.runner, new Conductor(e, e.runner));
+  return {
+    ...e,
+    drive: async (condition) => {
+      const deadline = Date.now() + DRIVE_MS;
+      while (!(await condition())) {
+        if (Date.now() > deadline) throw new Error(`The condition was not met in time. Where things are:\n${await whereThingsAre(e)}`);
+        await scheduler.tick();
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+    },
+    restart: async () => {
+      await scheduler.stop();
+      await e.runner.shutdown();
+      await e.db.destroy();
+
+      const db = await openDb(e.paths.db);
+      const log = new EventLog(db);
+      const store = new Store(db, log);
+      const deps: EngineDeps = { db, store, log, paths: e.paths, config: e.config, adapters: e.adapters, artifacts: new ArtifactStore(store, e.paths) };
+      const runner = new Runner(deps);
+      await recover(deps);
+      return driven({
+        ...e,
+        ...deps,
+        runner,
+        addTicket: (markdown) => addTicket({ store, paths: e.paths }, 'p', markdown),
+        cleanup: async () => {
+          await runner.shutdown();
+          await db.destroy();
+          await e.cleanup();
+        },
+      });
+    },
+    cleanup: async () => {
+      await scheduler.stop();
+      await e.cleanup();
+    },
+  };
+}
+
+// The whole engine with nothing to answer its Inbox: a test answers it through the API, and only drive moves things along.
+export async function makeProjectEngine(opts: { byTask: Record<string, unknown>; config?: Partial<Config> }): Promise<ProjectEngine> {
+  return driven(await makeEngine({ steps: { byTask: opts.byTask }, ...(opts.config ? { config: opts.config } : {}) }));
 }
 
 // One attempt: the scheduler's job in production. A task comes back ready to go again, or settled.
@@ -128,6 +195,10 @@ export function okStep(files: Record<string, string>, report: Record<string, unk
     lines: [INIT_LINE, resultLine({ structured_output: { ...SCHEMA_VALID_REPORT, ...report } })],
     ...extra,
   };
+}
+
+export function resultStep(output: unknown): Record<string, unknown> {
+  return { lines: [INIT_LINE, resultLine({ structured_output: output })] };
 }
 
 export function ticket(overrides: Record<string, unknown> & { body?: string } = {}): string {

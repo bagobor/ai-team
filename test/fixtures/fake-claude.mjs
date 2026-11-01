@@ -2,7 +2,7 @@
 // Stands in for the claude binary. Each spawn acts out one step of the script at FAKE_SCRIPT.
 import { spawn } from 'node:child_process';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 
 const args = process.argv.slice(2);
 
@@ -26,8 +26,17 @@ const spawnLog = process.env.FAKE_SPAWN_LOG;
 const spawnCount = spawnLog && existsSync(spawnLog) ? readFileSync(spawnLog, 'utf8').trim().split('\n').filter(Boolean).length : 0;
 if (spawnLog) appendFileSync(spawnLog, `${JSON.stringify({ argv: args, cwd: process.cwd(), pid: process.pid })}\n`);
 
-const steps = process.env.FAKE_SCRIPT ? JSON.parse(readFileSync(process.env.FAKE_SCRIPT, 'utf8')) : [{}];
-const step = steps[Math.min(spawnCount, steps.length - 1)];
+// A worker's folder is named <ticket_id>-a<k>, so a script can act out a team, whatever order its tasks run in.
+function stepOfAttempt(byTask) {
+  const attempt = basename(process.cwd());
+  const step = byTask[attempt] ?? byTask[attempt.replace(/-a\d+$/, '')];
+  if (step) return step;
+  process.stderr.write(`The script has no step for ${attempt}\n`);
+  process.exit(70);
+}
+
+const script = process.env.FAKE_SCRIPT ? JSON.parse(readFileSync(process.env.FAKE_SCRIPT, 'utf8')) : [{}];
+const step = script.byTask ? stepOfAttempt(script.byTask) : script[Math.min(spawnCount, script.length - 1)];
 
 const INTERRUPTED = JSON.stringify({
   type: 'result',
@@ -47,6 +56,8 @@ process.on('SIGINT', () => {
 
 if (step.dumpEnvTo) writeFileSync(step.dumpEnvTo, JSON.stringify(process.env));
 if (step.dumpStdinTo) writeFileSync(step.dumpStdinTo, readFileSync(0));
+
+while (step.waitForFile && !existsSync(step.waitForFile)) await new Promise((resolve) => setTimeout(resolve, 20));
 
 for (const [path, content] of Object.entries(step.writeFiles ?? {})) {
   mkdirSync(dirname(path), { recursive: true });
