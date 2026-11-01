@@ -447,8 +447,4 @@ describe('appliers', () => {
       expect(evidenceOf(await apply(e, 'milestone_review', { ...REVIEW, body: ' \n' }))).toMatch(/body/);
     });
   });
-
-  it('leaves the purposes of later tasks to their own appliers', async () => {
-    await expect(applyOutput(await ctxFor(e, 'qa_verify', {}))).rejects.toThrow(/No applier/);
-  });
 });

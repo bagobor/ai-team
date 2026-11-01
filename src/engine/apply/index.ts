@@ -6,6 +6,8 @@ import type { Purpose, WorkOrder } from '../workorder.ts';
 import { applyReviseDesign, applyReviseTestPlan, applyTechDesign, applyTestPlan } from './design.ts';
 import { applyDiscovery, applyEnvironmentProfile } from './discovery.ts';
 import { applyMilestoneReview, applyMilestoneSpec } from './milestone.ts';
+import { applyQaVerify } from './qa.ts';
+import { applyCodeReview, applyCrRecommendation } from './review.ts';
 
 export type ApplyCtx = {
   deps: EngineDeps;
@@ -26,22 +28,16 @@ export type ApplyResult =
 
 export type Applier = (ctx: ApplyCtx) => Promise<ApplyResult>;
 
-const notYet =
-  (purpose: Purpose): Applier =>
-  async () => {
-    throw new Error(`No applier for ${purpose} yet`);
-  };
-
 const APPLIERS: Record<Purpose, Applier> = {
   discovery: applyDiscovery,
   environment_profile: applyEnvironmentProfile,
   milestone_spec: applyMilestoneSpec,
   tech_design: applyTechDesign,
   test_plan: applyTestPlan,
-  code_review: notYet('code_review'),
-  qa_verify: notYet('qa_verify'),
+  code_review: applyCodeReview,
+  qa_verify: applyQaVerify,
   milestone_review: applyMilestoneReview,
-  cr_recommendation: notYet('cr_recommendation'),
+  cr_recommendation: applyCrRecommendation,
   revise_design: applyReviseDesign,
   revise_test_plan: applyReviseTestPlan,
 };

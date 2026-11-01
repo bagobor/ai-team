@@ -3,6 +3,7 @@ import { sectionsOf } from '../../artifacts/format.ts';
 import { reviewId, specId } from './ids.ts';
 import type { Applier } from './index.ts';
 import { withRaised } from './raised.ts';
+import { oneLine } from './text.ts';
 
 type SpecOutput = { body: string; criteria: Criterion[] };
 type ReviewOutput = { body: string; known_issues: string[]; deviations: string[] };
@@ -76,7 +77,6 @@ export const applyMilestoneSpec: Applier = async (ctx) => {
   });
 };
 
-const oneLine = (text: string) => text.replace(/\s*[\r\n]+\s*/g, ' ');
 const cell = (text: string) => oneLine(text).replaceAll('|', '\\|');
 
 const bulletSection = (title: string, items: string[]) => (items.length > 0 ? [`## ${title}`, '', ...items.map((item) => `- ${oneLine(item)}`), ''] : []);

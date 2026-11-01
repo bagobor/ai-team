@@ -49,16 +49,16 @@ export async function ticketTask(e: TestEngine, id: string, fields: Partial<NewT
 let tasks = 0;
 
 // The context an applier gets, for a task that really is in the store.
-export async function ctxFor(e: TestEngine, purpose: Purpose, output: unknown, opts: { inputs?: string[]; milestone?: number; worktree?: string; kind?: NewTask['kind'] } = {}): Promise<ApplyCtx> {
+export async function ctxFor(e: TestEngine, purpose: Purpose, output: unknown, opts: { inputs?: string[]; milestone?: number; worktree?: string; kind?: NewTask['kind']; role?: string; baseSha?: string; subject?: WorkOrder['subject'] } = {}): Promise<ApplyCtx> {
   const project = await projectOf(e);
-  const order: WorkOrder = { purpose, instructions: 'Do it', inputs: opts.inputs ?? [], checks: [], base: { kind: 'base' } };
+  const order: WorkOrder = { purpose, instructions: 'Do it', inputs: opts.inputs ?? [], checks: [], base: { kind: 'base' }, ...(opts.subject ? { subject: opts.subject } : {}) };
   tasks += 1;
   const task = await e.store.createTask({
     project_id: project.id,
     ticket_id: `TASK-${tasks}`,
     title: purpose,
     milestone: opts.milestone ?? 1,
-    role_id: 'pm',
+    role_id: opts.role ?? 'pm',
     ticket_path: '',
     ticket_sha: '',
     touches: [],
@@ -69,7 +69,7 @@ export async function ctxFor(e: TestEngine, purpose: Purpose, output: unknown, o
     work_order: order,
   });
   const worktree = opts.worktree ?? e.repoPath;
-  const attempt = await e.store.createAttempt({ task_id: task.id, adapter: 'claude', model: 'm', worktree_path: worktree, branch: 'b' });
+  const attempt = await e.store.createAttempt({ task_id: task.id, adapter: 'claude', model: 'm', worktree_path: worktree, branch: 'b', ...(opts.baseSha ? { base_sha: opts.baseSha } : {}) });
   return { deps: e, project, task, attempt, order, output, worktree, signal: new AbortController().signal, report: { onEvent: () => {}, onSpawn: () => {} } };
 }
 

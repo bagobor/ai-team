@@ -21,7 +21,7 @@ const isAimedAtStateFolder = (glob: string): boolean => {
   return (matches('.aiteam/x') || matches('.aiteam')) && !matches('zz-other/x');
 };
 
-function touchesProblem(glob: string): string | undefined {
+export function touchesProblem(glob: string): string | undefined {
   const path = glob.replaceAll('\\', '/').replace(/^(?:\.\/)+/, '');
   if (path.trim() === '') return 'is blank';
   if (/^(?:\/|~|[A-Za-z]:)/.test(path)) return 'is absolute';
