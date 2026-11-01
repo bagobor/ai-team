@@ -1,7 +1,7 @@
 import { sql, type Kysely, type Selectable, type Updateable } from 'kysely';
 import { AC_ID, type Criterion, type CriterionStatus, type Verification } from '../artifacts/acs.ts';
 import type { ArtifactStatus, ArtifactType } from '../artifacts/format.ts';
-import type { AcceptanceCriteriaTable, ArtifactDepsTable, ArtifactVersionsTable, AttemptsTable, DB, MilestonesTable, ProjectsTable, TasksTable, VendorPausesTable } from '../db/schema.ts';
+import type { AcceptanceCriteriaTable, ArtifactDepsTable, ArtifactVersionsTable, AttemptsTable, DB, InboxItemsTable, MilestonesTable, ProjectsTable, TasksTable, VendorPausesTable } from '../db/schema.ts';
 import type { EventLog, EventRow, EventType } from '../events.ts';
 import {
   assertAttemptTransition,
@@ -14,6 +14,7 @@ import {
   type ProjectPhase,
   type TaskState,
 } from './fsm.ts';
+import { AlreadyAnswered, assertValidAnswer, type InboxAnswer, type InboxEvidence, type InboxOption, type InboxRef, type InboxRow, type InboxState, type InboxType, type NewInboxItem } from './inbox.ts';
 import type { WorkOrder } from './workorder.ts';
 
 export type ProjectRow = Omit<Selectable<ProjectsTable>, 'phase'> & { phase: ProjectPhase };
@@ -110,6 +111,19 @@ function toArtifactRow(row: Selectable<ArtifactVersionsTable>): ArtifactVersionR
 
 function toCriterionRow(row: Selectable<AcceptanceCriteriaTable>): CriterionRow {
   return { ...row, status: row.status as CriterionStatus, verification: JSON.parse(row.verification) as Criterion['verification'] };
+}
+
+function toInboxRow(row: Selectable<InboxItemsTable>): InboxRow {
+  return {
+    ...row,
+    type: row.type as InboxType,
+    state: row.state as InboxState,
+    ref: JSON.parse(row.ref) as InboxRef,
+    blocks: JSON.parse(row.blocks) as string[],
+    evidence: JSON.parse(row.evidence) as InboxEvidence[],
+    options: JSON.parse(row.options) as InboxOption[],
+    answer: row.answer === null ? null : (JSON.parse(row.answer) as InboxAnswer),
+  };
 }
 
 function toAttemptRow(row: Selectable<AttemptsTable>): AttemptRow {
@@ -558,6 +572,102 @@ export class Store {
       .groupBy('task_id')
       .execute();
     return new Map(rows.map(({ task_id, attempts, usdEst, seconds }) => [task_id, { attempts, usdEst, seconds }]));
+  }
+
+  // A repeated key returns the row it already raised, even a closed one: a condition raises one item, once.
+  raiseInbox(item: NewInboxItem): Promise<InboxRow> {
+    return this.inTrx(async (db, emit) => {
+      const raised = await db
+        .insertInto('inbox_items')
+        .values({
+          ...item,
+          milestone: item.milestone ?? null,
+          ref: JSON.stringify(item.ref),
+          blocks: JSON.stringify(item.blocks),
+          evidence: JSON.stringify(item.evidence),
+          options: JSON.stringify(item.options),
+          created_at: new Date().toISOString(),
+        })
+        .onConflict((conflict) => conflict.columns(['project_id', 'dedupe_key']).doNothing())
+        .returningAll()
+        .executeTakeFirst();
+      if (raised) {
+        emit(await this.log.insert(db, { projectId: item.project_id, type: 'inbox.raised', payload: { title: item.title } }));
+        return toInboxRow(raised);
+      }
+      const existing = await db.selectFrom('inbox_items').selectAll().where('project_id', '=', item.project_id).where('dedupe_key', '=', item.dedupe_key).executeTakeFirstOrThrow();
+      return toInboxRow(existing);
+    });
+  }
+
+  // Only records: the conductor applies it on its next tick. The state check in the UPDATE is what makes the first answer win.
+  answerInbox(id: number, answer: InboxAnswer): Promise<InboxRow> {
+    return this.inTrx(async (db, emit) => {
+      const current = await db.selectFrom('inbox_items').selectAll().where('id', '=', id).executeTakeFirst();
+      if (!current) throw new AlreadyAnswered(id);
+      assertValidAnswer(toInboxRow(current), answer);
+      const row = await db
+        .updateTable('inbox_items')
+        .set({ state: 'answered', answer: JSON.stringify(answer), answered_at: new Date().toISOString() })
+        .where('id', '=', id)
+        .where('state', '=', 'pending')
+        .returningAll()
+        .executeTakeFirst();
+      if (!row) throw new AlreadyAnswered(id);
+      emit(await this.log.insert(db, { projectId: row.project_id, type: 'inbox.answered', payload: { title: row.title } }));
+      return toInboxRow(row);
+    });
+  }
+
+  withdrawInbox(id: number, reason: string): Promise<void> {
+    return this.inTrx(async (db, emit) => {
+      const row = await db.updateTable('inbox_items').set({ state: 'withdrawn' }).where('id', '=', id).where('state', '=', 'pending').returningAll().executeTakeFirst();
+      if (row) emit(await this.log.insert(db, { projectId: row.project_id, type: 'inbox.withdrawn', payload: { reason } }));
+    });
+  }
+
+  markInboxApplied(id: number): Promise<void> {
+    return this.inTrx(async (db, emit) => {
+      const row = await db.updateTable('inbox_items').set({ applied_at: new Date().toISOString() }).where('id', '=', id).where('state', '=', 'answered').where('applied_at', 'is', null).returningAll().executeTakeFirst();
+      if (row) emit(await this.log.insert(db, { projectId: row.project_id, type: 'inbox.applied', payload: { title: row.title } }));
+    });
+  }
+
+  async getInbox(id: number): Promise<InboxRow | undefined> {
+    const row = await this.db.selectFrom('inbox_items').selectAll().where('id', '=', id).executeTakeFirst();
+    return row && toInboxRow(row);
+  }
+
+  async listInbox({ projectId, state }: { projectId?: number; state?: InboxState }): Promise<InboxRow[]> {
+    let query = this.db.selectFrom('inbox_items').selectAll();
+    if (projectId !== undefined) query = query.where('project_id', '=', projectId);
+    if (state !== undefined) query = query.where('state', '=', state);
+    return (await query.orderBy('id').execute()).map(toInboxRow);
+  }
+
+  async inboxByPrefix(projectId: number, prefix: string): Promise<InboxRow[]> {
+    const rows = await this.db
+      .selectFrom('inbox_items')
+      .selectAll()
+      .where('project_id', '=', projectId)
+      .where(sql<string>`substr(dedupe_key, 1, ${prefix.length})`, '=', prefix)
+      .orderBy('id')
+      .execute();
+    return rows.map(toInboxRow);
+  }
+
+  async pendingInboxCount(): Promise<number> {
+    const { count } = await this.db
+      .selectFrom('inbox_items')
+      .select((eb) => eb.fn.countAll<number>().as('count'))
+      .where('state', '=', 'pending')
+      .executeTakeFirstOrThrow();
+    return count;
+  }
+
+  async listUnappliedAnswers(): Promise<InboxRow[]> {
+    const rows = await this.db.selectFrom('inbox_items').selectAll().where('state', '=', 'answered').where('applied_at', 'is', null).orderBy('id').execute();
+    return rows.map(toInboxRow);
   }
 
   // For an event that nothing else in the transaction would log.
