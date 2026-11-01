@@ -90,6 +90,8 @@ export const migrations: Record<string, Migration> = {
   '002_artifacts_roles': {
     async up(db: Kysely<unknown>): Promise<void> {
       await sql`ALTER TABLE projects ADD COLUMN phase TEXT NOT NULL DEFAULT 'intake'`.execute(db);
+      // A project from before this has no spec or milestones to work from, and its parked tickets would start paid reviews.
+      await sql`UPDATE projects SET phase = 'halted'`.execute(db);
       await sql`ALTER TABLE tasks ADD COLUMN kind TEXT NOT NULL DEFAULT 'ticket'`.execute(db);
       await sql`ALTER TABLE tasks ADD COLUMN purpose TEXT`.execute(db);
       await sql`ALTER TABLE tasks ADD COLUMN work_order TEXT`.execute(db);

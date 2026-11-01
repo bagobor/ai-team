@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs';
 import { mkdir, readdir, readFile, realpath, rm, stat } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { isWithin } from '../paths.ts';
@@ -96,6 +97,15 @@ export async function linkedLocation(repoPath: string, wtPath: string): Promise<
 export async function snapshotAttempt(repoPath: string, wtPath: string, message: string): Promise<{ headSha: string }> {
   const location = await linkedLocation(repoPath, wtPath);
   await engineGit(wtPath, [...location, 'add', '-A']);
+  return { headSha: await commitStaged(wtPath, message, location) };
+}
+
+// The engine's own state goes in even when the repo ignores it: a milestone's record isn't the repo's to opt out of.
+export async function snapshotForced(repoPath: string, wtPath: string, path: string, message: string): Promise<{ headSha: string }> {
+  const location = await linkedLocation(repoPath, wtPath);
+  await engineGit(wtPath, [...location, 'add', '-A']);
+  // The plain add has already staged a removal, and git refuses a pathspec that matches nothing.
+  if (existsSync(join(wtPath, path))) await engineGit(wtPath, [...location, 'add', '-A', '-f', '--', path]);
   return { headSha: await commitStaged(wtPath, message, location) };
 }
 

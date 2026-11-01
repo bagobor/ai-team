@@ -264,6 +264,35 @@ describe('merges', () => {
       expect(existsSync(join(repo, '.aiteam'))).toBe(false);
     });
 
+    it('snapshots .aiteam even when the repo ignores it', async () => {
+      const head = commitFrom(repo, base, { '.gitignore': '.aiteam/\n' });
+      run(repo, 'branch', '-f', 'aiteam/m1', head);
+
+      const { sha } = await snapshotState(repo, 1, stateDir, wtPath);
+
+      expect(sha).not.toBe(head);
+      expect(await revParse(repo, 'aiteam/m1')).toBe(sha);
+      expect(run(repo, 'show', 'aiteam/m1:.aiteam/artifacts/spec/SPEC-M1.md')).toBe('# Spec');
+    });
+
+    it('drops a state file the engine removed when the repo ignores .aiteam', async () => {
+      run(repo, 'branch', '-f', 'aiteam/m1', commitFrom(repo, base, { '.gitignore': '.aiteam/\n' }));
+      writeFileSync(join(stateDir, 'artifacts', 'spec', 'OLD.md'), 'old\n');
+      await snapshotState(repo, 1, stateDir, wtPath);
+      rmSync(join(stateDir, 'artifacts', 'spec', 'OLD.md'));
+
+      await snapshotState(repo, 1, stateDir, wtPath);
+
+      expect(run(repo, 'ls-tree', '--name-only', 'aiteam/m1:.aiteam/artifacts/spec')).toBe('SPEC-M1.md');
+    });
+
+    it('keeps the head when there is no state to snapshot', async () => {
+      rmSync(join(stateDir, 'artifacts'), { recursive: true });
+      const head = await revParse(repo, 'aiteam/m1');
+
+      expect(await snapshotState(repo, 1, stateDir, wtPath)).toEqual({ sha: head });
+    });
+
     it('snapshot is a no-op on a second run', async () => {
       const { sha } = await snapshotState(repo, 1, stateDir, wtPath);
       expect(await snapshotState(repo, 1, stateDir, wtPath)).toEqual({ sha });

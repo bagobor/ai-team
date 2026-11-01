@@ -3,7 +3,7 @@ import { cp, lstat, readdir, readFile, rm } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { ENGINE_CONFIG, engineGit, git, gitOk } from './git.ts';
 import { inTurn } from './state-repo.ts';
-import { addAttemptWorktree, ensureIntegrationBranch, inRepoTurn, linkedLocation, removeAttemptWorktree, snapshotAttempt } from './workspace.ts';
+import { addAttemptWorktree, ensureIntegrationBranch, inRepoTurn, linkedLocation, removeAttemptWorktree, snapshotForced } from './workspace.ts';
 
 export type MergeResult = { ok: true; sha: string; already: boolean } | { ok: false; conflicts: string[] };
 export type AdvanceResult = { ok: true; sha: string } | { ok: false; reason: 'moved' | 'refused'; detail: string };
@@ -111,7 +111,7 @@ export function snapshotState(repo: string, milestone: number, stateDir: string,
     await addAttemptWorktree(repo, wtPath, tempBranch, head);
     try {
       await inTurn(stateDir, () => copyState(stateDir, wtPath));
-      const { headSha } = await snapshotAttempt(repo, wtPath, `aiteam: snapshot milestone ${milestone}`);
+      const { headSha } = await snapshotForced(repo, wtPath, '.aiteam', `aiteam: snapshot milestone ${milestone}`);
       if (headSha === head) return { sha: head };
       const moved = await moveBranch(repo, target, headSha, head);
       if (!moved.ok) throw new Error(`Snapshotting into ${target}: ${moved.detail}`);

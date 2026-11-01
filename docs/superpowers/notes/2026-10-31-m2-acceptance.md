@@ -127,7 +127,7 @@ After the run stopped, port 4780 was free and no daemon or script process remain
 - **A revise's work order is frozen when it's created.** Tickets that close are now handled, but a ticket opened after that, such as a Bug filed while a revision runs, still costs an attempt before the evidence names it.
 - **Doctor passes while workers can't use the configured models.** It checks neither the CLI version nor the models, so a stakeholder finds out at the first attempt, and a permanent `worker_error` then uses all 3 attempts before escalating.
 - **Nothing re-runs the isolation probe when `claude.binary` changes.** The path also includes the app's version and a hash, so an app update can remove it.
-- **An M1 project carried into M2 starts paid reviews on the first tick**, because the migration puts it in `intake` and `advanceReviews` ignores phase. Later migrations should halt or skip what was already there.
+- **Migrations must not leave old rows runnable.** An M1 project carried into M2 would have started paid reviews on the first tick, so migration 002 now halts every project it finds. Halted is terminal, so such a project stays read-only and its work starts again as a new project. Later migrations should do the same for anything the engine would otherwise pick up.
 - **An install gets no new seed wording for existing files**, except by hand.
 - **`AITEAM_HOME=''` is treated as a root** and creates `aiteam.db` in the current folder.
 - **QA's inputs are only the Spec and Test Plan.** In run 2 QA said it hadn't run the ENV-PROFILE commands "because I don't have their definitions". Check whether its manifest should carry them.
