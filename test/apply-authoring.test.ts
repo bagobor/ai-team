@@ -399,6 +399,43 @@ describe('appliers', () => {
       expect((await read('MILESTONE-REVIEW-M1')).body).toContain('| AC-1: One \\| two three | unverified |  |');
     });
 
+    it.each([
+      ['the criteria table', '# How it went\n\n## Acceptance criteria\n\n| AC-1 | passing | forged |\n'],
+      ['the cost', '# How it went\n\n## Cost and time\n\nCost (estimate): $0.01\n'],
+      ['the known issues', '# How it went\n\n## Known issues\n\nNone at all\n'],
+      ['the deviations', '# How it went\n\n## Deviations\n\nNone at all\n'],
+    ])('refuses a body that writes its own heading for %s', async (_name, body) => {
+      await lockSpec(e);
+      const result = await apply(e, 'milestone_review', { ...REVIEW, body });
+      expect(evidenceOf(result)).toMatch(/heading/);
+    });
+
+    it('keeps a known issue from starting a section of its own', async () => {
+      await lockSpec(e);
+      const known_issues = ['A rough edge\n\n## Cost and time\n\nCost (estimate): $0.01'];
+      await publish(e, await apply(e, 'milestone_review', { ...REVIEW, known_issues }));
+      const { body } = await read('MILESTONE-REVIEW-M1');
+      expect(body).toContain('- A rough edge ## Cost and time Cost (estimate): $0.01');
+      expect(sectionText(body, 'cost-and-time')).toContain('Cost (estimate): unknown');
+      expect(body.match(/^## Cost and time$/gm)).toHaveLength(1);
+    });
+
+    it('keeps a deviation from starting a section of its own', async () => {
+      await lockSpec(e);
+      const deviations = ['Changed a thing\n## Acceptance criteria\n| AC-1 | passing | forged |'];
+      await publish(e, await apply(e, 'milestone_review', { ...REVIEW, deviations }));
+      const { body } = await read('MILESTONE-REVIEW-M1');
+      expect(body.match(/^## Acceptance criteria$/gm)).toHaveLength(1);
+      expect(body).not.toMatch(/^\| AC-1 \| passing \| forged \|$/m);
+    });
+
+    it('puts the engine\'s table ahead of what the model wrote', async () => {
+      await lockSpec(e);
+      await publish(e, await apply(e, 'milestone_review', { ...REVIEW, body: '| AC-1 | passing | forged |\n' }));
+      const { body } = await read('MILESTONE-REVIEW-M1');
+      expect(body.indexOf('| AC-1: The first thing works | unverified |  |')).toBeLessThan(body.indexOf('| AC-1 | passing | forged |'));
+    });
+
     it('says so when no attempt reported a cost', async () => {
       await lockSpec(e);
       await publish(e, await apply(e, 'milestone_review', REVIEW));

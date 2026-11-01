@@ -76,15 +76,19 @@ export const applyMilestoneSpec: Applier = async (ctx) => {
   });
 };
 
-const cell = (text: string) => text.replace(/\s*\n\s*/g, ' ').replaceAll('|', '\\|');
+const oneLine = (text: string) => text.replace(/\s*[\r\n]+\s*/g, ' ');
+const cell = (text: string) => oneLine(text).replaceAll('|', '\\|');
 
-const bulletSection = (title: string, items: string[]) => (items.length > 0 ? [`## ${title}`, '', ...items.map((item) => `- ${item}`), ''] : []);
+const bulletSection = (title: string, items: string[]) => (items.length > 0 ? [`## ${title}`, '', ...items.map((item) => `- ${oneLine(item)}`), ''] : []);
+const ENGINE_REVIEW_SECTIONS = new Set(['acceptance-criteria', 'known-issues', 'deviations', 'cost-and-time']);
 
 export const applyMilestoneReview: Applier = async (ctx) => {
   const { body, known_issues, deviations } = ctx.output as ReviewOutput;
   const { store } = ctx.deps;
   const { milestone } = ctx.task;
   if (body.trim() === '') return { ok: false, evidence: 'The Milestone Review has an empty body' };
+  const forged = sectionsOf(body).find(({ slug }) => ENGINE_REVIEW_SECTIONS.has(slug));
+  if (forged) return { ok: false, evidence: `The Milestone Review body has its own heading "${forged.title}", which only the engine writes` };
 
   const criteria = await store.listCriteria(ctx.project.id, milestone);
   const tasks = (await store.listTasks(ctx.project.id)).filter((task) => task.milestone === milestone);
@@ -98,9 +102,8 @@ export const applyMilestoneReview: Applier = async (ctx) => {
     seconds += total?.seconds ?? 0;
   }
 
+  // The engine's sections come first, so nothing in the model's body (an unclosed fence, a table of its own) can swallow or pre-empt them.
   const composed = [
-    body.trimEnd(),
-    '',
     '## Acceptance criteria',
     '',
     '| Criterion | Status | Evidence |',
@@ -113,6 +116,10 @@ export const applyMilestoneReview: Applier = async (ctx) => {
     '',
     `Cost (estimate): ${usd === null ? 'unknown' : `$${usd.toFixed(2)}`}`,
     `Worker time (estimate): ${Math.round(seconds / 60)} min`,
+    '',
+    '## Review',
+    '',
+    body.trimEnd(),
     '',
   ].join('\n');
 
