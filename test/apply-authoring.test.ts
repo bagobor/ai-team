@@ -332,6 +332,25 @@ describe('appliers', () => {
       expect(await latest('M1-T-1')).toMatchObject({ status: 'approved', derived_from: ['TECH-M1@2', 'SPEC-M1@2#ac-1'] });
     });
 
+    // The worker is told which tickets are open when its order is written, and a ticket that isn't stale can merge while it decides.
+    it('ignores a decision about a ticket that closed while the worker was deciding', async () => {
+      await setState('M1-T-1', 'ready', 'running', 'checks', 'done');
+
+      await publish(e, await revise({ ticket_decisions: [decide('M1-T-1'), decide('M1-T-2')] }));
+
+      expect(await taskState('M1-T-1')).toBe('done');
+      expect(await latest('M1-T-1')).toMatchObject({ status: 'approved', derived_from: ['TECH-M1@2', 'SPEC-M1@2#ac-1'] });
+    });
+
+    it('never lets a late decision supersede a ticket that has merged', async () => {
+      await setState('M1-T-1', 'ready', 'running', 'checks', 'done');
+
+      await publish(e, await revise({ ticket_decisions: [decide('M1-T-1', 'superseded'), decide('M1-T-2')] }));
+
+      expect(await taskState('M1-T-1')).toBe('done');
+      expect(await latest('M1-T-1')).toMatchObject({ status: 'approved' });
+    });
+
     it('rejects a valid or new ticket that depends on one it supersedes', async () => {
       const project = await projectOf(e);
       await e.store.createTask({ project_id: project.id, ticket_id: 'M1-T-3', title: 'x', milestone: 1, role_id: 'engineer', ticket_path: '', ticket_sha: '', touches: ['src/**'], depends_on: ['M1-T-1'], dod: ['true'], kind: 'ticket', ac_refs: ['AC-1'] });

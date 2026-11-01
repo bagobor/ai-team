@@ -161,14 +161,17 @@ const applyRevise =
 
     const tickets = await ticketsOfDoc(ctx.deps, ctx.project, milestone, prefix);
     const open = tickets.filter((ticket) => !isClosed(ticket));
+    // A ticket that isn't stale can merge while the worker decides on it, so a decision about a closed one is out of date, not wrong, and it can't undo that work.
+    const closed = new Set(tickets.filter(isClosed).map(({ id }) => id));
+    const current = output.ticket_decisions.filter(({ ticket }) => !closed.has(ticket));
     for (const { id } of open) {
-      const count = output.ticket_decisions.filter(({ ticket }) => ticket === id).length;
+      const count = current.filter(({ ticket }) => ticket === id).length;
       if (count === 0) problems.push(`Ticket ${id} is open and has no decision`);
       if (count > 1) problems.push(`Ticket ${id} must be decided exactly once`);
     }
-    for (const { ticket } of output.ticket_decisions) if (!open.some(({ id }) => id === ticket)) problems.push(`Ticket ${ticket} is not an open ticket of this document`);
+    for (const { ticket } of current) if (!open.some(({ id }) => id === ticket)) problems.push(`Ticket ${ticket} is not an open ticket of this document`);
 
-    const superseded = new Set(output.ticket_decisions.filter(({ decision }) => decision === 'superseded').map(({ ticket }) => ticket));
+    const superseded = new Set(current.filter(({ decision }) => decision === 'superseded').map(({ ticket }) => ticket));
     const kept = tickets.filter(({ id, task }) => !superseded.has(id) && task?.state !== 'cancelled');
     for (const ticket of kept) {
       if (isClosed(ticket)) continue;
@@ -183,7 +186,7 @@ const applyRevise =
     if (prefix === 'T') problems.push(...uncovered(acIds, [...kept.flatMap(({ acRefs }) => acRefs), ...output.tickets.flatMap(({ ac_refs }) => ac_refs)]));
     if (problems.length > 0) return { ok: false, evidence: problems.join('\n') };
 
-    const decisions = new Map(output.ticket_decisions.map((decision) => [decision.ticket, decision]));
+    const decisions = new Map(current.map((decision) => [decision.ticket, decision]));
     const status: StatusChange[] = [];
     if (body === null) status.push({ id: docId, status: 'approved', derivedFrom: ctx.order.inputs.filter((pin) => parsePin(pin).id !== docId), rationale: output.rationale });
 
