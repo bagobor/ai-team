@@ -7,6 +7,7 @@ export type ProjectsTable = {
   repo_path: string;
   base_branch: string;
   created_at: string;
+  phase: Generated<string>;
 };
 
 export type TasksTable = {
@@ -26,6 +27,11 @@ export type TasksTable = {
   dod: string;
   created_at: string;
   updated_at: string;
+  kind: Generated<string>;
+  purpose: string | null;
+  work_order: string | null;
+  parent_task_id: number | null;
+  ac_refs: Generated<string>;
 };
 
 export type AttemptsTable = {
@@ -49,6 +55,7 @@ export type AttemptsTable = {
   started_at: string;
   ended_at: string | null;
   worktree_removed_at: string | null;
+  head_sha: string | null;
 };
 
 export type EventsTable = {
@@ -68,10 +75,88 @@ export type VendorPausesTable = {
   reason: string;
 };
 
+export type MilestonesTable = {
+  project_id: number;
+  n: number;
+  title: string;
+  goal: string;
+  phase: string;
+  verify_round: Generated<number>;
+  verify_cap: Generated<number>;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ArtifactVersionsTable = {
+  project_id: number;
+  artifact_id: string;
+  type: string;
+  version: number;
+  status: string;
+  owner_role: string;
+  milestone: number | null;
+  sha: string;
+  path: string;
+  derived_from: string;
+  stale_sections: Generated<string>;
+  approved_by: string | null;
+  approved_at: string | null;
+  created_at: string;
+};
+
+export type ArtifactDepsTable = {
+  project_id: number;
+  from_id: string;
+  from_version: number;
+  to_id: string;
+  to_version: number;
+  to_section: string | null;
+  to_section_hash: string | null;
+};
+
+export type AcceptanceCriteriaTable = {
+  project_id: number;
+  milestone: number;
+  ac_id: string;
+  text: string;
+  verification: string;
+  spec_version: number;
+  cr_id: string | null;
+  status: Generated<string>;
+  evidence_ref: string | null;
+  updated_at: string;
+};
+
+export type InboxItemsTable = {
+  id: Generated<number>;
+  project_id: number;
+  milestone: number | null;
+  type: string;
+  dedupe_key: string;
+  ref: string;
+  title: string;
+  asked_by: string;
+  why: string;
+  blocks: string;
+  evidence: string;
+  recommendation: string;
+  options: string;
+  state: Generated<string>;
+  answer: string | null;
+  answered_at: string | null;
+  applied_at: string | null;
+  created_at: string;
+};
+
 export type DB = {
   projects: ProjectsTable;
   tasks: TasksTable;
   attempts: AttemptsTable;
   events: EventsTable;
   vendor_pauses: VendorPausesTable;
+  milestones: MilestonesTable;
+  artifact_versions: ArtifactVersionsTable;
+  artifact_deps: ArtifactDepsTable;
+  acceptance_criteria: AcceptanceCriteriaTable;
+  inbox_items: InboxItemsTable;
 };

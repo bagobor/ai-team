@@ -33,6 +33,15 @@ describe('EventLog', () => {
     expect((await log.list({ taskId: 1, afterSeq: a.seq })).map((e) => e.seq)).toEqual([c.seq]);
   });
 
+  it('filters by project', async () => {
+    const a = await log.append({ projectId: 1, type: 'project.phase', payload: { to: 'cp1' } });
+    await log.append({ projectId: 2, type: 'project.phase', payload: { to: 'cp1' } });
+    const c = await log.append({ projectId: 1, type: 'inbox.raised', payload: { title: 'CP1' } });
+
+    expect((await log.list({ projectId: 1 })).map((e) => e.seq)).toEqual([a.seq, c.seq]);
+    expect((await log.list({ projectId: 1, afterSeq: a.seq })).map((e) => e.seq)).toEqual([c.seq]);
+  });
+
   it('returns what was appended, payload included', async () => {
     const row = await log.append({ projectId: 3, taskId: 1, attemptId: 2, type: 'worker.message', payload: { text: 'hi' } });
 

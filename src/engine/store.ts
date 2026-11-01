@@ -1,27 +1,37 @@
 import { sql, type Kysely, type Selectable, type Updateable } from 'kysely';
-import type { AttemptsTable, DB, ProjectsTable, TasksTable, VendorPausesTable } from '../db/schema.ts';
-import type { EventLog } from '../events.ts';
+import type { AttemptsTable, DB, MilestonesTable, ProjectsTable, TasksTable, VendorPausesTable } from '../db/schema.ts';
+import type { EventLog, EventRow } from '../events.ts';
 import {
   assertAttemptTransition,
+  assertMilestoneTransition,
+  assertProjectTransition,
   assertTaskTransition,
   ATTEMPT_TRANSITIONS,
   type AttemptState,
+  type MilestonePhase,
+  type ProjectPhase,
   type TaskState,
 } from './fsm.ts';
 
-export type ProjectRow = Selectable<ProjectsTable>;
+export type ProjectRow = Omit<Selectable<ProjectsTable>, 'phase'> & { phase: ProjectPhase };
 export type NewProject = Pick<ProjectRow, 'name' | 'repo_path' | 'base_branch'>;
 
-export type TaskRow = Omit<Selectable<TasksTable>, 'state' | 'touches' | 'depends_on' | 'dod'> & {
+export type TaskRow = Omit<Selectable<TasksTable>, 'state' | 'touches' | 'depends_on' | 'dod' | 'work_order' | 'ac_refs'> & {
   state: TaskState;
   touches: string[];
   depends_on: string[];
   dod: string[];
+  work_order: unknown;
+  ac_refs: string[];
 };
 export type NewTask = Pick<
   TaskRow,
   'project_id' | 'ticket_id' | 'title' | 'milestone' | 'role_id' | 'ticket_path' | 'ticket_sha' | 'touches' | 'depends_on' | 'dod'
->;
+> &
+  Partial<Pick<TaskRow, 'kind' | 'purpose' | 'work_order' | 'parent_task_id' | 'ac_refs'>>;
+
+export type MilestoneRow = Omit<Selectable<MilestonesTable>, 'phase'> & { phase: MilestonePhase };
+export type NewMilestone = Pick<MilestoneRow, 'project_id' | 'n' | 'title' | 'goal' | 'phase'>;
 
 export type AttemptRow = Omit<Selectable<AttemptsTable>, 'state' | 'manifest' | 'output' | 'failure_evidence' | 'usage'> & {
   state: AttemptState;
@@ -42,10 +52,16 @@ const LIVE_ATTEMPT_STATES: AttemptState[] = ['starting', 'running'];
 const FAILED_ATTEMPT_STATES: AttemptState[] = ['failed', 'timeout', 'budget_exceeded', 'invalid_output'];
 // Nor do these, each of which escalates at once for a person to fix something other than the work.
 const FAILURES_NOT_ABOUT_THE_WORK = ['auth_required', 'context_over_budget', 'engine_error'];
+// These attempts succeeded and were sent back afterwards, and they use up a retry all the same.
+const REJECTIONS_AFTER_SUCCESS = ['changes_requested', 'merge_conflict'];
 const ATTEMPT_JSON_FIELDS = ['manifest', 'output', 'failure_evidence', 'usage'] as const;
 
 function parseJson(value: string | null): unknown {
   return value === null ? null : JSON.parse(value);
+}
+
+function toProjectRow(row: Selectable<ProjectsTable>): ProjectRow {
+  return { ...row, phase: row.phase as ProjectPhase };
 }
 
 function toTaskRow(row: Selectable<TasksTable>): TaskRow {
@@ -55,7 +71,13 @@ function toTaskRow(row: Selectable<TasksTable>): TaskRow {
     touches: JSON.parse(row.touches) as string[],
     depends_on: JSON.parse(row.depends_on) as string[],
     dod: JSON.parse(row.dod) as string[],
+    work_order: parseJson(row.work_order),
+    ac_refs: JSON.parse(row.ac_refs) as string[],
   };
+}
+
+function toMilestoneRow(row: Selectable<MilestonesTable>): MilestoneRow {
+  return { ...row, phase: row.phase as MilestonePhase };
 }
 
 function toAttemptRow(row: Selectable<AttemptsTable>): AttemptRow {
@@ -92,26 +114,117 @@ export class Store {
   constructor(
     private readonly db: Kysely<DB>,
     private readonly log: EventLog,
+    // Set on the Store that atomically hands out: events wait here until the transaction commits.
+    private readonly deferred?: EventRow[],
   ) {}
 
+  // Everything fn does through s commits as one, and its events publish only after that.
+  // Inside fn use only s: SQLite has one connection, so a call on the root store waits for this
+  // transaction to end, and it never does.
+  async atomically<T>(fn: (s: Store) => Promise<T>): Promise<T> {
+    if (this.deferred) return fn(this);
+
+    const events: EventRow[] = [];
+    const result = await this.db.transaction().execute((trx) => fn(new Store(trx, this.log, events)));
+    for (const event of events) this.log.publish(event);
+    return result;
+  }
+
+  // Kysely can't nest transactions, so a Store already inside one reuses it.
+  private async inTrx<T>(fn: (db: Kysely<DB>, emit: (event: EventRow) => void) => Promise<T>): Promise<T> {
+    if (this.deferred) {
+      const events = this.deferred;
+      return fn(this.db, (event) => events.push(event));
+    }
+
+    const events: EventRow[] = [];
+    const result = await this.db.transaction().execute((trx) => fn(trx, (event) => events.push(event)));
+    for (const event of events) this.log.publish(event);
+    return result;
+  }
+
   async createProject(p: NewProject): Promise<ProjectRow> {
-    return this.db
+    const row = await this.db
       .insertInto('projects')
       .values({ ...p, created_at: new Date().toISOString() })
       .returningAll()
       .executeTakeFirstOrThrow();
+    return toProjectRow(row);
   }
 
   async getProject(name: string): Promise<ProjectRow | undefined> {
-    return this.db.selectFrom('projects').selectAll().where('name', '=', name).executeTakeFirst();
+    const row = await this.db.selectFrom('projects').selectAll().where('name', '=', name).executeTakeFirst();
+    return row && toProjectRow(row);
   }
 
   async getProjectById(id: number): Promise<ProjectRow | undefined> {
-    return this.db.selectFrom('projects').selectAll().where('id', '=', id).executeTakeFirst();
+    const row = await this.db.selectFrom('projects').selectAll().where('id', '=', id).executeTakeFirst();
+    return row && toProjectRow(row);
   }
 
   async listProjects(): Promise<ProjectRow[]> {
-    return this.db.selectFrom('projects').selectAll().orderBy('id').execute();
+    return (await this.db.selectFrom('projects').selectAll().orderBy('id').execute()).map(toProjectRow);
+  }
+
+  async setProjectPhase(id: number, to: ProjectPhase): Promise<ProjectRow> {
+    return this.inTrx(async (db, emit) => {
+      const current = await db.selectFrom('projects').selectAll().where('id', '=', id).executeTakeFirst();
+      if (!current) throw new Error(`No project ${id}`);
+      assertProjectTransition(current.phase, to);
+
+      const row = await db.updateTable('projects').set({ phase: to }).where('id', '=', id).returningAll().executeTakeFirstOrThrow();
+      emit(await this.log.insert(db, { projectId: id, type: 'project.phase', payload: { from: current.phase, to } }));
+      return toProjectRow(row);
+    });
+  }
+
+  async createMilestone(m: NewMilestone): Promise<MilestoneRow> {
+    const now = new Date().toISOString();
+    const row = await this.db
+      .insertInto('milestones')
+      .values({ ...m, created_at: now, updated_at: now })
+      .returningAll()
+      .executeTakeFirstOrThrow();
+    return toMilestoneRow(row);
+  }
+
+  async getMilestone(projectId: number, n: number): Promise<MilestoneRow | undefined> {
+    const row = await this.db.selectFrom('milestones').selectAll().where('project_id', '=', projectId).where('n', '=', n).executeTakeFirst();
+    return row && toMilestoneRow(row);
+  }
+
+  async listMilestones(projectId: number): Promise<MilestoneRow[]> {
+    return (await this.db.selectFrom('milestones').selectAll().where('project_id', '=', projectId).orderBy('n').execute()).map(toMilestoneRow);
+  }
+
+  async setMilestonePhase(projectId: number, n: number, to: MilestonePhase): Promise<MilestoneRow> {
+    return this.inTrx(async (db, emit) => {
+      const current = await db.selectFrom('milestones').selectAll().where('project_id', '=', projectId).where('n', '=', n).executeTakeFirst();
+      if (!current) throw new Error(`No milestone ${n} in project ${projectId}`);
+      assertMilestoneTransition(current.phase, to);
+
+      const row = await db
+        .updateTable('milestones')
+        .set({ phase: to, updated_at: new Date().toISOString() })
+        .where('project_id', '=', projectId)
+        .where('n', '=', n)
+        .returningAll()
+        .executeTakeFirstOrThrow();
+      emit(await this.log.insert(db, { projectId, type: 'milestone.phase', payload: { milestone: n, from: current.phase, to } }));
+      return toMilestoneRow(row);
+    });
+  }
+
+  async patchMilestone(projectId: number, n: number, patch: { verify_round?: number; verify_cap?: number }): Promise<MilestoneRow> {
+    const row = await this.db
+      .updateTable('milestones')
+      .set({ ...patch, updated_at: new Date().toISOString() })
+      .where('project_id', '=', projectId)
+      .where('n', '=', n)
+      .returningAll()
+      .executeTakeFirst();
+    if (!row) throw new Error(`No milestone ${n} in project ${projectId}`);
+    return toMilestoneRow(row);
   }
 
   async createTask(t: NewTask): Promise<TaskRow> {
@@ -123,6 +236,8 @@ export class Store {
         touches: JSON.stringify(t.touches),
         depends_on: JSON.stringify(t.depends_on),
         dod: JSON.stringify(t.dod),
+        work_order: t.work_order === undefined || t.work_order === null ? null : JSON.stringify(t.work_order),
+        ac_refs: JSON.stringify(t.ac_refs ?? []),
         state: 'queued',
         created_at: now,
         updated_at: now,
@@ -154,12 +269,12 @@ export class Store {
   }
 
   async setTaskState(id: number, to: TaskState, detail: { blockedOn?: string; reason?: string } = {}): Promise<TaskRow> {
-    const { row, event } = await this.db.transaction().execute(async (trx) => {
-      const current = await trx.selectFrom('tasks').selectAll().where('id', '=', id).executeTakeFirst();
+    return this.inTrx(async (db, emit) => {
+      const current = await db.selectFrom('tasks').selectAll().where('id', '=', id).executeTakeFirst();
       if (!current) throw new Error(`No task ${id}`);
       assertTaskTransition(current.state, to);
 
-      const row = await trx
+      const row = await db
         .updateTable('tasks')
         .set({
           state: to,
@@ -170,17 +285,16 @@ export class Store {
         .where('id', '=', id)
         .returningAll()
         .executeTakeFirstOrThrow();
-      const event = await this.log.insert(trx, {
-        projectId: current.project_id,
-        taskId: id,
-        type: 'task.state',
-        payload: { from: current.state, to, ...detail },
-      });
-      return { row, event };
+      emit(
+        await this.log.insert(db, {
+          projectId: current.project_id,
+          taskId: id,
+          type: 'task.state',
+          payload: { from: current.state, to, ...detail },
+        }),
+      );
+      return toTaskRow(row);
     });
-
-    this.log.publish(event);
-    return toTaskRow(row);
   }
 
   // The worktree path and branch name k, so the runner needs it before it can create the attempt.
@@ -189,20 +303,20 @@ export class Store {
   }
 
   async createAttempt(a: NewAttempt): Promise<AttemptRow> {
-    const row = await this.db.transaction().execute(async (trx) => {
-      const k = await nextK(trx, a.task_id);
-      return trx
+    return this.inTrx(async (db) => {
+      const k = await nextK(db, a.task_id);
+      const row = await db
         .insertInto('attempts')
         .values({ ...a, k, state: 'starting', started_at: new Date().toISOString() })
         .returningAll()
         .executeTakeFirstOrThrow();
+      return toAttemptRow(row);
     });
-    return toAttemptRow(row);
   }
 
   async setAttemptState(id: number, to: AttemptState, patch: AttemptPatch = {}): Promise<AttemptRow> {
-    const { row, event } = await this.db.transaction().execute(async (trx) => {
-      const current = await trx
+    return this.inTrx(async (db, emit) => {
+      const current = await db
         .selectFrom('attempts')
         .innerJoin('tasks', 'tasks.id', 'attempts.task_id')
         .select(['attempts.state', 'attempts.task_id', 'tasks.project_id'])
@@ -212,24 +326,23 @@ export class Store {
       assertAttemptTransition(current.state, to);
 
       const ended = ATTEMPT_TRANSITIONS[to].length === 0;
-      const row = await trx
+      const row = await db
         .updateTable('attempts')
         .set({ ...attemptColumns(patch), state: to, ...(ended ? { ended_at: new Date().toISOString() } : {}) })
         .where('id', '=', id)
         .returningAll()
         .executeTakeFirstOrThrow();
-      const event = await this.log.insert(trx, {
-        projectId: current.project_id,
-        taskId: current.task_id,
-        attemptId: id,
-        type: 'attempt.state',
-        payload: { from: current.state, to, ...(patch.failure_kind ? { failureKind: patch.failure_kind } : {}) },
-      });
-      return { row, event };
+      emit(
+        await this.log.insert(db, {
+          projectId: current.project_id,
+          taskId: current.task_id,
+          attemptId: id,
+          type: 'attempt.state',
+          payload: { from: current.state, to, ...(patch.failure_kind ? { failureKind: patch.failure_kind } : {}) },
+        }),
+      );
+      return toAttemptRow(row);
     });
-
-    this.log.publish(event);
-    return toAttemptRow(row);
   }
 
   async patchAttempt(id: number, patch: AttemptPatch): Promise<AttemptRow> {
@@ -272,8 +385,12 @@ export class Store {
       .selectFrom('attempts')
       .select((eb) => eb.fn.countAll<number>().as('n'))
       .where('task_id', '=', taskId)
-      .where('state', 'in', FAILED_ATTEMPT_STATES)
-      .where((eb) => eb.or([eb('failure_kind', 'is', null), eb('failure_kind', 'not in', FAILURES_NOT_ABOUT_THE_WORK)]))
+      .where((eb) =>
+        eb.or([
+          eb.and([eb('state', 'in', FAILED_ATTEMPT_STATES), eb.or([eb('failure_kind', 'is', null), eb('failure_kind', 'not in', FAILURES_NOT_ABOUT_THE_WORK)])]),
+          eb('failure_kind', 'in', REJECTIONS_AFTER_SUCCESS),
+        ]),
+      )
       .executeTakeFirstOrThrow();
     return n;
   }

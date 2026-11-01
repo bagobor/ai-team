@@ -64,6 +64,20 @@ const FORMAT: Record<EventType, (p: Payload) => RowParts> = {
   'manifest.built': (p) => ({ kind: 'engine', text: `Manifest built: ${tokens(p.totalTokens)} of ${tokens(p.contextBudget)} tokens` }),
   'vendor.paused': (p) => ({ kind: 'engine', text: `${text(p.vendor)} paused until ${text(p.until)}: ${text(p.reason)}` }),
   'recovery.interrupted': () => ({ kind: 'engine', text: 'The daemon restarted and marked this attempt interrupted' }),
+  'project.phase': (p) => ({ kind: 'engine', text: change('Project', p, undefined) }),
+  'milestone.phase': (p) => ({ kind: 'engine', text: change(`Milestone ${String(p.milestone)}`, p, undefined) }),
+  'artifact.published': (p) => ({ kind: 'engine', text: `Published ${text(p.id)}@${String(p.version)} (${text(p.status)})` }),
+  'artifact.status': (p) => ({ kind: 'engine', text: `${text(p.id)} is now ${text(p.status)}` }),
+  'lineage.repinned': (p) => ({ kind: 'engine', text: `${text(p.id)} re-pinned` }),
+  'ac.status': (p) => ({ kind: 'engine', text: `${text(p.acId)} is now ${text(p.status)}` }),
+  'inbox.raised': (p) => ({ kind: 'engine', text: `Inbox: ${text(p.title)}` }),
+  'inbox.answered': (p) => ({ kind: 'engine', text: `Inbox answered: ${text(p.title)}` }),
+  'inbox.applied': (p) => ({ kind: 'engine', text: `Inbox answer applied: ${text(p.title)}` }),
+  'inbox.withdrawn': (p) => ({ kind: 'engine', text: `Inbox item withdrawn: ${text(p.reason)}` }),
+  'merge.done': (p) => ({ kind: 'engine', text: `Merged into ${text(p.target)}`, tone: 'good' }),
+  'merge.conflict': (p) => ({ kind: 'engine', text: `Merge conflict in ${text(p.target)}`, tone: 'bad' }),
+  'change_request.dropped': (p) => ({ kind: 'engine', text: `Change Request dropped: ${text(p.reason)}`, tone: 'bad' }),
+  'conductor.error': (p) => ({ kind: 'error', text: text(p.message), tone: 'bad' }),
 };
 
 export const EVENT_TYPES = Object.keys(FORMAT) as EventType[];

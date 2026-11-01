@@ -14,7 +14,21 @@ export type EventType =
   | 'check.started'
   | 'check.finished'
   | 'vendor.paused'
-  | 'recovery.interrupted';
+  | 'recovery.interrupted'
+  | 'project.phase'
+  | 'milestone.phase'
+  | 'artifact.published'
+  | 'artifact.status'
+  | 'lineage.repinned'
+  | 'ac.status'
+  | 'inbox.raised'
+  | 'inbox.answered'
+  | 'inbox.applied'
+  | 'inbox.withdrawn'
+  | 'merge.done'
+  | 'merge.conflict'
+  | 'change_request.dropped'
+  | 'conductor.error';
 
 export type EventRow = {
   seq: number;
@@ -84,8 +98,9 @@ export class EventLog {
     }
   }
 
-  async list(q: { taskId?: number; afterSeq?: number; limit?: number }): Promise<EventRow[]> {
+  async list(q: { taskId?: number; projectId?: number; afterSeq?: number; limit?: number }): Promise<EventRow[]> {
     let query = this.db.selectFrom('events').selectAll().orderBy('seq');
+    if (q.projectId !== undefined) query = query.where('project_id', '=', q.projectId);
     if (q.taskId !== undefined) query = query.where('task_id', '=', q.taskId);
     if (q.afterSeq !== undefined) query = query.where('seq', '>', q.afterSeq);
     if (q.limit !== undefined) query = query.limit(q.limit);

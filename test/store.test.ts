@@ -249,3 +249,190 @@ describe('Store', () => {
     });
   });
 });
+
+describe('Store for M2', () => {
+  let db: Kysely<DB>;
+  let log: EventLog;
+  let store: Store;
+  let project: ProjectRow;
+  let task: TaskRow;
+  let seen: string[];
+
+  beforeEach(async () => {
+    db = await openDb(':memory:');
+    log = new EventLog(db);
+    store = new Store(db, log);
+    project = await store.createProject({ name: 'p', repo_path: '/r', base_branch: 'main' });
+    task = await store.createTask({
+      project_id: project.id,
+      ticket_id: 'T-1',
+      title: 'Ticket',
+      milestone: 1,
+      role_id: 'engineer',
+      ticket_path: 'tickets/T-1.md',
+      ticket_sha: 'abc',
+      touches: [],
+      depends_on: [],
+      dod: [],
+    });
+    seen = [];
+    log.subscribe((row) => seen.push(row.type));
+  });
+
+  afterEach(async () => {
+    await db.destroy();
+  });
+
+  const insertCriterion = (status: string, evidence: string | null) =>
+    db
+      .insertInto('acceptance_criteria')
+      .values({ project_id: project.id, milestone: 1, ac_id: 'AC-1', text: 'Text', verification: '{}', spec_version: 1, status, evidence_ref: evidence, updated_at: 'now' })
+      .execute();
+
+  describe('atomically', () => {
+    it('commits every change together and publishes events only after commit', async () => {
+      await store.atomically(async (s) => {
+        await s.setTaskState(task.id, 'ready');
+        expect(seen).toEqual([]);
+      });
+
+      expect(seen).toEqual(['task.state']);
+      expect((await store.getTask(task.id))?.state).toBe('ready');
+    });
+
+    it('rolls back every change and publishes nothing when it throws', async () => {
+      await expect(
+        store.atomically(async (s) => {
+          await s.setTaskState(task.id, 'ready');
+          throw new Error('boom');
+        }),
+      ).rejects.toThrow('boom');
+
+      expect((await store.getTask(task.id))?.state).toBe('queued');
+      expect(seen).toEqual([]);
+    });
+
+    it('reuses its transaction for a state change and an attempt in one unit', async () => {
+      await store.atomically(async (s) => {
+        await s.setTaskState(task.id, 'ready');
+        await s.setTaskState(task.id, 'running');
+        const a = await s.createAttempt({ task_id: task.id, adapter: 'x', model: 'm', worktree_path: '/w', branch: 'b' });
+        await s.setAttemptState(a.id, 'running');
+        await s.setAttemptState(a.id, 'succeeded', { head_sha: 'deadbeef' });
+      });
+
+      expect(seen).toEqual(['task.state', 'task.state', 'attempt.state', 'attempt.state']);
+      expect((await store.listAttempts(task.id))[0]).toMatchObject({ state: 'succeeded', head_sha: 'deadbeef' });
+    });
+
+    it('joins the outer transaction when nested', async () => {
+      await expect(
+        store.atomically(async (s) => {
+          await s.atomically(async (inner) => inner.setTaskState(task.id, 'ready'));
+          throw new Error('outer');
+        }),
+      ).rejects.toThrow('outer');
+
+      expect((await store.getTask(task.id))?.state).toBe('queued');
+    });
+  });
+
+  describe('attempt cap', () => {
+    it.each(['changes_requested', 'merge_conflict'])('counts a succeeded attempt rejected for %s', async (kind) => {
+      const a = await store.createAttempt({ task_id: task.id, adapter: 'x', model: 'm', worktree_path: '/w', branch: 'b' });
+      await store.setAttemptState(a.id, 'running');
+      await store.setAttemptState(a.id, 'succeeded');
+      expect(await store.failedAttemptCount(task.id)).toBe(0);
+
+      await store.patchAttempt(a.id, { failure_kind: kind, failure_evidence: 'why' });
+
+      expect(await store.failedAttemptCount(task.id)).toBe(1);
+    });
+  });
+
+  describe('tasks', () => {
+    it('defaults to a ticket with no work order', () => {
+      expect(task).toMatchObject({ kind: 'ticket', purpose: null, work_order: null, parent_task_id: null, ac_refs: [] });
+    });
+
+    it('stores kind, purpose, work order, parent and criterion refs as values', async () => {
+      const order = { purpose: 'tech_design', instructions: 'Do it', inputs: [], checks: [], base: { kind: 'base' } };
+      const made = await store.createTask({
+        project_id: project.id,
+        ticket_id: 'M1-TECH',
+        title: 'Design',
+        milestone: 1,
+        role_id: 'tech_lead',
+        ticket_path: '',
+        ticket_sha: '',
+        touches: [],
+        depends_on: [],
+        dod: [],
+        kind: 'authoring',
+        purpose: 'tech_design',
+        work_order: order,
+        parent_task_id: task.id,
+        ac_refs: ['AC-1'],
+      });
+
+      expect(await store.getTask(made.id)).toMatchObject({ kind: 'authoring', purpose: 'tech_design', work_order: order, parent_task_id: task.id, ac_refs: ['AC-1'] });
+    });
+  });
+
+  describe('project and milestone phases', () => {
+    it('starts a project in intake and moves it with an event', async () => {
+      expect(project.phase).toBe('intake');
+
+      const moved = await store.setProjectPhase(project.id, 'discovery');
+
+      expect(moved.phase).toBe('discovery');
+      expect(seen).toEqual(['project.phase']);
+    });
+
+    it('refuses an illegal project move and leaves it where it was', async () => {
+      await expect(store.setProjectPhase(project.id, 'active')).rejects.toThrow(IllegalTransition);
+      expect((await store.getProject('p'))?.phase).toBe('intake');
+    });
+
+    it('creates, lists and moves milestones', async () => {
+      const m = await store.createMilestone({ project_id: project.id, n: 1, title: 'First', goal: 'Goal', phase: 'pending' });
+      expect(m).toMatchObject({ n: 1, phase: 'pending', verify_round: 0, verify_cap: 3 });
+
+      await store.setMilestonePhase(project.id, 1, 'spec');
+
+      expect(seen).toEqual(['milestone.phase']);
+      expect((await store.getMilestone(project.id, 1))?.phase).toBe('spec');
+      expect((await store.listMilestones(project.id)).map((x) => x.n)).toEqual([1]);
+    });
+
+    it('refuses an illegal milestone move', async () => {
+      await store.createMilestone({ project_id: project.id, n: 1, title: 'First', goal: 'Goal', phase: 'pending' });
+      await expect(store.setMilestonePhase(project.id, 1, 'merged')).rejects.toThrow(IllegalTransition);
+    });
+
+    it('patches the verify round and cap', async () => {
+      await store.createMilestone({ project_id: project.id, n: 1, title: 'First', goal: 'Goal', phase: 'pending' });
+      await store.patchMilestone(project.id, 1, { verify_round: 2 });
+      await store.patchMilestone(project.id, 1, { verify_cap: 5 });
+      expect(await store.getMilestone(project.id, 1)).toMatchObject({ verify_round: 2, verify_cap: 5 });
+    });
+  });
+
+  describe('criteria constraints', () => {
+    it.each(['passing', 'failing'])('refuses a %s criterion with no evidence', async (status) => {
+      await expect(insertCriterion(status, null)).rejects.toThrow(/CHECK/i);
+    });
+
+    it('takes a passing criterion with evidence', async () => {
+      await expect(insertCriterion('passing', 'QA-REPORT-M1-1@1#ac-1')).resolves.toBeDefined();
+    });
+
+    it('refuses a criterion text change without a new cr_id', async () => {
+      await insertCriterion('unverified', null);
+
+      await expect(db.updateTable('acceptance_criteria').set({ text: 'Changed' }).execute()).rejects.toThrow(/only through a Change Request/);
+      await db.updateTable('acceptance_criteria').set({ text: 'Changed', cr_id: 'CR-1' }).execute();
+      await expect(db.updateTable('acceptance_criteria').set({ text: 'Again', cr_id: 'CR-1' }).execute()).rejects.toThrow(/only through a Change Request/);
+    });
+  });
+});
