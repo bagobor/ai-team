@@ -14,7 +14,8 @@ export async function pruneWorktrees(deps: EngineDeps): Promise<number> {
     .innerJoin('tasks', 'tasks.id', 'attempts.task_id')
     .innerJoin('projects', 'projects.id', 'tasks.project_id')
     .select(['attempts.id', 'attempts.task_id', 'attempts.k', 'attempts.worktree_path', 'attempts.branch', 'tasks.state as task_state', 'projects.repo_path'])
-    .where('attempts.state', 'in', ENDED_WITHOUT_SUCCESS)
+    // A ticket cancelled in review keeps a succeeded attempt that no merge will ever clear away.
+    .where((eb) => eb.or([eb('attempts.state', 'in', ENDED_WITHOUT_SUCCESS), eb.and([eb('attempts.state', '=', 'succeeded'), eb('tasks.state', '=', 'cancelled')])]))
     .where('attempts.worktree_removed_at', 'is', null)
     .where('attempts.ended_at', '<', cutoff)
     .execute();

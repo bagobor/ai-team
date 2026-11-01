@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { request } from 'node:http';
 import { connect, createServer } from 'node:net';
 import { networkInterfaces } from 'node:os';
@@ -9,6 +9,7 @@ import { setTimeout } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import type { Kysely } from 'kysely';
 import { stringify } from 'yaml';
+import { ArtifactStore } from '../src/artifacts/store.ts';
 import { DEFAULT_CONFIG, type Config } from '../src/config.ts';
 import { DaemonAlreadyRunning, startDaemon } from '../src/daemon.ts';
 import type { DB } from '../src/db/schema.ts';
@@ -18,7 +19,7 @@ import { Store, type TaskRow } from '../src/engine/store.ts';
 import { EventLog } from '../src/events.ts';
 import { resolvePaths, type Paths } from '../src/paths.ts';
 import { runSetup } from '../src/setup/setup.ts';
-import { okStep, ticket, until } from './helpers/engine.ts';
+import { okStep, resultLine, ticket, until } from './helpers/engine.ts';
 import { makeRepo, tempDir } from './helpers/repo.ts';
 
 const CLI = fileURLToPath(new URL('../src/cli.ts', import.meta.url));
@@ -256,6 +257,43 @@ describe('the daemon', () => {
       expect(await statusOf(daemon.port)).toBeNull();
       client.destroy();
     });
+
+    it('adds new seed roles on start', async () => {
+      const charter = join(paths.knowledge, 'roles', 'pm', 'charter.md');
+      rmSync(join(paths.knowledge, 'roles', 'pm'), { recursive: true });
+
+      const daemon = await startDaemon({ paths, config: config() });
+
+      expect(existsSync(charter)).toBe(true);
+      await daemon.stop();
+    });
+
+    it(
+      'runs a brief through to CP1 with a fake worker',
+      async () => {
+        const worker = (output: unknown) => ({ lines: [INIT, resultLine({ structured_output: output })] });
+        const script = join(root, 'script.json');
+        const spawnLog = join(root, 'spawns.log');
+        writeFileSync(
+          script,
+          JSON.stringify([
+            worker({ roadmap: { body: '# Roadmap\n', milestones: [{ n: 1, title: 'First', goal: 'It runs' }] }, team_proposal: { body: '# Team\n' }, human_requirements: { body: '# Needs\n' }, stakeholder_note: 'One small milestone' }),
+            worker({ body: '# Environment\n', commands: { build: 'true', test: 'true', lint: 'true', smoke: 'echo smoke-ok' }, toolchains: [], network_allow: [], setup: null, stakeholder_note: 'The toolchain is ready' }),
+          ]),
+        );
+        const project = (await store.getProject('p'))!;
+        await new ArtifactStore(store, paths).commit(project, { message: 'brief', publish: [{ id: 'BRIEF', type: 'brief', status: 'approved', ownerRole: 'stakeholder', approvedBy: 'stakeholder', derivedFrom: [], body: '# A small thing\n' }] });
+
+        const daemon = await startDaemon({ paths, config: { ...config(), claude: { ...config().claude, extraEnv: { FAKE_SCRIPT: script, FAKE_SPAWN_LOG: spawnLog } } } });
+        const item = await until(async () => (await store.listInbox({ state: 'pending' })).find(({ ref }) => ref.kind === 'cp1'), 30_000);
+        await daemon.stop();
+
+        expect(item.recommendation).toContain('One small milestone');
+        expect((await store.getProject('p'))!.phase).toBe('cp1');
+        expect(await store.listMilestones(project.id)).toEqual([]);
+      },
+      TIMEOUT,
+    );
 
     it('binds to 127.0.0.1 only', async () => {
       const daemon = await startDaemon({ paths, config: config() });

@@ -1,4 +1,4 @@
-import { pruneGitWorktrees } from '../git/workspace.ts';
+import { pruneGitWorktrees, removeTempWorktrees } from '../git/workspace.ts';
 import { groupAlive, killGroup, processStartTime } from '../proc.ts';
 import type { TaskState } from './fsm.ts';
 import type { EngineDeps } from './runner.ts';
@@ -15,9 +15,20 @@ async function stillOurs(attempt: AttemptRow): Promise<boolean> {
   return started === null ? groupAlive(attempt.pid) : started === attempt.pid_started_at;
 }
 
-export async function recover(deps: EngineDeps): Promise<{ interrupted: number; killed: number }> {
-  const { store, log, config } = deps;
+export async function recover(deps: EngineDeps): Promise<{ interrupted: number; killed: number; restored: number }> {
+  const { store, log, config, artifacts } = deps;
   let killed = 0;
+  let restored = 0;
+
+  // First, so that nothing resumes from a state repo that disagrees with what SQLite recorded.
+  for (const project of await store.listProjects()) {
+    try {
+      restored += (await artifacts.reconcile(project)).restored.length;
+    } catch (err) {
+      console.error(`Could not reconcile the state repo of ${project.name}:`, err);
+    }
+  }
+
   const attempts = await store.listLiveAttempts();
 
   for (const attempt of attempts) {
@@ -43,10 +54,13 @@ export async function recover(deps: EngineDeps): Promise<{ interrupted: number; 
   }
 
   for (const project of await store.listProjects()) {
-    await pruneGitWorktrees(project.repo_path).catch((err: unknown) => {
+    try {
+      await removeTempWorktrees(project.repo_path);
+      await pruneGitWorktrees(project.repo_path);
+    } catch (err) {
       console.error(`Could not prune the worktrees of ${project.name}:`, err);
-    });
+    }
   }
 
-  return { interrupted: attempts.length, killed };
+  return { interrupted: attempts.length, killed, restored };
 }

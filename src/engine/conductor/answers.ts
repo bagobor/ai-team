@@ -106,6 +106,9 @@ async function answerEscalation(deps: EngineDeps, runner: Runner, project: Proje
   if (choice === 'cancel') {
     if (task && !isClosed(task)) await runner.cancel(taskId);
   } else if (task?.state === 'escalated') {
+    // The stakeholder has chosen to go on without the cancelled work. Left in place, the dependency would only ask them again.
+    const cancelled = new Set((await deps.store.listTasks(project.id)).filter(({ state }) => state === 'cancelled').map(({ ticket_id }) => ticket_id));
+    await deps.store.setDependencies(taskId, task.depends_on.filter((id) => !cancelled.has(id)));
     await runner.retry(taskId);
   }
   return {};

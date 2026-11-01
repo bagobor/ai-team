@@ -446,6 +446,10 @@ export class Store {
     return toTaskRow(row);
   }
 
+  async setDependencies(id: number, dependsOn: string[]): Promise<void> {
+    await this.db.updateTable('tasks').set({ depends_on: JSON.stringify(dependsOn), updated_at: new Date().toISOString() }).where('id', '=', id).execute();
+  }
+
   async getTask(id: number): Promise<TaskRow | undefined> {
     const row = await this.db.selectFrom('tasks').selectAll().where('id', '=', id).executeTakeFirst();
     return row && toTaskRow(row);

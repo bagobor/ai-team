@@ -1,5 +1,7 @@
+import { Conductor } from '../src/engine/conductor/index.ts';
 import { addProject, addTicket } from '../src/engine/intake.ts';
-import { globsMayOverlap, Scheduler } from '../src/engine/scheduler.ts';
+import { globsMayOverlap, priorityOrder, Scheduler } from '../src/engine/scheduler.ts';
+import type { TaskRow } from '../src/engine/store.ts';
 import { eventTypes, makeEngine, okStep, resultLine, ticket, until, type TestEngine } from './helpers/engine.ts';
 import { makeRepo } from './helpers/repo.ts';
 
@@ -31,12 +33,46 @@ describe('globsMayOverlap', () => {
   });
 });
 
+describe('priorityOrder', () => {
+  const row = (id: number, ticket_id: string, overrides: Partial<TaskRow> = {}) => ({ id, project_id: 1, ticket_id, kind: 'ticket', state: 'ready', depends_on: [], ...overrides }) as TaskRow;
+
+  it('orders reviews, then bugs, then the longest chain', () => {
+    const order = priorityOrder([
+      row(1, 'M1-T-1'),
+      row(2, 'M1-T-2'),
+      row(3, 'M1-T-3', { depends_on: ['M1-T-2'], state: 'blocked' }),
+      row(4, 'M1-T-4', { depends_on: ['M1-T-3'], state: 'blocked' }),
+      row(5, 'M1-T-5'),
+      row(6, 'M1-T-6', { depends_on: ['M1-T-5'], state: 'blocked' }),
+      row(7, 'M1-B-1'),
+      row(8, 'M1-QA-1', { kind: 'qa_verify' }),
+      row(9, 'M1-T-1-R1', { kind: 'code_review' }),
+      row(10, 'M1-T-10'),
+      row(11, 'M1-T-11', { depends_on: ['M1-T-10'], state: 'done' }),
+    ]);
+
+    expect(order.map(({ id }) => id)).toEqual([9, 7, 8, 2, 3, 5, 1, 4, 6, 10, 11]);
+  });
+
+  it('keeps chains within a project', () => {
+    const order = priorityOrder([row(1, 'A'), row(2, 'A', { project_id: 2 }), row(3, 'B', { project_id: 2, depends_on: ['A'] })]);
+
+    expect(order.map(({ id }) => id)).toEqual([2, 1, 3]);
+  });
+
+  it('finishes on a dependency cycle', () => {
+    const order = priorityOrder([row(1, 'A', { depends_on: ['B'] }), row(2, 'B', { depends_on: ['A'] })]);
+
+    expect(order.map(({ id }) => id).sort()).toEqual([1, 2]);
+  });
+});
+
 describe('Scheduler', () => {
   const started: { e: TestEngine; sched: Scheduler }[] = [];
 
-  async function engine(opts: Parameters<typeof makeEngine>[0]): Promise<{ e: TestEngine; sched: Scheduler }> {
+  async function engine(opts: Parameters<typeof makeEngine>[0], conductor?: (e: TestEngine) => Pick<Conductor, 'tick'>): Promise<{ e: TestEngine; sched: Scheduler }> {
     const e = await makeEngine(opts);
-    const made = { e, sched: new Scheduler(e, e.runner) };
+    const made = { e, sched: new Scheduler(e, e.runner, conductor?.(e)) };
     started.push(made);
     return made;
   }
@@ -89,8 +125,94 @@ describe('Scheduler', () => {
     expect(await e.store.getTask(b.id)).toMatchObject({ state: 'blocked', blocked_on: 'path_lock' });
 
     await settled(e, a.id, 'review');
+    await e.store.setTaskState(a.id, 'done');
     sched.start(10);
     await settled(e, b.id, 'review');
+  });
+
+  it('keeps an overlapping ticket blocked while the first is in review', async () => {
+    const { e, sched } = await engine({ steps: [okStep({ 'src/a.mjs': '' })] });
+    const a = await e.addTicket(ticket({ id: 'A', touches: ['src/**'] }));
+    const b = await e.addTicket(ticket({ id: 'B', touches: ['src/a.ts'] }));
+
+    await sched.tick();
+    await settled(e, a.id, 'review');
+    await sched.tick();
+
+    expect(await e.store.getTask(b.id)).toMatchObject({ state: 'blocked', blocked_on: 'path_lock' });
+    expect(e.spawnCount()).toBe(1);
+  });
+
+  it('runs the conductor before starting tasks', async () => {
+    let added: TaskRow | undefined;
+    const { e, sched } = await engine({ steps: [SLOW] }, (engine) => ({
+      tick: async () => {
+        added ??= await engine.addTicket(ticket());
+      },
+    }));
+
+    await sched.tick();
+
+    expect(await stateOf(e, added!.id)).toBe('running');
+  });
+
+  it('keeps scheduling when the conductor throws', async () => {
+    const { e, sched } = await engine({ steps: [SLOW] }, () => ({ tick: () => Promise.reject(new Error('The conductor fell over')) }));
+    const t = await e.addTicket(ticket());
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await sched.tick();
+
+    expect(await stateOf(e, t.id)).toBe('running');
+    expect(error).toHaveBeenCalledOnce();
+    error.mockRestore();
+  });
+
+  it('starts a bug ticket ahead of an older ticket', async () => {
+    const { e, sched } = await engine({ steps: [SLOW], config: { maxWorkers: 1 } });
+    const older = await e.addTicket(ticket({ id: 'M1-T-1', touches: ['a/**'] }));
+    const bug = await e.addTicket(ticket({ id: 'M1-B-1', touches: ['b/**'] }));
+
+    await sched.tick();
+
+    expect(await stateOf(e, bug.id)).toBe('running');
+    expect(await stateOf(e, older.id)).toBe('ready');
+  });
+
+  it('asks about a ticket whose dependency was cancelled, rather than waiting on it forever', async () => {
+    const { e, sched } = await engine({ steps: [SLOW] });
+    const a = await e.addTicket(ticket({ id: 'A', touches: ['a/**'] }));
+    await e.store.setTaskState(a.id, 'cancelled');
+    const b = await e.addTicket(ticket({ id: 'B', touches: ['b/**'], depends_on: ['A'] }));
+
+    await sched.tick();
+
+    expect(await e.store.getTask(b.id)).toMatchObject({ state: 'escalated', escalation_reason: 'dependency_cancelled: A' });
+    expect(e.spawnCount()).toBe(0);
+  });
+
+  it('runs that ticket without its dependency once the stakeholder says retry, and does not ask again', async () => {
+    const { e, sched } = await engine({ steps: [SLOW] }, (engine) => new Conductor(engine, engine.runner));
+    const holder = await e.addTicket(ticket({ id: 'H', touches: ['b/**'] }));
+    const a = await e.addTicket(ticket({ id: 'A', touches: ['a/**'] }));
+    await e.store.setTaskState(a.id, 'cancelled');
+    const b = await e.addTicket(ticket({ id: 'B', touches: ['b/**'], depends_on: ['A'] }));
+
+    await sched.tick();
+    expect(await stateOf(e, holder.id)).toBe('running');
+    await sched.tick();
+    const [item] = await e.store.listInbox({ state: 'pending' });
+    expect(item).toMatchObject({ ref: { kind: 'escalation', taskId: b.id } });
+    expect(item!.recommendation).toContain('without');
+    await e.store.answerInbox(item!.id, { option: 'retry' });
+
+    await sched.tick();
+    expect(await e.store.getTask(b.id)).toMatchObject({ state: 'blocked', blocked_on: 'path_lock', depends_on: [] });
+    await e.runner.cancel(holder.id);
+    await sched.tick();
+
+    expect(await stateOf(e, b.id)).toBe('running');
+    expect(await e.store.listInbox({ state: 'pending' })).toEqual([]);
   });
 
   it('does not let a retry start over a task that now holds the lock', async () => {
@@ -127,7 +249,7 @@ describe('Scheduler', () => {
     const doneHere = await e.addTicket(ticket({ id: 'A', touches: ['a/**'] }));
     await e.db.updateTable('tasks').set({ state: 'done' }).where('id', '=', doneHere.id).execute();
     const notDoneThere = await addTicket(deps, 'q', ticket({ id: 'A', touches: ['a/**'] }));
-    await e.store.setTaskState(notDoneThere.id, 'cancelled');
+    await e.store.setTaskState(notDoneThere.id, 'blocked', { blockedOn: 'human_request' });
     const b = await addTicket(deps, 'q', ticket({ id: 'B', touches: ['b/**'], depends_on: ['A'] }));
 
     await sched.tick();
@@ -243,7 +365,7 @@ describe('Scheduler', () => {
   it('writes one event per real state change', async () => {
     const { e, sched } = await engine({ steps: [okStep({ 'src/a.mjs': '' })] });
     const a = await e.addTicket(ticket({ id: 'A', touches: ['a/**'] }));
-    await e.store.setTaskState(a.id, 'cancelled');
+    await e.store.setTaskState(a.id, 'blocked', { blockedOn: 'human_request' });
     const b = await e.addTicket(ticket({ id: 'B', touches: ['b/**'], depends_on: ['A'] }));
 
     for (let i = 0; i < 10; i += 1) await sched.tick();

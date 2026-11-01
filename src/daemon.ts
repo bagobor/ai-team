@@ -6,6 +6,7 @@ import { claudeAdapterFor } from './adapters/claude-code.ts';
 import { ArtifactStore } from './artifacts/store.ts';
 import type { Config } from './config.ts';
 import { openDb } from './db/open.ts';
+import { Conductor } from './engine/conductor/index.ts';
 import { recover } from './engine/recovery.ts';
 import { pruneWorktrees } from './engine/retention.ts';
 import { Runner, type EngineDeps } from './engine/runner.ts';
@@ -64,7 +65,7 @@ export async function startDaemon(opts: { paths: Paths; config: Config; webDist?
     // The port asked for can be 0, and the API's guard has to know the real one.
     const deps = engineDeps(db, paths, { ...config, port });
     const runner = new Runner(deps);
-    const scheduler = new Scheduler(deps, runner);
+    const scheduler = new Scheduler(deps, runner, new Conductor(deps, runner));
 
     const pruneQuietly = () => pruneWorktrees(deps).catch((err: unknown) => console.error('Pruning worktrees failed:', err));
     await syncSeed(paths);

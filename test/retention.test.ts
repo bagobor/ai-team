@@ -15,6 +15,7 @@ const DAY_MS = 86_400_000;
 const ROUTE: Partial<Record<TaskState, TaskState[]>> = {
   escalated: ['ready', 'escalated'],
   review: ['ready', 'running', 'checks', 'review'],
+  cancelled: ['cancelled'],
 };
 
 describe('pruneWorktrees', () => {
@@ -52,6 +53,24 @@ describe('pruneWorktrees', () => {
   const removedAt = async (a: AttemptRow) => (await e.store.listAttempts(a.task_id)).find((row) => row.id === a.id)!.worktree_removed_at;
   const branchExists = (repo: string, branch: string) =>
     execFileSync('git', ['-C', repo, 'branch', '--list', branch], { encoding: 'utf8' }).trim() !== '';
+
+  it('removes the worktree of a ticket cancelled in review once it is old enough', async () => {
+    const old = await endedAttempt(await taskIn('cancelled'), 'succeeded', 8);
+    const recent = await endedAttempt(await taskIn('cancelled'), 'succeeded', 6);
+
+    expect(await pruneWorktrees(e)).toBe(1);
+
+    expect(await removedAt(old)).toBe(NOW.toISOString());
+    expect(await removedAt(recent)).toBeNull();
+  });
+
+  it('keeps the succeeded attempt of a ticket still in review', async () => {
+    const kept = await endedAttempt(await taskIn('review'), 'succeeded', 8);
+
+    expect(await pruneWorktrees(e)).toBe(0);
+
+    expect(await removedAt(kept)).toBeNull();
+  });
 
   it('removes failed worktrees after 7 days, not before', async () => {
     const old = await endedAttempt(await taskIn('escalated'), 'failed', 8);

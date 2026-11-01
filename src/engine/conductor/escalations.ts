@@ -6,6 +6,7 @@ function recommend(reason: string): string {
   if (reason.startsWith('attempts_exhausted')) return 'Read the last failure first. Retry if you fixed what it names or think it was a passing problem.';
   if (reason.startsWith('auth_required') || reason.startsWith('agent_home_not_logged_in')) return 'Log the agent home in, then retry.';
   if (reason.startsWith('workspace_error')) return 'Fix what the error names, then retry.';
+  if (reason.startsWith('dependency_cancelled')) return 'Retry runs it without the cancelled work, so choose it only if this ticket can stand alone. Otherwise cancel it.';
   return 'Look at the reason above, then retry if it has been dealt with.';
 }
 
