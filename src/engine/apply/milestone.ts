@@ -1,4 +1,4 @@
-import { AC_ID, type Criterion } from '../../artifacts/acs.ts';
+import { AC_ID, AC_SLUG, type Criterion } from '../../artifacts/acs.ts';
 import { sectionsOf } from '../../artifacts/format.ts';
 import { reviewId, specId } from './ids.ts';
 import type { Applier } from './index.ts';
@@ -8,7 +8,6 @@ import { oneLine } from './text.ts';
 type SpecOutput = { body: string; criteria: Criterion[] };
 type ReviewOutput = { body: string; known_issues: string[]; deviations: string[] };
 
-const AC_SLUG = /^ac-\d+(-\d+)?$/;
 
 const criterionSection = ({ id, text, verification }: Criterion) => `### ${id}\n\n${text.trim()}\n\nVerified by: ${verification.how}\n`;
 

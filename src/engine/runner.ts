@@ -17,6 +17,7 @@ import { loadRole, type Role } from '../roles/role.ts';
 import { parseTicket } from '../tickets/ticket.ts';
 import { ENV_PROFILE } from './apply/ids.ts';
 import { applyOutput } from './apply/index.ts';
+import { raisedRequests } from './apply/raised.ts';
 import { IllegalTransition } from './fsm.ts';
 import type { AttemptPatch, AttemptRow, ProjectRow, Store, TaskRow } from './store.ts';
 import type { WorkOrder } from './workorder.ts';
@@ -517,9 +518,12 @@ export class Runner {
     if (reporter.error() !== undefined) throw reporter.error();
 
     if (checks.ok) {
-      await artifacts.commit(project, await this.changeReport(work, attempt, output), async (s) => {
+      const { docs, dropped } = await raisedRequests(this.deps, project, task.role_id, output);
+      const report = await this.changeReport(work, attempt, output);
+      await artifacts.commit(project, { ...report, publish: [...(report.publish ?? []), ...docs] }, async (s) => {
         await s.setTaskState(task.id, 'review');
         await s.setAttemptState(attempt.id, 'succeeded', { head_sha: headSha });
+        for (const reason of dropped) await s.logEvent(project.id, 'change_request.dropped', { reason });
       });
       return;
     }

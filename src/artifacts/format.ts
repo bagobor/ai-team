@@ -143,8 +143,7 @@ function slugFor(title: string, taken: Set<string>): string {
   return slug;
 }
 
-export function sectionsOf(body: string): Section[] {
-  const lines = body.split('\n');
+function locateSections(lines: string[]): { slug: string; title: string; level: number; line: number; end: number }[] {
   const headings: { line: number; level: number; title: string }[] = [];
 
   let fence: string | undefined;
@@ -166,15 +165,24 @@ export function sectionsOf(body: string): Section[] {
   const taken = new Set<string>();
   return headings.map((heading, index) => {
     const next = headings.slice(index + 1).find((other) => other.level <= heading.level);
-    const text = lines.slice(heading.line, next ? next.line : lines.length).join('\n') + (next ? '\n' : '');
-    return {
-      slug: slugFor(heading.title, taken),
-      title: heading.title,
-      level: heading.level,
-      text,
-      hash: createHash('sha256').update(text.trim()).digest('hex'),
-    };
+    return { ...heading, slug: slugFor(heading.title, taken), end: next ? next.line : lines.length };
   });
+}
+
+export function sectionsOf(body: string): Section[] {
+  const lines = body.split('\n');
+  return locateSections(lines).map(({ slug, title, level, line, end }) => {
+    const text = lines.slice(line, end).join('\n') + (end < lines.length ? '\n' : '');
+    return { slug, title, level, text, hash: createHash('sha256').update(text.trim()).digest('hex') };
+  });
+}
+
+// Keeps the heading and everything outside the section. It goes by line, so two identical sections can't be confused.
+export function replaceSection(body: string, slug: string, text: string): string | undefined {
+  const lines = body.split('\n');
+  const found = locateSections(lines).find((section) => section.slug === slug);
+  if (!found) return undefined;
+  return [...lines.slice(0, found.line + 1), '', text.trim(), '', ...lines.slice(found.end)].join('\n');
 }
 
 export function sectionText(body: string, slug: string): string | undefined {
