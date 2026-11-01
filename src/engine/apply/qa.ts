@@ -13,6 +13,9 @@ type QaResult = { ac: string; status: 'passing' | 'failing'; commands: string[];
 type QaBug = { ac: string; title: string; description: string; touches: string[]; commands: string[] };
 type QaOutput = { results: QaResult[]; bugs: QaBug[]; summary: string };
 
+// What QA wrote, apart from the commands and output around it in the report's body.
+export type QaRecord = { summary: string; verdicts: { ac: string; status: 'passing' | 'failing'; notes: string; noted: string[] }[] };
+
 // What the engine concludes about a criterion: what QA said is only ever part of it.
 type Verdict = { ac: string; claimed: QaResult['status']; status: QaResult['status']; notes: string; runs: CheckRun[] };
 
@@ -119,7 +122,9 @@ const runLines = (runs: CheckRun[]) =>
     ? ['No command ran.', '']
     : runs.flatMap((run) => [`Command, ${outcomeOf(run)}:`, '', fenced(run.command), '', ...(run.outputTail.trim() === '' ? ['No output.'] : ['Output:', '', fenced(run.outputTail.slice(-OUTPUT_TAIL))]), '']);
 
-function reportSection({ ac, claimed, status, notes, runs }: Verdict, noted: QaBug[]): string[] {
+export const notedLines = (noted: string[]): string[] => (noted.length === 0 ? [] : ['QA also noted, with no ticket opened because the criterion passes:', '', ...noted.map((line) => `- ${line}`), '']);
+
+function reportSection({ ac, claimed, status, notes, runs }: Verdict, noted: string[]): string[] {
   return [
     `## ${ac}`,
     '',
@@ -128,7 +133,7 @@ function reportSection({ ac, claimed, status, notes, runs }: Verdict, noted: QaB
     '',
     ...(notes.trim() === '' ? [] : [quoted(notes), '']),
     ...runLines(runs),
-    ...(noted.length === 0 ? [] : ['QA also noted, with no ticket opened because the criterion passes:', '', ...noted.map(({ title, description }) => `- ${oneLine(title)}: ${oneLine(description)}`), '']),
+    ...notedLines(noted),
   ];
 }
 
@@ -180,8 +185,10 @@ export const applyQaVerify: Applier = async (ctx) => {
   const { verdicts } = verified;
 
   const reportId = `QA-REPORT-M${milestone}-${round}`;
-  const report = [`# QA report: milestone ${milestone}, round ${round}`, '', quoted(output.summary), '', ...verdicts.flatMap((verdict) => reportSection(verdict, verdict.status === 'passing' ? output.bugs.filter(({ ac }) => ac === verdict.ac) : []))].join('\n');
-  const publish: NewVersion[] = [{ id: reportId, type: 'qa_report', status: 'approved', ownerRole: 'qa_engineer', approvedBy: 'owner:qa_engineer', milestone, derivedFrom: ctx.order.inputs, body: report }];
+  const notedOn = ({ ac, status }: Verdict) => (status === 'passing' ? output.bugs.filter((bug) => bug.ac === ac).map(({ title, description }) => `${oneLine(title)}: ${oneLine(description)}`) : []);
+  const report = [`# QA report: milestone ${milestone}, round ${round}`, '', quoted(output.summary), '', ...verdicts.flatMap((verdict) => reportSection(verdict, notedOn(verdict)))].join('\n');
+  const record: QaRecord = { summary: output.summary, verdicts: verdicts.map((verdict) => ({ ac: verdict.ac, status: verdict.status, notes: verdict.notes, noted: notedOn(verdict) })) };
+  const publish: NewVersion[] = [{ id: reportId, type: 'qa_report', status: 'approved', ownerRole: 'qa_engineer', approvedBy: 'owner:qa_engineer', milestone, derivedFrom: ctx.order.inputs, fields: { data: record }, body: report }];
 
   const failing = verdicts.filter(({ status }) => status === 'failing');
   if (failing.length > 0) {

@@ -122,7 +122,21 @@ After the run stopped, port 4780 was free and no daemon or script process remain
 
 ## Findings for later milestones
 
-- **The context budget is the next thing a real project will hit.** M1-REVIEW-1-a2 used 11,841 of 12,000 tokens on a two-ticket milestone. Its inputs are the Spec, the Test Plan and the QA Report, and each grows with the number of criteria, partly because the PM's verification commands are long and appear in all three. A milestone with a few more criteria stops at `context_over_budget`, which escalates at once and that a retry can't fix. Inputs need trimming or section pins before the Apple Watch project.
+- **The context budget is the next thing a real project will hit, and QA now hits it first.** M1-REVIEW-1-a2 used 11,841 of 12,000 tokens on a two-ticket milestone, because its inputs were the whole Spec, Test Plan and QA Report, and the PM's long verification commands appear in all three.
+
+  The review is fixed on `m2-review-manifest-budget`. It now reads the Spec's prose and each criterion's text and status, the Test Plan's prose, and what QA wrote, and it leaves out the commands (`src/engine/review-inputs.ts`). What QA wrote is capped at 3,000 tokens, and the longest notes are cut first, with a mark that says so. The pins don't change, so the lineage doesn't either.
+
+  The other roles still read whole documents, so this moves the practical limit from about 8 criteria to about 10, not to 30. Tokens per manifest, measured with the first run's sizes (about 700 characters per verification command):
+
+  | Criteria | Review before | Review now | Tech Design, Test Plan | QA |
+  |---|---|---|---|---|
+  | 10 | 14,017 | 3,705 | 8,126 | 11,171 |
+  | 12 | 16,330 | 3,980 | 9,338 | 12,918 |
+  | 16 | 20,955 | 4,528 | 11,762 | 16,413 |
+  | 20 | 25,580 | 5,077 | 14,186 | 19,908 |
+  | 30 | 37,143 | 6,448 | 20,246 | 28,645 |
+
+  Tech Design and Test Plan also read the Environment Profile, which adds about 660 tokens that the table leaves out. So QA goes over the 12,000 budget at about 11 criteria, and Tech Design and Test Plan at about 16. Both stop before the review is reached, with a `context_over_budget` that a retry can't fix. QA needs the commands, so it can't drop them the way the review did. It can drop the copies in the Spec's `data.criteria` and `Verified by:` lines, but at 30 criteria that still leaves about 12,850 tokens, over the budget before M3 adds up to 3,000 more of playbook and memory. So long inline commands need a structural answer too, such as scripts in the repo or verifying in batches. This needs solving before the Apple Watch project.
 - **A false Bug dead-ends.** An Engineer who correctly changes nothing gets `no_changes` three times, then escalation. The fix for exit 127 only handles commands the shell can't find. Prose that starts with a real command (exit 1, 129) relies on the new wording. The judge layer (M5) is the natural place for this.
 - **A revise's work order is frozen when it's created.** Tickets that close are now handled, but a ticket opened after that, such as a Bug filed while a revision runs, still costs an attempt before the evidence names it.
 - **Doctor passes while workers can't use the configured models.** It checks neither the CLI version nor the models, so a stakeholder finds out at the first attempt, and a permanent `worker_error` then uses all 3 attempts before escalating.

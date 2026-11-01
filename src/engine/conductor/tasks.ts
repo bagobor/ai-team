@@ -209,7 +209,7 @@ export function milestoneReviewTask(project: ProjectRow, n: number, round: numbe
     milestone: n,
     role_id: 'pm',
     kind: 'authoring',
-    order: workOrder('milestone_review', `Write the Milestone Review of milestone ${n} for the stakeholder: what was built, known issues, and any deviations from the Spec.`, inputs, INTEGRATION),
+    order: workOrder('milestone_review', `Write the Milestone Review of milestone ${n} for the stakeholder: what was built, known issues, and any deviations from the Spec. Your inputs leave out the verification commands and their output, because each criterion has already passed or been waived: the status beside it is the engine's own record.`, inputs, INTEGRATION),
   };
 }
 

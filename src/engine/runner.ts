@@ -19,6 +19,7 @@ import { ENV_PROFILE } from './apply/ids.ts';
 import { applyOutput } from './apply/index.ts';
 import { raisedRequests } from './apply/raised.ts';
 import { IllegalTransition } from './fsm.ts';
+import { reviewInputs } from './review-inputs.ts';
 import type { AttemptPatch, AttemptRow, ProjectRow, Store, TaskRow } from './store.ts';
 import type { WorkOrder } from './workorder.ts';
 
@@ -387,7 +388,7 @@ export class Runner {
       taskSource: `workorder:${order.purpose}`,
       doneCommands: order.checks,
       acRefs: task.ac_refs,
-      inputs: await Promise.all(order.inputs.map((pin) => artifacts.readInput(project, pin))),
+      inputs: order.purpose === 'milestone_review' ? await reviewInputs(this.deps, project, task.milestone, order.inputs) : await Promise.all(order.inputs.map((pin) => artifacts.readInput(project, pin))),
       ...(diff ? { diff } : {}),
       ...(order.comment ? { comment: order.comment } : {}),
     };
