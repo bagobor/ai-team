@@ -1,3 +1,4 @@
+import { parsePin } from '../../artifacts/format.ts';
 import { runSandboxed } from '../../checks/run-checks.ts';
 import { ENV_PROFILE } from './ids.ts';
 import type { Applier } from './index.ts';
@@ -18,6 +19,8 @@ type ProfileOutput = {
   setup: string | null;
 };
 
+const DISCOVERY_IDS = new Set(['ROADMAP', 'TEAM-PROPOSAL', 'HUMAN-REQUIREMENTS']);
+
 export const applyDiscovery: Applier = async (ctx) => {
   const { roadmap, team_proposal, human_requirements } = ctx.output as DiscoveryOutput;
   const { milestones } = roadmap;
@@ -28,7 +31,9 @@ export const applyDiscovery: Applier = async (ctx) => {
   const untitled = milestones.find(({ title }) => title.trim() === '');
   if (untitled) return { ok: false, evidence: `Milestone ${untitled.n} has a blank title` };
 
-  const doc = { status: 'proposed', ownerRole: 'pm', derivedFrom: ctx.order.inputs } as const;
+  // A redo round reads the documents it replaces: those are its history, not its sources.
+  const derivedFrom = ctx.order.inputs.filter((pin) => !DISCOVERY_IDS.has(parsePin(pin).id));
+  const doc = { status: 'proposed', ownerRole: 'pm', derivedFrom } as const;
   return withRaised(ctx, {
     message: 'discovery: roadmap, team proposal and human requirements',
     publish: [
@@ -57,6 +62,6 @@ export const applyEnvironmentProfile: Applier = async (ctx) => {
 
   return withRaised(ctx, {
     message: 'discovery: environment profile',
-    publish: [{ id: ENV_PROFILE, type: 'environment_profile', status: 'proposed', ownerRole: 'tech_lead', derivedFrom: ctx.order.inputs, body, fields: { data: { commands, toolchains, network_allow, setup } } }],
+    publish: [{ id: ENV_PROFILE, type: 'environment_profile', status: 'proposed', ownerRole: 'tech_lead', derivedFrom: ctx.order.inputs.filter((pin) => parsePin(pin).id !== ENV_PROFILE), body, fields: { data: { commands, toolchains, network_allow, setup } } }],
   });
 };

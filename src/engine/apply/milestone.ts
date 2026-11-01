@@ -1,5 +1,5 @@
 import { AC_ID, AC_SLUG, type Criterion } from '../../artifacts/acs.ts';
-import { sectionsOf } from '../../artifacts/format.ts';
+import { parsePin, sectionsOf } from '../../artifacts/format.ts';
 import { reviewId, specId } from './ids.ts';
 import type { Applier } from './index.ts';
 import { withRaised } from './raised.ts';
@@ -66,7 +66,7 @@ export const applyMilestoneSpec: Applier = async (ctx) => {
         type: 'spec',
         status: 'proposed',
         ownerRole: 'pm',
-        derivedFrom: ctx.order.inputs,
+        derivedFrom: ctx.order.inputs.filter((pin) => parsePin(pin).id !== specId(milestone)),
         milestone,
         body: specBody(body, criteria),
         acceptanceCriteria: criteria.map(({ id }) => id),
