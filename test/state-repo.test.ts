@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { commitArtifact, initStateRepo } from '../src/git/state-repo.ts';
+import { commitArtifact, commitFiles, initStateRepo } from '../src/git/state-repo.ts';
 import { revParse, run, tempDir } from './helpers/repo.ts';
 
 describe('project state repo', () => {
@@ -69,5 +69,51 @@ describe('project state repo', () => {
   it('accepts ordinary artifact paths with ids, dots and dashes', async () => {
     const { sha } = await commitArtifact(dir, 'artifacts/ticket/T-1_a.v2.md', 'x\n', 'ordinary');
     expect(sha).toBe(await revParse(dir));
+  });
+});
+
+describe('commitFiles', () => {
+  const stateDir = async () => {
+    const dir = join(tempDir(), 'projects', 'p', 'state');
+    await initStateRepo(dir);
+    return dir;
+  };
+
+  it('writes several files in one commit', async () => {
+    const dir = await stateDir();
+    const before = Number(run(dir, 'rev-list', '--count', 'HEAD'));
+
+    const { sha } = await commitFiles(
+      dir,
+      [
+        { path: 'artifacts/brief/BRIEF.md', content: 'brief' },
+        { path: 'artifacts/roadmap/ROADMAP.md', content: 'roadmap' },
+      ],
+      'plan',
+    );
+
+    expect(sha).toBe(run(dir, 'rev-parse', 'HEAD'));
+    expect(Number(run(dir, 'rev-list', '--count', 'HEAD'))).toBe(before + 1);
+    expect(run(dir, 'show', `${sha}:artifacts/brief/BRIEF.md`)).toBe('brief');
+    expect(run(dir, 'show', `${sha}:artifacts/roadmap/ROADMAP.md`)).toBe('roadmap');
+  });
+
+  it('returns the current head when nothing changed, so a retry after a crash can record it', async () => {
+    const dir = await stateDir();
+    const files = [{ path: 'artifacts/brief/BRIEF.md', content: 'brief' }];
+    const first = await commitFiles(dir, files, 'one');
+
+    const second = await commitFiles(dir, files, 'two');
+
+    expect(second.sha).toBe(first.sha);
+    expect(run(dir, 'log', '-1', '--format=%s')).toBe('one');
+  });
+
+  it.each(['../escape.md', 'artifacts/../../escape.md', '.git/config', 'artifacts/.GIT/x'])('refuses the unsafe path %s and writes nothing', async (path) => {
+    const dir = await stateDir();
+
+    await expect(commitFiles(dir, [{ path: 'artifacts/ok.md', content: 'ok' }, { path, content: 'x' }], 'bad')).rejects.toThrow('not a safe artifact path');
+
+    expect(existsSync(join(dir, 'artifacts/ok.md'))).toBe(false);
   });
 });

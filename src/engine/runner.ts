@@ -3,6 +3,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { Kysely } from 'kysely';
 import type { AttemptHandle, AttemptResult, FailureKind, WorkerAdapter } from '../adapters/types.ts';
+import type { ArtifactStore } from '../artifacts/store.ts';
 import { runChecks } from '../checks/run-checks.ts';
 import type { Config } from '../config.ts';
 import type { DB } from '../db/schema.ts';
@@ -23,6 +24,7 @@ export type EngineDeps = {
   paths: Paths;
   config: Config;
   adapters: Record<string, WorkerAdapter>;
+  artifacts: ArtifactStore;
   now?: () => Date;
 };
 

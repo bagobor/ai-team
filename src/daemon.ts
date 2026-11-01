@@ -3,6 +3,7 @@ import type { AddressInfo } from 'node:net';
 import { fileURLToPath } from 'node:url';
 import { serve } from '@hono/node-server';
 import { claudeAdapterFor } from './adapters/claude-code.ts';
+import { ArtifactStore } from './artifacts/store.ts';
 import type { Config } from './config.ts';
 import { openDb } from './db/open.ts';
 import { recover } from './engine/recovery.ts';
@@ -45,7 +46,8 @@ function close(server: Server): Promise<void> {
 function engineDeps(db: EngineDeps['db'], paths: Paths, config: Config): EngineDeps {
   const log = new EventLog(db);
   const adapter = claudeAdapterFor(paths, config);
-  return { db, log, store: new Store(db, log), paths, config, adapters: { [adapter.id]: adapter } };
+  const store = new Store(db, log);
+  return { db, log, store, paths, config, adapters: { [adapter.id]: adapter }, artifacts: new ArtifactStore(store, paths) };
 }
 
 export async function startDaemon(opts: { paths: Paths; config: Config; webDist?: string }): Promise<{ port: number; address: AddressInfo; stop(): Promise<void> }> {

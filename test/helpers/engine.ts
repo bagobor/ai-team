@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { stringify } from 'yaml';
 import { ClaudeCodeAdapter } from '../../src/adapters/claude-code.ts';
+import { ArtifactStore } from '../../src/artifacts/store.ts';
 import { DEFAULT_CONFIG, type Config } from '../../src/config.ts';
 import { openDb } from '../../src/db/open.ts';
 import { addProject, addTicket } from '../../src/engine/intake.ts';
@@ -59,7 +60,7 @@ export async function makeEngine(opts: {
   const repo = await makeRepo();
   await addProject({ store, paths }, { name: 'p', repoPath: repo.path, create: false });
 
-  const deps: EngineDeps = { db, store, log, paths, config, adapters: { [adapter.id]: adapter }, ...(opts.now ? { now: opts.now } : {}) };
+  const deps: EngineDeps = { db, store, log, paths, config, adapters: { [adapter.id]: adapter }, artifacts: new ArtifactStore(store, paths), ...(opts.now ? { now: opts.now } : {}) };
   const runner = new Runner(deps);
 
   return {

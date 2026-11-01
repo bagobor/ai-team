@@ -1,5 +1,6 @@
 import { sql, type Kysely, type Selectable, type Updateable } from 'kysely';
-import type { AttemptsTable, DB, MilestonesTable, ProjectsTable, TasksTable, VendorPausesTable } from '../db/schema.ts';
+import type { ArtifactStatus, ArtifactType } from '../artifacts/format.ts';
+import type { ArtifactDepsTable, ArtifactVersionsTable, AttemptsTable, DB, MilestonesTable, ProjectsTable, TasksTable, VendorPausesTable } from '../db/schema.ts';
 import type { EventLog, EventRow } from '../events.ts';
 import {
   assertAttemptTransition,
@@ -32,6 +33,16 @@ export type NewTask = Pick<
 
 export type MilestoneRow = Omit<Selectable<MilestonesTable>, 'phase'> & { phase: MilestonePhase };
 export type NewMilestone = Pick<MilestoneRow, 'project_id' | 'n' | 'title' | 'goal' | 'phase'>;
+
+export type ArtifactVersionRow = Omit<Selectable<ArtifactVersionsTable>, 'type' | 'status' | 'derived_from' | 'stale_sections'> & {
+  type: ArtifactType;
+  status: ArtifactStatus;
+  derived_from: string[];
+  stale_sections: string[];
+};
+export type NewArtifactVersion = Omit<ArtifactVersionRow, 'stale_sections' | 'created_at'>;
+export type ArtifactPatch = { status: ArtifactStatus } & Partial<Pick<ArtifactVersionRow, 'sha' | 'derived_from' | 'stale_sections' | 'approved_by' | 'approved_at'>>;
+export type ArtifactDepRow = Selectable<ArtifactDepsTable>;
 
 export type AttemptRow = Omit<Selectable<AttemptsTable>, 'state' | 'manifest' | 'output' | 'failure_evidence' | 'usage'> & {
   state: AttemptState;
@@ -78,6 +89,16 @@ function toTaskRow(row: Selectable<TasksTable>): TaskRow {
 
 function toMilestoneRow(row: Selectable<MilestonesTable>): MilestoneRow {
   return { ...row, phase: row.phase as MilestonePhase };
+}
+
+function toArtifactRow(row: Selectable<ArtifactVersionsTable>): ArtifactVersionRow {
+  return {
+    ...row,
+    type: row.type as ArtifactType,
+    status: row.status as ArtifactStatus,
+    derived_from: JSON.parse(row.derived_from) as string[],
+    stale_sections: JSON.parse(row.stale_sections) as string[],
+  };
 }
 
 function toAttemptRow(row: Selectable<AttemptsTable>): AttemptRow {
@@ -191,6 +212,95 @@ export class Store {
   async getMilestone(projectId: number, n: number): Promise<MilestoneRow | undefined> {
     const row = await this.db.selectFrom('milestones').selectAll().where('project_id', '=', projectId).where('n', '=', n).executeTakeFirst();
     return row && toMilestoneRow(row);
+  }
+
+  async latestArtifact(projectId: number, artifactId: string): Promise<ArtifactVersionRow | undefined> {
+    const row = await this.db
+      .selectFrom('artifact_versions')
+      .selectAll()
+      .where('project_id', '=', projectId)
+      .where('artifact_id', '=', artifactId)
+      .orderBy('version', 'desc')
+      .limit(1)
+      .executeTakeFirst();
+    return row && toArtifactRow(row);
+  }
+
+  async artifactVersion(projectId: number, artifactId: string, version: number): Promise<ArtifactVersionRow | undefined> {
+    const row = await this.db
+      .selectFrom('artifact_versions')
+      .selectAll()
+      .where('project_id', '=', projectId)
+      .where('artifact_id', '=', artifactId)
+      .where('version', '=', version)
+      .executeTakeFirst();
+    return row && toArtifactRow(row);
+  }
+
+  async listLatestArtifacts(projectId: number): Promise<ArtifactVersionRow[]> {
+    const rows = await this.db
+      .selectFrom('artifact_versions')
+      .selectAll()
+      .where('project_id', '=', projectId)
+      .where(
+        sql<boolean>`version = (SELECT MAX(v.version) FROM artifact_versions v WHERE v.project_id = artifact_versions.project_id AND v.artifact_id = artifact_versions.artifact_id)`,
+      )
+      .orderBy('artifact_id')
+      .execute();
+    return rows.map(toArtifactRow);
+  }
+
+  async listArtifactDeps(projectId: number): Promise<ArtifactDepRow[]> {
+    return this.db.selectFrom('artifact_deps').selectAll().where('project_id', '=', projectId).execute();
+  }
+
+  // The earlier versions stop being current in the same step that makes this one current.
+  async insertArtifactVersion(row: NewArtifactVersion): Promise<ArtifactVersionRow> {
+    return this.inTrx(async (db, emit) => {
+      await db
+        .updateTable('artifact_versions')
+        .set({ status: 'superseded' })
+        .where('project_id', '=', row.project_id)
+        .where('artifact_id', '=', row.artifact_id)
+        .where('version', '<', row.version)
+        .execute();
+      const inserted = await db
+        .insertInto('artifact_versions')
+        .values({ ...row, derived_from: JSON.stringify(row.derived_from), created_at: new Date().toISOString() })
+        .returningAll()
+        .executeTakeFirstOrThrow();
+      emit(await this.log.insert(db, { projectId: row.project_id, type: 'artifact.published', payload: { id: row.artifact_id, version: row.version, status: row.status } }));
+      return toArtifactRow(inserted);
+    });
+  }
+
+  async setArtifactStatus(projectId: number, artifactId: string, version: number, patch: ArtifactPatch): Promise<ArtifactVersionRow> {
+    const { derived_from, stale_sections, ...rest } = patch;
+    return this.inTrx(async (db, emit) => {
+      const updated = await db
+        .updateTable('artifact_versions')
+        .set({
+          ...rest,
+          ...(derived_from ? { derived_from: JSON.stringify(derived_from) } : {}),
+          ...(stale_sections ? { stale_sections: JSON.stringify(stale_sections) } : {}),
+        })
+        .where('project_id', '=', projectId)
+        .where('artifact_id', '=', artifactId)
+        .where('version', '=', version)
+        .returningAll()
+        .executeTakeFirst();
+      if (!updated) throw new Error(`No version ${version} of artifact ${artifactId} in project ${projectId}`);
+      emit(await this.log.insert(db, { projectId, type: 'artifact.status', payload: { id: artifactId, status: patch.status } }));
+      return toArtifactRow(updated);
+    });
+  }
+
+  async insertArtifactDeps(deps: ArtifactDepRow[]): Promise<void> {
+    if (deps.length > 0) await this.db.insertInto('artifact_deps').values(deps).execute();
+  }
+
+  async deleteArtifactDeps(projectId: number, fromId: string, fromVersion: number): Promise<void> {
+    await this.db.deleteFrom('artifact_deps').where('project_id', '=', projectId).where('from_id', '=', fromId).where('from_version', '=', fromVersion).execute();
   }
 
   async listMilestones(projectId: number): Promise<MilestoneRow[]> {
