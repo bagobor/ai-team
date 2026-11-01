@@ -4,6 +4,7 @@ import type { DB } from '../src/db/schema.ts';
 import { IllegalTransition } from '../src/engine/fsm.ts';
 import { Store, type NewTask, type ProjectRow, type TaskRow } from '../src/engine/store.ts';
 import { EventLog } from '../src/events.ts';
+import type { WorkOrder } from '../src/engine/workorder.ts';
 
 describe('Store', () => {
   let db: Kysely<DB>;
@@ -356,7 +357,7 @@ describe('Store for M2', () => {
     });
 
     it('stores kind, purpose, work order, parent and criterion refs as values', async () => {
-      const order = { purpose: 'tech_design', instructions: 'Do it', inputs: [], checks: [], base: { kind: 'base' } };
+      const order: WorkOrder = { purpose: 'tech_design', instructions: 'Do it', inputs: [], checks: [], base: { kind: 'base' } };
       const made = await store.createTask({
         project_id: project.id,
         ticket_id: 'M1-TECH',

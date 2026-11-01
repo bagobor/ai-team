@@ -148,6 +148,18 @@ describe('buildManifest', () => {
     });
   });
 
+  describe('network allow-list', () => {
+    const allowOf = (r: ReturnType<typeof buildManifest>) => (r.ok ? r.manifest.networkAllow : undefined);
+
+    it('carries the allowed domains into the manifest', () => {
+      expect(allowOf(buildManifest({ ...input, networkAllow: ['registry.npmjs.org'] }))).toEqual(['registry.npmjs.org']);
+    });
+
+    it('allows nothing by default', () => {
+      expect(allowOf(buildManifest(input))).toEqual([]);
+    });
+  });
+
   describe('output contract', () => {
     it('uses doneCommands for the output contract, with none for a read-only role', async () => {
       const { role, charter, schema, schemaSource } = await loadRole(seedKnowledge, 'pm', 'milestone_spec');

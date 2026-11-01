@@ -14,6 +14,7 @@ import {
   type ProjectPhase,
   type TaskState,
 } from './fsm.ts';
+import type { WorkOrder } from './workorder.ts';
 
 export type ProjectRow = Omit<Selectable<ProjectsTable>, 'phase'> & { phase: ProjectPhase };
 export type NewProject = Pick<ProjectRow, 'name' | 'repo_path' | 'base_branch'>;
@@ -23,7 +24,7 @@ export type TaskRow = Omit<Selectable<TasksTable>, 'state' | 'touches' | 'depend
   touches: string[];
   depends_on: string[];
   dod: string[];
-  work_order: unknown;
+  work_order: WorkOrder | null;
   ac_refs: string[];
 };
 export type NewTask = Pick<
@@ -88,7 +89,7 @@ function toTaskRow(row: Selectable<TasksTable>): TaskRow {
     touches: JSON.parse(row.touches) as string[],
     depends_on: JSON.parse(row.depends_on) as string[],
     dod: JSON.parse(row.dod) as string[],
-    work_order: parseJson(row.work_order),
+    work_order: parseJson(row.work_order) as WorkOrder | null,
     ac_refs: JSON.parse(row.ac_refs) as string[],
   };
 }

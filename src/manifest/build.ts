@@ -27,6 +27,7 @@ export type TaskManifest = {
   parts: ManifestPart[];
   totalTokens: number;
   contextBudget: number;
+  networkAllow: string[];
   flags?: readonly string[];
 };
 
@@ -49,6 +50,7 @@ export type BuildInput = {
   acRefs?: string[];
   diff?: { base: string; head: string; text: string };
   comment?: string;
+  networkAllow?: string[];
   repoInstructions: RepoInstruction[];
   retry?: { evidence: string; changeReport: unknown };
 };
@@ -205,6 +207,7 @@ export function buildManifest(i: BuildInput): BuildResult {
       parts,
       totalTokens,
       contextBudget,
+      networkAllow: i.networkAllow ?? [],
     },
   };
 }

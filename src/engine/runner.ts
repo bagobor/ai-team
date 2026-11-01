@@ -3,19 +3,22 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { Kysely } from 'kysely';
 import type { AttemptHandle, AttemptResult, FailureKind, WorkerAdapter } from '../adapters/types.ts';
-import type { ArtifactStore } from '../artifacts/store.ts';
-import { runChecks } from '../checks/run-checks.ts';
+import type { ArtifactChange, ArtifactStore } from '../artifacts/store.ts';
+import { runChecks, runSandboxed } from '../checks/run-checks.ts';
 import type { Config } from '../config.ts';
 import type { DB } from '../db/schema.ts';
-import type { EventLog } from '../events.ts';
+import type { EventLog, EventType } from '../events.ts';
+import { gitOk } from '../git/git.ts';
 import { addAttemptWorktree, ensureIntegrationBranch, removeAttemptWorktree, snapshotAttempt } from '../git/workspace.ts';
-import { buildManifest, readRepoInstructions } from '../manifest/build.ts';
+import { buildManifest, readRepoInstructions, type BuildInput, type ManifestInput } from '../manifest/build.ts';
 import { manifestDir, stateRepoDir, transcriptPath, workerDenyRead, worktreePath, type Paths } from '../paths.ts';
 import { processStartTime } from '../proc.ts';
 import { loadRole, type Role } from '../roles/role.ts';
-import { parseTicket, type Ticket } from '../tickets/ticket.ts';
+import { parseTicket } from '../tickets/ticket.ts';
+import { applyOutput } from './apply/index.ts';
 import { IllegalTransition } from './fsm.ts';
 import type { AttemptPatch, AttemptRow, ProjectRow, Store, TaskRow } from './store.ts';
+import type { WorkOrder } from './workorder.ts';
 
 export type EngineDeps = {
   db: Kysely<DB>;
@@ -28,7 +31,16 @@ export type EngineDeps = {
   now?: () => Date;
 };
 
-export type AttemptFailureKind = FailureKind | 'check_failed' | 'scope_violation' | 'no_changes' | 'context_over_budget' | 'engine_error';
+export type AttemptFailureKind =
+  | FailureKind
+  | 'check_failed'
+  | 'scope_violation'
+  | 'no_changes'
+  | 'context_over_budget'
+  | 'engine_error'
+  | 'invalid_output'
+  | 'changes_requested'
+  | 'merge_conflict';
 
 // Set from begin until execute ends. cancel and shutdown reach whatever is running through it.
 type Live = {
@@ -41,7 +53,17 @@ type Live = {
   finish: () => void;
 };
 
-type Work = {
+type TaskText = {
+  taskMarkdown: string;
+  taskSource: string;
+  doneCommands: string[];
+  inputs: ManifestInput[];
+  acRefs: string[];
+  diff?: NonNullable<BuildInput['diff']>;
+  comment?: string;
+};
+
+type Work = TaskText & {
   task: TaskRow;
   project: ProjectRow;
   role: Role;
@@ -49,11 +71,20 @@ type Work = {
   schema: object;
   schemaSource: string;
   adapter: WorkerAdapter;
-  ticket: Ticket;
-  ticketMarkdown: string;
   baseSha: string;
+  order: WorkOrder | null;
+  networkAllow: string[];
+  setup?: string;
 };
 
+type ChangeReportOutput = {
+  summary?: string;
+  files_changed?: string[];
+  commands_run?: { command: string; exit_code: number }[];
+  notes?: string;
+};
+
+const ENV_PROFILE = 'ENV-PROFILE';
 const EVENT_STRING_CAP = 4000;
 const INITIAL_BACKOFF_S = 300;
 const MAX_BACKOFF_S = 3600;
@@ -81,6 +112,19 @@ function resultPatch(result: AttemptResult): AttemptPatch {
 
 function failure(kind: AttemptFailureKind | null, evidence: string): AttemptPatch {
   return { failure_kind: kind, failure_evidence: evidence };
+}
+
+function changeReportBody(task: TaskRow, k: number, output: unknown): string {
+  const report = (output ?? {}) as ChangeReportOutput;
+  const list = (heading: string, lines: string[]) => (lines.length > 0 ? [`## ${heading}`, '', ...lines, ''] : []);
+  return [
+    `# Change Report: ${task.ticket_id} attempt ${k}`,
+    '',
+    ...(report.summary ? [report.summary, ''] : []),
+    ...list('Files changed', (report.files_changed ?? []).map((file) => `- \`${file}\``)),
+    ...list('Commands run', (report.commands_run ?? []).map((run) => `- \`${run.command}\` exited with ${run.exit_code}`)),
+    ...(report.notes ? ['## Notes', '', report.notes, ''] : []),
+  ].join('\n');
 }
 
 export class Runner {
@@ -152,6 +196,21 @@ export class Runner {
     await store.setTaskState(taskId, 'ready');
   }
 
+  // The task moves before the worktree goes, so a daemon that dies between the two leaves only a folder for pruning to find.
+  async rejectFromReview(taskId: number, kind: 'changes_requested' | 'merge_conflict', evidence: string): Promise<void> {
+    const { store } = this.deps;
+    const latest = (await store.listAttempts(taskId)).at(-1);
+    if (!latest) throw new Error(`Task ${taskId} has no attempt to reject`);
+    const task = await store.getTask(taskId);
+    const project = task && (await store.getProjectById(task.project_id));
+    if (!project) throw new Error(`No project for task ${taskId}`);
+    await store.atomically(async (s) => {
+      await s.patchAttempt(latest.id, failure(kind, evidence));
+      await this.retryOrEscalate(taskId, s);
+    });
+    await this.removeWorktree(project, latest);
+  }
+
   async shutdown(): Promise<void> {
     this.stopping = true;
     await Promise.all(
@@ -186,6 +245,15 @@ export class Runner {
     live.attempt = attempt;
     await addAttemptWorktree(project.repo_path, worktree, attempt.branch, work.baseSha);
 
+    if (work.setup !== undefined) {
+      const setup = await this.runSetup(work, attempt, work.setup, live);
+      if (live.stop) return this.applyStop(taskId, live);
+      if (!setup.ok) {
+        await store.setAttemptState(attempt.id, 'failed', failure('check_failed', setup.evidence));
+        return this.retryOrEscalate(taskId);
+      }
+    }
+
     const built = buildManifest({
       project: project.name,
       attemptK: k,
@@ -193,11 +261,15 @@ export class Runner {
       charter: work.charter,
       schema: work.schema,
       schemaSource: work.schemaSource,
-      taskId: work.ticket.id,
-      taskMarkdown: work.ticketMarkdown,
-      taskSource: task.ticket_path,
-      inputs: [],
-      doneCommands: work.ticket.definition_of_done,
+      taskId: task.ticket_id,
+      taskMarkdown: work.taskMarkdown,
+      taskSource: work.taskSource,
+      inputs: work.inputs,
+      doneCommands: work.doneCommands,
+      acRefs: work.acRefs,
+      networkAllow: work.networkAllow,
+      ...(work.diff ? { diff: work.diff } : {}),
+      ...(work.comment ? { comment: work.comment } : {}),
       repoInstructions: await readRepoInstructions(worktree),
       ...(previous ? { retry: { evidence: String(previous.failure_evidence), changeReport: previous.output } } : {}),
     });
@@ -247,10 +319,12 @@ export class Runner {
 
     const workspaceError = (err: unknown) => store.setTaskState(taskId, 'escalated', { reason: `workspace_error: ${errorText(err)}` });
 
+    const order = task.work_order;
     let loaded: Awaited<ReturnType<typeof loadRole>>;
     let adapter: WorkerAdapter;
     try {
-      loaded = await loadRole(paths.knowledge, task.role_id);
+      if (task.kind !== 'ticket' && !order) throw new Error(`A ${task.kind} task needs a work order`);
+      loaded = await loadRole(paths.knowledge, task.role_id, order?.purpose);
       const found = adapters[loaded.role.defaults.adapter];
       if (!found) throw new Error(`No adapter named ${loaded.role.defaults.adapter}`);
       adapter = found;
@@ -266,13 +340,115 @@ export class Runner {
     }
 
     try {
-      const { headSha } = await ensureIntegrationBranch(project.repo_path, task.milestone, project.base_branch);
-      const ticketMarkdown = await readFile(join(stateRepoDir(paths, project.name), task.ticket_path), 'utf8');
-      return { task, project, ...loaded, adapter, ticket: parseTicket(ticketMarkdown), ticketMarkdown, baseSha: headSha };
+      const text = order ? await this.orderText(project, task, order) : await this.ticketText(project, task);
+      const profile = await this.approvedProfile(project);
+      return {
+        task,
+        project,
+        ...loaded,
+        adapter,
+        ...text,
+        order,
+        baseSha: await this.baseOf(project, task, order),
+        networkAllow: profile.networkAllow,
+        ...(!order && profile.setup ? { setup: profile.setup } : {}),
+      };
     } catch (err) {
       await workspaceError(err);
       return undefined;
     }
+  }
+
+  private async baseOf(project: ProjectRow, task: TaskRow, order: WorkOrder | null): Promise<string> {
+    if (order?.base.kind === 'sha') return order.base.sha;
+    if (order?.base.kind === 'base') return gitOk(project.repo_path, ['rev-parse', `refs/heads/${project.base_branch}^{commit}`]);
+    return (await ensureIntegrationBranch(project.repo_path, task.milestone, project.base_branch)).headSha;
+  }
+
+  private async ticketText(project: ProjectRow, task: TaskRow): Promise<TaskText> {
+    const { paths, artifacts } = this.deps;
+    const taskMarkdown = await readFile(join(stateRepoDir(paths, project.name), task.ticket_path), 'utf8');
+    const ticket = parseTicket(taskMarkdown);
+    return {
+      taskMarkdown,
+      taskSource: task.ticket_path,
+      doneCommands: ticket.definition_of_done,
+      acRefs: ticket.ac_refs,
+      inputs: await Promise.all(ticket.inputs.map((pin) => artifacts.readInput(project, pin))),
+    };
+  }
+
+  private async orderText(project: ProjectRow, task: TaskRow, order: WorkOrder): Promise<TaskText> {
+    const { artifacts } = this.deps;
+    const diff = order.purpose === 'code_review' ? await this.reviewDiff(project, order) : undefined;
+    return {
+      taskMarkdown: order.instructions,
+      taskSource: `workorder:${order.purpose}`,
+      doneCommands: order.checks,
+      acRefs: task.ac_refs,
+      inputs: await Promise.all(order.inputs.map((pin) => artifacts.readInput(project, pin))),
+      ...(diff ? { diff } : {}),
+      ...(order.comment ? { comment: order.comment } : {}),
+    };
+  }
+
+  private async reviewDiff(project: ProjectRow, order: WorkOrder): Promise<NonNullable<BuildInput['diff']>> {
+    const subject = order.subject && (await this.deps.store.getAttempt(order.subject.attemptId));
+    if (!subject?.base_sha || !subject.head_sha) throw new Error('A code review needs an attempt with a recorded head to review');
+    const text = await gitOk(project.repo_path, ['diff', '--no-ext-diff', '--no-textconv', '--no-color', subject.base_sha, subject.head_sha]);
+    return { base: subject.base_sha, head: subject.head_sha, text: `${text}\n` };
+  }
+
+  // A profile gone stale was still one the stakeholder approved, and workers shouldn't lose their setup because the Roadmap moved.
+  private async approvedProfile(project: ProjectRow): Promise<{ networkAllow: string[]; setup?: string }> {
+    const { artifacts } = this.deps;
+    const row = await artifacts.latest(project.id, ENV_PROFILE);
+    if (row?.status !== 'approved' && row?.status !== 'stale') return { networkAllow: [] };
+    const { network_allow, setup } = (await artifacts.read(project, ENV_PROFILE)).fields.data as { network_allow: string[]; setup: string | null };
+    return { networkAllow: network_allow, ...(setup ? { setup } : {}) };
+  }
+
+  private runSetup(work: Work, attempt: AttemptRow, setup: string, live: Live) {
+    const { paths, config } = this.deps;
+    const { project, task } = work;
+    const reporter = this.commandReporter(project, task.id, attempt.id);
+    return runSandboxed({
+      worktree: attempt.worktree_path,
+      repoPath: project.repo_path,
+      commands: [setup],
+      denyRead: workerDenyRead(paths, homedir()),
+      timeoutS: config.checkTimeoutS,
+      network: true,
+      signal: this.checksSignal(live),
+      onEvent: reporter.onEvent,
+      onSpawn: reporter.onSpawn,
+    }).finally(reporter.flushed);
+  }
+
+  // Sandboxed commands report through synchronous callbacks, so their writes queue up here, in order.
+  private commandReporter(project: ProjectRow, taskId: number, attemptId: number) {
+    const { store, log } = this.deps;
+    let writes: Promise<unknown> = Promise.resolve();
+    let writeError: unknown;
+    const enqueue = (write: () => Promise<unknown>): void => {
+      writes = writes.then(write).catch((err: unknown) => {
+        writeError ??= err;
+      });
+    };
+    return {
+      onEvent: (type: EventType, payload: unknown) =>
+        enqueue(() => log.append({ projectId: project.id, taskId, attemptId, type, payload: payload as Record<string, unknown> })),
+      onSpawn: (pid: number) => enqueue(async () => store.patchAttempt(attemptId, { pid, pid_started_at: await processStartTime(pid) })),
+      flushed: () => writes,
+      error: () => writeError,
+    };
+  }
+
+  private checksSignal(live: Live): AbortSignal {
+    const controller = new AbortController();
+    live.checks = controller;
+    if (live.stop) controller.abort();
+    return controller.signal;
   }
 
   private async pumpEvents(work: Work, attemptId: number, handle: AttemptHandle): Promise<void> {
@@ -296,7 +472,7 @@ export class Runner {
       case 'succeeded':
         await store.patchAttempt(attempt.id, resultPatch(result));
         await this.clearExpiredPause(work.adapter.vendor);
-        return this.checkAttempt(work, attempt, live);
+        return work.order ? this.applyAttempt(work, attempt, work.order, result.output, live) : this.checkAttempt(work, attempt, result.output, live);
       case 'usage_limited':
         await store.setAttemptState(attempt.id, 'interrupted', resultPatch(result));
         await this.pauseVendor(work, attempt.id, result);
@@ -316,24 +492,13 @@ export class Runner {
     await this.retryOrEscalate(taskId);
   }
 
-  private async checkAttempt(work: Work, attempt: AttemptRow, live: Live): Promise<void> {
-    const { store, log, paths, config } = this.deps;
+  private async checkAttempt(work: Work, attempt: AttemptRow, output: unknown, live: Live): Promise<void> {
+    const { store, paths, config, artifacts } = this.deps;
     const { task, project, role } = work;
     await store.setTaskState(task.id, 'checks');
-    await snapshotAttempt(project.repo_path, attempt.worktree_path, `aiteam: ${task.ticket_id} attempt ${attempt.k}`);
+    const { headSha } = await snapshotAttempt(project.repo_path, attempt.worktree_path, `aiteam: ${task.ticket_id} attempt ${attempt.k}`);
 
-    // runChecks reports through synchronous callbacks, so their writes queue up here, in order.
-    let writes: Promise<unknown> = Promise.resolve();
-    let writeError: unknown;
-    const enqueue = (write: () => Promise<unknown>): void => {
-      writes = writes.then(write).catch((err: unknown) => {
-        writeError ??= err;
-      });
-    };
-
-    const controller = new AbortController();
-    live.checks = controller;
-    if (live.stop) controller.abort();
+    const reporter = this.commandReporter(project, task.id, attempt.id);
     const checks = await runChecks({
       repoPath: project.repo_path,
       worktree: attempt.worktree_path,
@@ -342,28 +507,70 @@ export class Runner {
       commands: task.dod,
       denyRead: workerDenyRead(paths, homedir()),
       timeoutS: config.checkTimeoutS,
-      signal: controller.signal,
-      onEvent: (type, payload) =>
-        enqueue(() => log.append({ projectId: project.id, taskId: task.id, attemptId: attempt.id, type, payload: payload as Record<string, unknown> })),
-      onSpawn: (pid) => enqueue(async () => store.patchAttempt(attempt.id, { pid, pid_started_at: await processStartTime(pid) })),
+      signal: this.checksSignal(live),
+      onEvent: reporter.onEvent,
+      onSpawn: reporter.onSpawn,
     });
-    await writes;
+    await reporter.flushed();
 
     if (live.stop) return this.applyStop(task.id, live);
-    if (writeError !== undefined) throw writeError;
+    if (reporter.error() !== undefined) throw reporter.error();
 
     if (checks.ok) {
-      await store.setTaskState(task.id, 'review');
-      await store.setAttemptState(attempt.id, 'succeeded');
+      await artifacts.commit(project, await this.changeReport(work, attempt, output), async (s) => {
+        await s.setTaskState(task.id, 'review');
+        await s.setAttemptState(attempt.id, 'succeeded', { head_sha: headSha });
+      });
       return;
     }
     await store.setAttemptState(attempt.id, 'failed', failure(checks.kind, checks.evidence));
     await this.retryOrEscalate(task.id);
   }
 
-  private async retryOrEscalate(taskId: number): Promise<void> {
-    const { store, config } = this.deps;
-    if ((await store.failedAttemptCount(taskId)) >= config.maxAttempts) {
+  private async changeReport(work: Work, attempt: AttemptRow, output: unknown): Promise<ArtifactChange> {
+    const { task, project } = work;
+    const ticket = await this.deps.artifacts.latest(project.id, task.ticket_id);
+    const id = `CHANGE-${task.ticket_id}-a${attempt.k}`;
+    return {
+      message: `${id}: change report`,
+      publish: [
+        {
+          id,
+          type: 'change_report',
+          status: 'approved',
+          ownerRole: task.role_id,
+          approvedBy: `owner:${task.role_id}`,
+          milestone: task.milestone,
+          derivedFrom: ticket ? [`${task.ticket_id}@${ticket.version}`] : [],
+          fields: { data: output ?? null },
+          body: changeReportBody(task, attempt.k, output),
+        },
+      ],
+    };
+  }
+
+  // What a worker with a work order changed in its worktree counts for nothing: only its structured output moves the project.
+  private async applyAttempt(work: Work, attempt: AttemptRow, order: WorkOrder, output: unknown, live: Live): Promise<void> {
+    const { store, artifacts } = this.deps;
+    const { task, project } = work;
+    await store.setTaskState(task.id, 'checks');
+    const applied = await applyOutput({ deps: this.deps, project, task, attempt, order, output, worktree: attempt.worktree_path, signal: this.checksSignal(live) });
+
+    if (live.stop) return this.applyStop(task.id, live);
+    if (!applied.ok) {
+      await store.setAttemptState(attempt.id, 'invalid_output', failure('invalid_output', applied.evidence));
+      return this.retryOrEscalate(task.id);
+    }
+    await artifacts.commit(project, applied.change, async (s, rows) => {
+      await s.setAttemptState(attempt.id, 'succeeded');
+      await s.setTaskState(task.id, 'done');
+      await applied.after?.(s, rows);
+    });
+    await this.removeWorktree(project, attempt);
+  }
+
+  private async retryOrEscalate(taskId: number, store: Store = this.deps.store): Promise<void> {
+    if ((await store.failedAttemptCount(taskId)) >= this.deps.config.maxAttempts) {
       await store.setTaskState(taskId, 'escalated', { reason: 'attempts_exhausted' });
     } else {
       await store.setTaskState(taskId, 'ready');
@@ -376,10 +583,13 @@ export class Runner {
     const cancelling = stop === 'cancel';
     if (attempt) await store.setAttemptState(attempt.id, cancelling ? 'cancelled' : 'interrupted', patch);
     await store.setTaskState(taskId, cancelling ? 'cancelled' : 'ready');
-    if (!cancelling || !attempt || !project) return;
+    if (cancelling && attempt && project) await this.removeWorktree(project, attempt);
+  }
+
+  private async removeWorktree(project: ProjectRow, attempt: AttemptRow): Promise<void> {
     try {
       await removeAttemptWorktree(project.repo_path, attempt.worktree_path, attempt.branch);
-      await store.patchAttempt(attempt.id, { worktree_removed_at: new Date().toISOString() });
+      await this.deps.store.patchAttempt(attempt.id, { worktree_removed_at: new Date().toISOString() });
     } catch (err) {
       // Pruning gets another go at a worktree whose removal time was never set.
       console.error(`Could not remove the worktree of attempt ${attempt.id}: ${errorText(err)}`);

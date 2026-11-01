@@ -26,7 +26,7 @@ export type TestEngine = EngineDeps & {
   cleanup(): Promise<void>;
 };
 
-const SETTLED = ['review', 'escalated', 'cancelled'];
+const SETTLED = ['review', 'done', 'escalated', 'cancelled'];
 
 export async function makeEngine(opts: {
   steps: unknown[];

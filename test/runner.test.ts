@@ -1,14 +1,27 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import type { AttemptRow } from '../src/engine/store.ts';
+import { parse as parseYaml } from 'yaml';
+import { applyDiscovery } from '../src/engine/apply/discovery.ts';
+import type { AttemptRow, NewTask, ProjectRow, TaskRow } from '../src/engine/store.ts';
+import type { WorkOrder } from '../src/engine/workorder.ts';
 import type { TaskManifest } from '../src/manifest/build.ts';
-import { manifestDir, transcriptPath, worktreePath } from '../src/paths.ts';
+import { manifestDir, stateRepoDir, transcriptPath, worktreePath } from '../src/paths.ts';
 import { eventTypes, makeEngine, okStep, resultLine, runOnce, runToSettled, ticket, until, type TestEngine } from './helpers/engine.ts';
-import { commitAll, tempDir } from './helpers/repo.ts';
+import { commitAll, revParse, run, tempDir } from './helpers/repo.ts';
+
+// One purpose stands in for all of them: what the runner does with an applier's answer doesn't depend on which it was.
+vi.mock('../src/engine/apply/discovery.ts', () => ({ applyDiscovery: vi.fn() }));
+const applier = vi.mocked(applyDiscovery);
 
 const INIT = JSON.stringify({ type: 'system', subtype: 'init', session_id: 's', model: 'm' });
 const SLOW_STEP = { lines: [INIT], delayMs: 120_000 };
+const DISCOVERY = { roadmap: { body: '# Roadmap\n', milestones: [] }, team_proposal: { body: 'Team' }, human_requirements: { body: 'Needs' }, stakeholder_note: 'Note' };
+const discoveryStep = (files: Record<string, string> = {}) => ({ writeFiles: files, lines: [INIT, resultLine({ structured_output: DISCOVERY })] });
+const roadmapChange = (body = '# Roadmap\n') => ({
+  message: 'publish the roadmap',
+  publish: [{ id: 'ROADMAP', type: 'roadmap' as const, status: 'proposed' as const, ownerRole: 'pm', derivedFrom: [], body }],
+});
 
 function alive(pid: number): boolean {
   try {
@@ -29,6 +42,46 @@ describe('Runner', () => {
   }
 
   const task = async (e: TestEngine, id: number) => (await e.store.getTask(id))!;
+  const projectOf = async (e: TestEngine): Promise<ProjectRow> => (await e.store.getProject('p'))!;
+  const taskText = (e: TestEngine, ticketId: string, k: number) => readFileSync(join(manifestDir(e.paths, 'p', ticketId, k), 'task.md'), 'utf8');
+
+  beforeEach(() => {
+    applier.mockReset();
+  });
+
+  async function orderTask(e: TestEngine, order: Partial<WorkOrder> = {}, fields: Partial<NewTask> = {}): Promise<TaskRow> {
+    const project = await projectOf(e);
+    return e.store.createTask({
+      project_id: project.id,
+      ticket_id: 'DISCOVERY',
+      title: 'Discovery',
+      milestone: 1,
+      role_id: 'pm',
+      ticket_path: '',
+      ticket_sha: '',
+      touches: [],
+      depends_on: [],
+      dod: [],
+      kind: 'authoring',
+      purpose: 'discovery',
+      work_order: { purpose: 'discovery', instructions: 'Write the roadmap: order-instructions-marker', inputs: [], checks: [], base: { kind: 'base' }, ...order },
+      ...fields,
+    });
+  }
+
+  async function publishBrief(e: TestEngine, body = 'brief-content-marker\n'): Promise<void> {
+    await e.artifacts.commit(await projectOf(e), {
+      message: 'brief',
+      publish: [{ id: 'BRIEF', type: 'brief', status: 'approved', ownerRole: 'stakeholder', derivedFrom: [], body, approvedBy: 'stakeholder' }],
+    });
+  }
+
+  async function publishProfile(e: TestEngine, status: 'proposed' | 'approved', data: { network_allow: string[]; setup: string | null }): Promise<void> {
+    await e.artifacts.commit(await projectOf(e), {
+      message: 'profile',
+      publish: [{ id: 'ENV-PROFILE', type: 'environment_profile', status, ownerRole: 'tech_lead', derivedFrom: [], body: '# Profile\n', fields: { data } }],
+    });
+  }
   const systemPrompt = (e: TestEngine, ticketId: string) => readFileSync(join(manifestDir(e.paths, 'p', ticketId, 1), 'system.md'), 'utf8');
 
   // Wrapped because an async function would otherwise wait for the promise it returns, and so for the whole attempt.
@@ -620,4 +673,356 @@ describe('Runner', () => {
     expect(input.content.length).toBe(4000);
     expect(input.nested[0]!.deep.length).toBe(4000);
   });
+
+  describe('tickets', () => {
+    it('publishes the Change Report and records head_sha when checks pass', async () => {
+      const e = await engine({ steps: [okStep({ 'src/a.mjs': '' }, { summary: 'did-the-work-marker', files_changed: ['src/a.mjs'] })] });
+      const t = await e.addTicket(ticket());
+
+      await runOnce(e, t.id);
+
+      const [a] = await e.store.listAttempts(t.id);
+      expect(await task(e, t.id)).toMatchObject({ state: 'review' });
+      expect(a).toMatchObject({ state: 'succeeded', head_sha: run(a!.worktree_path, 'rev-parse', 'HEAD') });
+      expect(a!.head_sha).not.toBe(a!.base_sha);
+      expect(existsSync(a!.worktree_path)).toBe(true);
+
+      const project = await projectOf(e);
+      expect(await e.artifacts.latest(project.id, 'CHANGE-T-1-a1')).toMatchObject({
+        type: 'change_report',
+        version: 1,
+        status: 'approved',
+        approved_by: 'owner:engineer',
+        derived_from: [],
+      });
+      const doc = await e.artifacts.read(project, 'CHANGE-T-1-a1');
+      expect(doc.body).toContain('did-the-work-marker');
+      expect(doc.body).toContain('src/a.mjs');
+    });
+
+    it('derives the Change Report from the ticket when the ticket has a version', async () => {
+      const e = await engine({ steps: [okStep({ 'src/a.mjs': '' })] });
+      const t = await e.addTicket(ticket());
+      const { id: _id, ...fields } = parseYaml(ticket().split('---\n')[1]!) as Record<string, unknown>;
+      await e.artifacts.commit(await projectOf(e), {
+        message: 'ticket',
+        publish: [{ id: 'T-1', type: 'ticket', status: 'approved', ownerRole: 'tech_lead', derivedFrom: [], body: 'Do it.\n', approvedBy: 'owner:tech_lead', fields }],
+      });
+
+      await runOnce(e, t.id);
+
+      expect(await e.artifacts.latest((await projectOf(e)).id, 'CHANGE-T-1-a1')).toMatchObject({ derived_from: ['T-1@1'] });
+    });
+
+    it('hands a ticket its pinned inputs', async () => {
+      const e = await engine({ steps: [okStep({ 'src/a.mjs': '' })] });
+      await publishBrief(e);
+      const t = await e.addTicket(ticket({ inputs: ['BRIEF@1'] }));
+
+      await runOnce(e, t.id);
+
+      expect(taskText(e, t.ticket_id, 1)).toContain('brief-content-marker');
+    });
+
+    it('leaves task and attempt untouched in SQLite when the publish fails', async () => {
+      const e = await engine({ steps: [okStep({ 'src/a.mjs': '' })] });
+      const t = await e.addTicket(ticket());
+      // A file where the report's folder has to go makes the git half of the publish fail.
+      const blocked = join(stateRepoDir(e.paths, 'p'), 'artifacts');
+      execFileSync('mkdir', ['-p', blocked]);
+      writeFileSync(join(blocked, 'change_report'), 'in the way');
+
+      await runOnce(e, t.id);
+
+      const [a] = await e.store.listAttempts(t.id);
+      expect(a).toMatchObject({ state: 'failed', failure_kind: 'engine_error', head_sha: null });
+      expect(await task(e, t.id)).toMatchObject({ state: 'escalated' });
+      expect((await task(e, t.id)).escalation_reason).toMatch(/^engine_error: /);
+      expect(await e.artifacts.latest((await projectOf(e)).id, 'CHANGE-T-1-a1')).toBeUndefined();
+      expect(await e.store.failedAttemptCount(t.id)).toBe(0);
+    });
+  });
+
+  describe('tasks with a work order', () => {
+    it('finishes an authoring task from checks to done when its output applies', async () => {
+      const e = await engine({ steps: [discoveryStep()] });
+      const t = await orderTask(e);
+      let stateDuringApply: string | undefined;
+      applier.mockImplementation(async (ctx) => {
+        stateDuringApply = (await ctx.deps.store.getTask(ctx.task.id))?.state;
+        expect(ctx.output).toEqual(DISCOVERY);
+        return { ok: true, change: roadmapChange(), after: async (s) => void (await s.setProjectPhase(ctx.project.id, 'discovery')) };
+      });
+
+      await runOnce(e, t.id);
+
+      expect(stateDuringApply).toBe('checks');
+      expect(await task(e, t.id)).toMatchObject({ state: 'done' });
+      const [a] = await e.store.listAttempts(t.id);
+      expect(a).toMatchObject({ state: 'succeeded', failure_kind: null });
+      expect(existsSync(a!.worktree_path)).toBe(false);
+      expect(a!.worktree_removed_at).not.toBeNull();
+
+      const project = await projectOf(e);
+      expect(project.phase).toBe('discovery');
+      expect(await e.artifacts.latest(project.id, 'ROADMAP')).toMatchObject({ status: 'proposed', version: 1 });
+    });
+
+    it("gives the worker the order's instructions, inputs and role schema", async () => {
+      const e = await engine({ steps: [discoveryStep()] });
+      await publishBrief(e);
+      const t = await orderTask(e, { inputs: ['BRIEF@1'], comment: 'stakeholder-comment-marker' });
+      applier.mockResolvedValue({ ok: true, change: roadmapChange() });
+
+      await runOnce(e, t.id);
+
+      const text = taskText(e, 'DISCOVERY', 1);
+      expect(text).toContain('order-instructions-marker');
+      expect(text).toContain('brief-content-marker');
+      expect(text).toContain('stakeholder-comment-marker');
+      const [a] = await e.store.listAttempts(t.id);
+      const manifest = a!.manifest as TaskManifest;
+      expect(manifest.roleId).toBe('pm');
+      expect((manifest.outputSchema as { title: string }).title).toBe('Discovery');
+    });
+
+    it('ignores files an authoring worker changed', async () => {
+      const e = await engine({ steps: [discoveryStep({ 'src/sneaky.mjs': 'written by a read-only role' })] });
+      const t = await orderTask(e);
+      applier.mockResolvedValue({ ok: true, change: roadmapChange() });
+      const commitsBefore = run(e.repoPath, 'rev-list', '--all', '--count');
+
+      await runOnce(e, t.id);
+
+      expect(await task(e, t.id)).toMatchObject({ state: 'done' });
+      expect(run(e.repoPath, 'rev-list', '--all', '--count')).toBe(commitsBefore);
+      expect(existsSync(join(e.repoPath, 'src/sneaky.mjs'))).toBe(false);
+    });
+
+    it('retries an authoring task with the applier evidence when output does not apply', async () => {
+      const e = await engine({ steps: [discoveryStep(), discoveryStep()] });
+      const t = await orderTask(e);
+      applier.mockResolvedValueOnce({ ok: false, evidence: 'milestones have a gap: applier-evidence-marker' });
+      applier.mockResolvedValueOnce({ ok: true, change: roadmapChange() });
+
+      await runToSettled(e, t.id);
+
+      const [a1, a2] = await e.store.listAttempts(t.id);
+      expect(a1).toMatchObject({ state: 'invalid_output', failure_kind: 'invalid_output' });
+      expect(String(a1!.failure_evidence)).toContain('applier-evidence-marker');
+      expect(a2).toMatchObject({ state: 'succeeded', k: 2 });
+      expect(a2!.worktree_path).not.toBe(a1!.worktree_path);
+      expect(taskText(e, 'DISCOVERY', 2)).toContain('applier-evidence-marker');
+      expect(await task(e, t.id)).toMatchObject({ state: 'done' });
+    });
+
+    it('escalates an authoring task after three invalid outputs', async () => {
+      const e = await engine({ steps: [discoveryStep()] });
+      const t = await orderTask(e);
+      applier.mockResolvedValue({ ok: false, evidence: 'still wrong' });
+
+      await runToSettled(e, t.id);
+
+      expect(await task(e, t.id)).toMatchObject({ state: 'escalated', escalation_reason: 'attempts_exhausted' });
+      expect(e.spawnCount()).toBe(3);
+      expect(await e.artifacts.latest((await projectOf(e)).id, 'ROADMAP')).toBeUndefined();
+    });
+
+    it('does not count an applier crash as a failed attempt', async () => {
+      const e = await engine({ steps: [discoveryStep()] });
+      const t = await orderTask(e);
+      applier.mockRejectedValue(new Error('applier-crash-marker'));
+
+      await runOnce(e, t.id);
+
+      expect(await task(e, t.id)).toMatchObject({ state: 'escalated' });
+      expect((await task(e, t.id)).escalation_reason).toContain('engine_error: applier-crash-marker');
+      expect((await e.store.listAttempts(t.id))[0]).toMatchObject({ state: 'failed', failure_kind: 'engine_error' });
+      expect(await e.store.failedAttemptCount(t.id)).toBe(0);
+    });
+
+    it("rolls the publish back when the applier's after fails", async () => {
+      const e = await engine({ steps: [discoveryStep()] });
+      const t = await orderTask(e);
+      applier.mockResolvedValue({
+        ok: true,
+        change: roadmapChange(),
+        after: async () => {
+          throw new Error('then-crash-marker');
+        },
+      });
+
+      await runOnce(e, t.id);
+
+      expect(await e.artifacts.latest((await projectOf(e)).id, 'ROADMAP')).toBeUndefined();
+      expect(await task(e, t.id)).toMatchObject({ state: 'escalated' });
+      expect((await task(e, t.id)).escalation_reason).toContain('then-crash-marker');
+      expect((await e.store.listAttempts(t.id))[0]).toMatchObject({ state: 'failed', failure_kind: 'engine_error' });
+    });
+
+    it('cancel stops an applier that is still running and publishes nothing', async () => {
+      const e = await engine({ steps: [discoveryStep()] });
+      const t = await orderTask(e);
+      applier.mockImplementation(async (ctx) => {
+        await new Promise((resolve) => ctx.signal.addEventListener('abort', resolve, { once: true }));
+        return { ok: true, change: roadmapChange() };
+      });
+
+      await e.store.setTaskState(t.id, 'ready');
+      await e.runner.begin(t.id);
+      const running = e.runner.execute(t.id);
+      await until(async () => (await task(e, t.id)).state === 'checks' && applier.mock.calls.length === 1);
+
+      await e.runner.cancel(t.id);
+      await running;
+
+      expect(await task(e, t.id)).toMatchObject({ state: 'cancelled' });
+      expect((await e.store.listAttempts(t.id))[0]).toMatchObject({ state: 'cancelled' });
+      expect(await e.artifacts.latest((await projectOf(e)).id, 'ROADMAP')).toBeUndefined();
+    });
+
+    it.each([
+      ['base', 'main head'],
+      ['integration', 'milestone branch head'],
+    ] as const)('starts a %s order from the %s', async (kind, _from) => {
+      const e = await engine({ steps: [discoveryStep()] });
+      const main = await revParse(e.repoPath, 'HEAD');
+      // The milestone branch moves ahead of main, so the two bases differ.
+      run(e.repoPath, 'branch', 'aiteam/m1');
+      const scratch = join(tempDir(), 'wt');
+      run(e.repoPath, 'worktree', 'add', '--quiet', scratch, 'aiteam/m1');
+      writeFileSync(join(scratch, 'ahead.txt'), 'ahead');
+      commitAll(scratch, 'ahead of main');
+      const integration = await revParse(scratch, 'HEAD');
+      const t = await orderTask(e, { base: { kind } });
+      applier.mockResolvedValue({ ok: true, change: roadmapChange() });
+
+      await runOnce(e, t.id);
+
+      expect((await e.store.listAttempts(t.id))[0]!.base_sha).toBe(kind === 'base' ? main : integration);
+    });
+
+    it('starts a review attempt at the commit it reviews', async () => {
+      const e = await engine({
+        steps: [okStep({ 'src/a.mjs': 'reviewed-content-marker\n' }), { lines: [INIT, resultLine({ structured_output: { verdict: 'approve', summary: 'Fine', findings: [] } })] }],
+      });
+      const t = await e.addTicket(ticket());
+      await runOnce(e, t.id);
+      const [engineered] = await e.store.listAttempts(t.id);
+      const sha = engineered!.head_sha!;
+
+      const review = await orderTask(
+        e,
+        { purpose: 'code_review', instructions: 'Review it.', base: { kind: 'sha', sha }, subject: { ticketTaskId: t.id, attemptId: engineered!.id } },
+        { ticket_id: 'REVIEW-T-1', role_id: 'code_reviewer', kind: 'code_review', purpose: 'code_review', milestone: t.milestone },
+      );
+      await runOnce(e, review.id);
+
+      expect((await e.store.listAttempts(review.id))[0]!.base_sha).toBe(sha);
+      expect(taskText(e, 'REVIEW-T-1', 1)).toContain('+reviewed-content-marker');
+    });
+  });
+
+  describe('rejectFromReview', () => {
+    it('rejectFromReview sends a ticket back to ready and hands the evidence to the next attempt', async () => {
+      const e = await engine({ steps: [okStep({ 'src/a.mjs': '' }), okStep({ 'src/b.mjs': '' })] });
+      const t = await e.addTicket(ticket());
+      await runOnce(e, t.id);
+
+      await e.runner.rejectFromReview(t.id, 'changes_requested', 'reviewer-says-marker');
+
+      expect(await task(e, t.id)).toMatchObject({ state: 'ready' });
+      const [a1] = await e.store.listAttempts(t.id);
+      expect(a1).toMatchObject({ state: 'succeeded', failure_kind: 'changes_requested', failure_evidence: 'reviewer-says-marker' });
+      expect(existsSync(a1!.worktree_path)).toBe(false);
+      expect(a1!.worktree_removed_at).not.toBeNull();
+      expect(await e.store.failedAttemptCount(t.id)).toBe(1);
+
+      await runOnce(e, t.id);
+
+      expect(taskText(e, t.ticket_id, 2)).toContain('reviewer-says-marker');
+      expect(await task(e, t.id)).toMatchObject({ state: 'review' });
+    });
+
+    it('rejectFromReview escalates at the attempt cap', async () => {
+      const e = await engine({ steps: [okStep({ 'src/a.mjs': '' })] });
+      const t = await e.addTicket(ticket());
+
+      for (const kind of ['changes_requested', 'merge_conflict'] as const) {
+        await runOnce(e, t.id);
+        await e.runner.rejectFromReview(t.id, kind, 'not yet');
+        expect(await task(e, t.id)).toMatchObject({ state: 'ready' });
+      }
+      await runOnce(e, t.id);
+      await e.runner.rejectFromReview(t.id, 'changes_requested', 'still not');
+
+      expect(await task(e, t.id)).toMatchObject({ state: 'escalated', escalation_reason: 'attempts_exhausted' });
+    });
+
+    it('refuses a task with no attempt', async () => {
+      const e = await engine({ steps: [] });
+      const t = await e.addTicket(ticket());
+
+      await expect(e.runner.rejectFromReview(t.id, 'changes_requested', 'x')).rejects.toThrow(/no attempt/);
+    });
+  });
+
+  describe('environment profile', () => {
+    const domains = (a: AttemptRow) => {
+      const flags = (a.manifest as TaskManifest).flags!;
+      return (JSON.parse(flags[flags.indexOf('--settings') + 1]!) as { sandbox: { network: { allowedDomains: string[] } } }).sandbox.network.allowedDomains;
+    };
+
+    it('runs the approved setup in the fresh worktree and allows its domains', async () => {
+      const e = await engine({ steps: [okStep({ 'src/a.mjs': '' })] });
+      await publishProfile(e, 'approved', { network_allow: ['registry.npmjs.org'], setup: 'mkdir -p src && echo done > src/from-setup.txt' });
+      const t = await e.addTicket(ticket());
+
+      await runOnce(e, t.id);
+
+      const [a] = await e.store.listAttempts(t.id);
+      expect(readFileSync(join(a!.worktree_path, 'src/from-setup.txt'), 'utf8')).toBe('done\n');
+      expect(domains(a!)).toEqual(['registry.npmjs.org']);
+      expect(await eventTypes(e, t.id)).toContain('check.started');
+    });
+
+    it('has neither until the profile is approved', async () => {
+      const e = await engine({ steps: [okStep({ 'src/a.mjs': '' })] });
+      await publishProfile(e, 'proposed', { network_allow: ['registry.npmjs.org'], setup: 'false' });
+      const t = await e.addTicket(ticket());
+
+      await runOnce(e, t.id);
+
+      const [a] = await e.store.listAttempts(t.id);
+      expect(a).toMatchObject({ state: 'succeeded' });
+      expect(domains(a!)).toEqual([]);
+    });
+
+    it('fails the attempt without starting a worker when setup fails', async () => {
+      const e = await engine({ steps: [okStep({ 'src/a.mjs': '' })] });
+      await publishProfile(e, 'approved', { network_allow: [], setup: 'echo setup-output-marker; exit 7' });
+      const t = await e.addTicket(ticket());
+
+      await runOnce(e, t.id);
+
+      const [a] = await e.store.listAttempts(t.id);
+      expect(a).toMatchObject({ state: 'failed', failure_kind: 'check_failed' });
+      expect(String(a!.failure_evidence)).toContain('setup-output-marker');
+      expect(e.spawnCount()).toBe(0);
+      expect(await task(e, t.id)).toMatchObject({ state: 'ready' });
+      expect(await e.store.failedAttemptCount(t.id)).toBe(1);
+    });
+
+    it('runs no setup for an authoring task', async () => {
+      const e = await engine({ steps: [discoveryStep()] });
+      await publishProfile(e, 'approved', { network_allow: ['example.com'], setup: 'false' });
+      const t = await orderTask(e);
+      applier.mockResolvedValue({ ok: true, change: roadmapChange() });
+
+      await runOnce(e, t.id);
+
+      expect(await task(e, t.id)).toMatchObject({ state: 'done' });
+    });
+  });
+
 });

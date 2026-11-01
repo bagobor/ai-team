@@ -28,8 +28,9 @@ export function buildClaudeInvocation(m: TaskManifest, ws: Workspace, cfg: Claud
   // The OS sandbox covers only Bash, so the file tools carry their own path rule.
   const tools = [...read, ...edit, ...bash];
   const allowed = [...read.map(inWorktree), ...bash, ...edit.map(inWorktree)];
+  const allowedDomains = m.tools.some((tool) => typeof tool === 'object' && 'network' in tool) ? m.networkAllow : [];
   const settings = {
-    sandbox: { enabled: true, allowUnsandboxedCommands: false, network: { allowedDomains: [] }, filesystem: { denyRead: cfg.denyRead, allowRead: [ws.path] } },
+    sandbox: { enabled: true, allowUnsandboxedCommands: false, network: { allowedDomains }, filesystem: { denyRead: cfg.denyRead, allowRead: [ws.path] } },
   };
 
   const argv = [

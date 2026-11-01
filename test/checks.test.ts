@@ -2,9 +2,10 @@ import { existsSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:
 import { createServer, type AddressInfo } from 'node:net';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { runChecks } from '../src/checks/run-checks.ts';
+import { runChecks, runSandboxed } from '../src/checks/run-checks.ts';
 import type { EventType } from '../src/events.ts';
 import { addAttemptWorktree, snapshotAttempt } from '../src/git/workspace.ts';
+import { until } from './helpers/engine.ts';
 import { makeRepo, tempDir } from './helpers/repo.ts';
 
 function alive(pid: number): boolean {
@@ -352,5 +353,78 @@ describe('runChecks', () => {
 
       expect(r.ok).toBe(true);
     });
+  });
+});
+
+describe('runSandboxed', () => {
+  let worktree: string;
+
+  beforeEach(() => {
+    worktree = tempDir();
+  });
+
+  const sandboxed = (overrides: Partial<Parameters<typeof runSandboxed>[0]> = {}) =>
+    runSandboxed({ worktree, commands: ['true'], denyRead: [], timeoutS: 30, onEvent: () => {}, ...overrides });
+
+  async function withServer<T>(body: (connect: string, connected: () => boolean) => Promise<T>): Promise<T> {
+    let connected = false;
+    const server = createServer(() => {
+      connected = true;
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const { port } = server.address() as AddressInfo;
+    try {
+      const script = `require('net').connect(${port},'127.0.0.1').on('connect',()=>process.exit(0)).on('error',()=>process.exit(3))`;
+      return await body(`node -e "${script}"`, () => connected);
+    } finally {
+      server.close();
+    }
+  }
+
+  it('runSandboxed reports each command and denies network by default', async () => {
+    const events: EventType[] = [];
+    await withServer(async (connect, connected) => {
+      const r = await sandboxed({ commands: ['echo one', connect], onEvent: (type) => events.push(type) });
+
+      expect(r.ok).toBe(false);
+      expect(r.runs.map((run) => run.exitCode)).toEqual([0, 3]);
+      expect(r.runs[0]).toMatchObject({ command: 'echo one', outputTail: 'one\n' });
+      expect(r.evidence).toContain('exited with 3');
+      expect(connected()).toBe(false);
+    });
+    expect(events).toEqual(['check.started', 'check.finished', 'check.started', 'check.finished']);
+  });
+
+  it('runSandboxed allows network only when asked', async () => {
+    await withServer(async (connect, connected) => {
+      const r = await sandboxed({ commands: [connect], network: true });
+
+      expect(r).toMatchObject({ ok: true, evidence: '' });
+      expect(r.runs[0]!.exitCode).toBe(0);
+      await until(async () => connected());
+    });
+  });
+
+  it('runSandboxed keeps writes inside the worktree even with network', async () => {
+    const outside = join(homedir(), `.aiteam-sandbox-probe-${process.pid}`);
+
+    const r = await sandboxed({ commands: [`echo x > ${outside}`], network: true });
+
+    expect(r.ok).toBe(false);
+    expect(existsSync(outside)).toBe(false);
+  });
+
+  it('runSandboxed stops at the abort signal', async () => {
+    const controller = new AbortController();
+    const running = sandboxed({ commands: ['sleep 30', 'echo never'], signal: controller.signal, onEvent: (type) => type === 'check.started' && setTimeout(() => controller.abort(), 50) });
+
+    const r = await running;
+
+    expect(r.ok).toBe(false);
+    expect(r.runs.map((run) => run.command)).toEqual(['sleep 30']);
+  });
+
+  it('runSandboxed with no commands passes with no runs', async () => {
+    expect(await sandboxed({ commands: [] })).toEqual({ ok: true, runs: [], evidence: '' });
   });
 });

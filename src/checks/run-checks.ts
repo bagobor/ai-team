@@ -26,6 +26,20 @@ export type ChecksInput = {
   signal?: AbortSignal;
 };
 
+type CommandEnv = {
+  worktree: string;
+  denyRead: string[];
+  timeoutS: number;
+  repoPath?: string;
+  network?: boolean;
+  onSpawn?: (pid: number) => void;
+  signal?: AbortSignal;
+};
+
+export type SandboxedInput = CommandEnv & { commands: string[]; onEvent: (type: EventType, payload: unknown) => void };
+
+export type SandboxedResult = { ok: boolean; runs: CheckRun[]; evidence: string };
+
 const TAIL_CHARS = 8000;
 const KILL_GRACE_S = 2;
 const MAX_TIMER_MS = 2 ** 31 - 1;
@@ -55,18 +69,18 @@ function foldersAbove(path: string): string[] {
 }
 
 // Checks run code the worker wrote, so they get the limits its own Bash has. Later rules win, so the worktree comes back last.
-function sandboxArgs(i: ChecksInput, command: string): string[] {
+function sandboxArgs(i: CommandEnv, command: string): string[] {
   const denyRules = i.denyRead.map((_, k) => `(deny file-read* (subpath (param "DENY${k}")))`);
   const realWorktree = realOrAsWritten(i.worktree);
   const above = foldersAbove(realWorktree);
   const profile = [
     '(version 1)',
     '(allow default)',
-    '(deny network*)',
+    ...(i.network ? [] : ['(deny network*)']),
     '(deny file-write*)',
     '(allow file-write* (subpath (param "TMP")) (subpath "/private/tmp") (subpath "/dev"))',
     // The repo stays out of reach even if it sits in a temp folder.
-    '(deny file-write* (subpath (param "REPO")))',
+    ...(i.repoPath ? ['(deny file-write* (subpath (param "REPO")))'] : []),
     '(allow file-write* (subpath (param "WORKTREE")))',
     ...denyRules,
     '(allow file-read* (subpath (param "WORKTREE")))',
@@ -75,7 +89,7 @@ function sandboxArgs(i: ChecksInput, command: string): string[] {
   ].join('\n');
   const params = [
     ['WORKTREE', realWorktree],
-    ['REPO', realOrAsWritten(i.repoPath)],
+    ...(i.repoPath ? [['REPO', realOrAsWritten(i.repoPath)]] : []),
     ['TMP', realOrAsWritten(tmpdir())],
     ...i.denyRead.map((path, k) => [`DENY${k}`, realOrAsWritten(path)]),
     ...above.map((path, k) => [`ABOVE${k}`, path]),
@@ -83,7 +97,7 @@ function sandboxArgs(i: ChecksInput, command: string): string[] {
   return [...params.flatMap(([name, value]) => ['-D', `${name}=${value}`]), '-p', profile, 'sh', '-c', command];
 }
 
-function runCommand(i: ChecksInput, command: string): Promise<CheckRun> {
+function runCommand(i: CommandEnv, command: string): Promise<CheckRun> {
   return new Promise((resolve) => {
     const started = Date.now();
     let outputTail = '';
@@ -152,6 +166,22 @@ function failureEvidence(run: CheckRun, timeoutS: number, aborted: boolean): str
   return `Check \`${run.command}\` ${how}.\n${run.outputTail}`;
 }
 
+// Runs in order and stops at the first failure.
+export async function runSandboxed(i: SandboxedInput): Promise<SandboxedResult> {
+  const runs: CheckRun[] = [];
+  for (const command of i.commands) {
+    if (i.signal?.aborted) return { ok: false, runs, evidence: 'The checks were stopped before they finished.' };
+
+    i.onEvent('check.started', { command });
+    const run = await runCommand(i, command);
+    runs.push(run);
+    i.onEvent('check.finished', run);
+
+    if (run.exitCode !== 0) return { ok: false, runs, evidence: failureEvidence(run, i.timeoutS, i.signal?.aborted === true) };
+  }
+  return { ok: true, runs, evidence: '' };
+}
+
 export async function runChecks(i: ChecksInput): Promise<ChecksResult> {
   const paths = await changedPaths(i.repoPath, i.worktree, i.baseSha);
   if (paths.length === 0) {
@@ -163,18 +193,6 @@ export async function runChecks(i: ChecksInput): Promise<ChecksResult> {
     return { ok: false, kind: 'scope_violation', runs: [], violations, evidence: `These paths are outside the write scope:\n${violations.join('\n')}` };
   }
 
-  const runs: CheckRun[] = [];
-  for (const command of i.commands) {
-    if (i.signal?.aborted) return { ok: false, kind: 'check_failed', runs, evidence: 'The checks were stopped before they finished.' };
-
-    i.onEvent('check.started', { command });
-    const run = await runCommand(i, command);
-    runs.push(run);
-    i.onEvent('check.finished', run);
-
-    if (run.exitCode !== 0) {
-      return { ok: false, kind: 'check_failed', runs, evidence: failureEvidence(run, i.timeoutS, i.signal?.aborted === true) };
-    }
-  }
-  return { ok: true, runs };
+  const { ok, runs, evidence } = await runSandboxed(i);
+  return ok ? { ok, runs } : { ok, kind: 'check_failed', runs, evidence };
 }

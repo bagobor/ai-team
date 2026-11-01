@@ -8,7 +8,8 @@ const manifest = {
   budgets: { max_turns: 60, max_usd: 3, context_tokens: 12000, playbook_tokens: 2000, memory_tokens: 1000 },
   tools: ['read_repo', 'edit_repo', 'run_commands', { network: 'restricted' }],
   outputSchema: { type: 'object', title: 'Change Report' },
-} as TaskManifest;
+  networkAllow: [],
+} as unknown as TaskManifest;
 
 const ws: Workspace = { path: '/w', transcriptPath: '/t/1.jsonl', manifestDir: '/m/T-1-a1' };
 const cfg = { agentHome: '/home/agent', mode: 'subscription' as const, denyRead: ['/secret'], parentEnv: { PATH: '/b', ANTHROPIC_API_KEY: 'k' } };
@@ -65,6 +66,24 @@ describe('buildClaudeInvocation', () => {
     const { argv } = buildClaudeInvocation(manifest, { ...ws, path: '/worktrees/p/T-1-a2' }, cfg);
 
     expect(JSON.parse(argv[argv.indexOf('--settings') + 1]!).sandbox.filesystem.allowRead).toEqual(['/worktrees/p/T-1-a2']);
+  });
+
+  it('passes the allowed domains to the sandbox settings', () => {
+    const { argv } = buildClaudeInvocation({ ...manifest, networkAllow: ['registry.npmjs.org', 'pypi.org'] }, ws, cfg);
+
+    expect(JSON.parse(argv[argv.indexOf('--settings') + 1]!)).toMatchObject({ sandbox: { network: { allowedDomains: ['registry.npmjs.org', 'pypi.org'] } } });
+  });
+
+  it('keeps allowedDomains empty by default', () => {
+    const { argv } = buildClaudeInvocation(manifest, ws, cfg);
+
+    expect(JSON.parse(argv[argv.indexOf('--settings') + 1]!)).toMatchObject({ sandbox: { network: { allowedDomains: [] } } });
+  });
+
+  it('gives a role without the network tool none of the allowed domains', () => {
+    const { argv } = buildClaudeInvocation({ ...manifest, tools: ['read_repo', 'run_commands'], networkAllow: ['registry.npmjs.org'] }, ws, cfg);
+
+    expect(JSON.parse(argv[argv.indexOf('--settings') + 1]!)).toMatchObject({ sandbox: { network: { allowedDomains: [] } } });
   });
 
   it('keeps the sandbox on for a role without the network tool', () => {
