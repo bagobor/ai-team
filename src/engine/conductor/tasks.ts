@@ -1,5 +1,6 @@
 import { parsePin } from '../../artifacts/format.ts';
 import { ENV_PROFILE } from '../apply/ids.ts';
+import { IllegalTransition } from '../fsm.ts';
 import type { InboxOption, InboxRow, NewInboxItem } from '../inbox.ts';
 import type { EngineDeps, Runner } from '../runner.ts';
 import type { ArtifactVersionRow, AttemptRow, ProjectRow, Store, TaskRow } from '../store.ts';
@@ -97,7 +98,13 @@ export async function raiseHold(s: Store, project: ProjectRow, prefix: string, i
 export async function stopProjectWork(deps: Pick<EngineDeps, 'store'>, runner: Runner, project: ProjectRow): Promise<void> {
   for (const { id } of await deps.store.listTasks(project.id)) {
     const task = await deps.store.getTask(id);
-    if (task && !isClosed(task)) await runner.cancel(id);
+    if (!task || isClosed(task)) continue;
+    try {
+      await runner.cancel(id);
+    } catch (err) {
+      // Only a closed task refuses cancelling, so this one finished after it was read.
+      if (!(err instanceof IllegalTransition)) throw err;
+    }
   }
 }
 

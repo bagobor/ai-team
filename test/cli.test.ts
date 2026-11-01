@@ -75,10 +75,11 @@ describe('the aiteam command', () => {
     expect(code).toBe(2);
     expect(stderr).toContain('aiteam project add');
     expect(stderr).toContain('aiteam ticket add');
+    expect(stderr).toContain('aiteam brief add');
     expect(stderr).toContain('aiteam doctor');
   });
 
-  it.each([[['project']], [['project', 'add', 'only-a-name']], [['ticket', 'add', 'p']], [['project', 'remove', 'a', 'b']], [['project', 'add', 'a', 'b', 'c']], [['ticket', 'add', 'p', 'a.md', 'b.md']], [['--nope']]])('prints usage for %j', async (args) => {
+  it.each([[['project']], [['project', 'add', 'only-a-name']], [['ticket', 'add', 'p']], [['project', 'remove', 'a', 'b']], [['project', 'add', 'a', 'b', 'c']], [['ticket', 'add', 'p', 'a.md', 'b.md']], [['brief', 'add', 'p']], [['brief', 'remove', 'p', 'a.md']], [['brief', 'add', 'p', 'a.md', 'b.md']], [['--nope']]])('prints usage for %j', async (args) => {
     expect((await aiteam(args)).code).toBe(2);
   });
 
@@ -114,6 +115,29 @@ describe('the aiteam command', () => {
     expect(ticketed.code).toBe(0);
     expect(ticketed.stdout).toContain('Added ticket T-1');
     expect(await apiGet('/api/tasks?project=p')).toMatchObject([{ ticket_id: 'T-1' }]);
+  });
+
+  it('posts a brief to the daemon', async () => {
+    await withDaemon();
+    const repo = await makeRepo();
+    const file = join(root, 'brief.md');
+    writeFileSync(file, '# Brief\n\nA small tool.\n');
+    await aiteam(['project', 'add', 'p', repo.path]);
+
+    const { code, stdout } = await aiteam(['brief', 'add', 'p', file]);
+
+    expect(code).toBe(0);
+    expect(stdout).toContain('Added the brief to p');
+    expect(await apiGet('/api/projects/p/artifacts/BRIEF')).toMatchObject({ type: 'brief', body: '# Brief\n\nA small tool.\n' });
+  });
+
+  it('reports a brief file it cannot read', async () => {
+    await withDaemon();
+
+    const { code, stderr } = await aiteam(['brief', 'add', 'p', join(root, 'missing.md')]);
+
+    expect(code).toBe(1);
+    expect(stderr).toContain('missing.md');
   });
 
   it('creates the repo with --create', async () => {

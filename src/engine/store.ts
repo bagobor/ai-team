@@ -262,6 +262,11 @@ export class Store {
     return row && toArtifactRow(row);
   }
 
+  async listArtifactVersions(projectId: number, artifactId: string): Promise<ArtifactVersionRow[]> {
+    const rows = await this.db.selectFrom('artifact_versions').selectAll().where('project_id', '=', projectId).where('artifact_id', '=', artifactId).orderBy('version').execute();
+    return rows.map(toArtifactRow);
+  }
+
   async listLatestArtifacts(projectId: number): Promise<ArtifactVersionRow[]> {
     const rows = await this.db
       .selectFrom('artifact_versions')

@@ -5,7 +5,7 @@ import { prepareRepo } from '../git/workspace.ts';
 import { stateRepoDir, type Paths } from '../paths.ts';
 import { loadRole } from '../roles/role.ts';
 import { parseTicket, SAFE_ID, TicketError } from '../tickets/ticket.ts';
-import type { ProjectRow, Store, TaskRow } from './store.ts';
+import type { ArtifactVersionRow, ProjectRow, Store, TaskRow } from './store.ts';
 
 export type IntakeDeps = { store: Store; paths: Paths };
 
@@ -29,6 +29,29 @@ export async function addProject(deps: IntakeDeps, input: { name: string; repoPa
   });
   await initStateRepo(stateRepoDir(deps.paths, name));
   return deps.store.createProject({ name, repo_path: resolve(repoPath), base_branch: baseBranch });
+}
+
+const briefing = new Set<string>();
+
+export async function addBrief(deps: IntakeDeps, projectName: string, markdown: string): Promise<ArtifactVersionRow> {
+  const project = await deps.store.getProject(projectName);
+  if (!project) throw new Error(`Unknown project ${projectName}`);
+
+  // Two at once would both find no brief and become two versions of it, and the second would reach no one.
+  const key = stateRepoDir(deps.paths, project.name);
+  if (briefing.has(key)) throw new DuplicateError(`${project.name} already has a brief`);
+  briefing.add(key);
+  try {
+    const artifacts = new ArtifactStore(deps.store, deps.paths);
+    if (await artifacts.latest(project.id, 'BRIEF')) throw new DuplicateError(`${project.name} already has a brief`);
+    const [row] = await artifacts.commit(project, {
+      message: 'brief',
+      publish: [{ id: 'BRIEF', type: 'brief', status: 'approved', approvedBy: 'stakeholder', ownerRole: 'stakeholder', derivedFrom: [], body: markdown }],
+    });
+    return row as ArtifactVersionRow;
+  } finally {
+    briefing.delete(key);
+  }
 }
 
 export async function addTicket(deps: IntakeDeps, projectName: string, markdown: string): Promise<TaskRow> {

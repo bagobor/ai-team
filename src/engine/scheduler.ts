@@ -1,5 +1,6 @@
 import { loadRole } from '../roles/role.ts';
 import type { Conductor } from './conductor/index.ts';
+import { isClosed, isTerminal } from './conductor/tasks.ts';
 import type { TaskState } from './fsm.ts';
 import type { EngineDeps, Runner } from './runner.ts';
 import type { TaskRow } from './store.ts';
@@ -107,7 +108,12 @@ export class Scheduler {
       console.error('The conductor failed:', err);
     }
 
-    const tasks = await store.listTasks();
+    // A conductor tick under way when a project halted can queue a task after the halt swept the project.
+    const stopped = new Set((await store.listProjects()).filter(isTerminal).map(({ id }) => id));
+    const everyTask = await store.listTasks();
+    for (const task of everyTask) if (stopped.has(task.project_id) && !isClosed(task)) await this.runner.cancel(task.id);
+
+    const tasks = everyTask.filter((task) => !stopped.has(task.project_id));
     const keysIn = (state: TaskState) => new Set(tasks.filter((t) => t.state === state).map((t) => doneKey(t.project_id, t.ticket_id)));
     const done = keysIn('done');
     const cancelled = keysIn('cancelled');

@@ -24,6 +24,14 @@ describe('EventLog', () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
+  it('leaves out worker lines when asked', async () => {
+    await log.append({ projectId: 1, taskId: 1, type: 'worker.message', payload: {} });
+    const kept = await log.append({ projectId: 1, taskId: 1, type: 'task.state', payload: { to: 'ready' } });
+
+    expect(await log.list({ projectId: 1, workerLines: false })).toEqual([kept]);
+    expect(await log.list({ projectId: 1 })).toHaveLength(2);
+  });
+
   it('assigns increasing seq and filters by task and afterSeq', async () => {
     const a = await log.append({ taskId: 1, type: 'task.state', payload: { to: 'ready' } });
     const b = await log.append({ taskId: 2, type: 'task.state', payload: { to: 'ready' } });

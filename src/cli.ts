@@ -12,7 +12,8 @@ const USAGE = `Usage:
   aiteam doctor                                     Check this machine can run workers
   aiteam daemon                                     Run the engine and serve the API until stopped
   aiteam project add <name> <repoPath> [--create]   Register a repo with the running daemon
-  aiteam ticket add <project> <file.md>             Import a ticket into the running daemon`;
+  aiteam ticket add <project> <file.md>             Import a ticket into the running daemon
+  aiteam brief add <project> <file.md>              Start a project from a brief`;
 
 function usage(): number {
   console.error(USAGE);
@@ -83,13 +84,22 @@ async function projectAdd(paths: Paths, name: string, repoPath: string, create: 
   return 0;
 }
 
-async function ticketAdd(paths: Paths, project: string, file: string): Promise<number> {
-  let markdown: string;
+function readMarkdown(file: string): string {
   try {
-    markdown = readFileSync(file, 'utf8');
+    return readFileSync(file, 'utf8');
   } catch (cause) {
     throw new Error(`Could not read ${file}`, { cause });
   }
+}
+
+async function briefAdd(paths: Paths, project: string, file: string): Promise<number> {
+  await postToDaemon(paths, `/api/projects/${encodeURIComponent(project)}/brief`, { markdown: readMarkdown(file) });
+  console.log(`Added the brief to ${project}`);
+  return 0;
+}
+
+async function ticketAdd(paths: Paths, project: string, file: string): Promise<number> {
+  const markdown = readMarkdown(file);
   const task = await postToDaemon<{ id: number; ticket_id: string }>(paths, `/api/projects/${encodeURIComponent(project)}/tickets`, { markdown });
   console.log(`Added ticket ${task.ticket_id} to ${project} as task ${task.id}`);
   return 0;
@@ -125,6 +135,9 @@ async function main(argv: string[]): Promise<number> {
     case 'ticket':
       if (action !== 'add' || first === undefined || second === undefined || rest.length > 0) return usage();
       return ticketAdd(paths, first, second);
+    case 'brief':
+      if (action !== 'add' || first === undefined || second === undefined || rest.length > 0) return usage();
+      return briefAdd(paths, first, second);
     default:
       return usage();
   }

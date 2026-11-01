@@ -78,6 +78,7 @@ describe('Scheduler', () => {
   }
 
   const stateOf = async (e: TestEngine, id: number) => (await e.store.getTask(id))!.state;
+
   const settled = (e: TestEngine, id: number, state: string) => until(async () => (await stateOf(e, id)) === state, 15_000);
 
   afterEach(async () => {
@@ -85,6 +86,17 @@ describe('Scheduler', () => {
       await sched.stop();
       await e.cleanup();
     }
+  });
+
+  it('cancels what a conductor tick left behind in a halted project instead of starting it', async () => {
+    const { e, sched } = await engine({ steps: [] });
+    const stray = await e.addTicket(ticket());
+    await e.store.setProjectPhase((await e.store.getProject('p'))!.id, 'halted');
+
+    await sched.tick();
+
+    expect(await stateOf(e, stray.id)).toBe('cancelled');
+    expect(e.spawnCount()).toBe(0);
   });
 
   it('never exceeds 3 live workers across 5 tickets', async () => {

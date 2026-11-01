@@ -244,6 +244,82 @@ describe('the event stream', () => {
     await until(async () => e.log.subscriberCount() === 0);
   });
 
+  describe('for a project', () => {
+    const note = (n: number, projectId = t.project_id) => e.log.append({ projectId, type: 'inbox.raised', payload: { n } });
+
+    async function openProject(headers: Record<string, string> = {}, query = ''): Promise<StreamReader> {
+      const res = await app.request(`/api/projects/p/events${query}`, { headers: { host: `127.0.0.1:${PORT}`, ...headers } });
+      expect(res.status).toBe(200);
+      expect(res.headers.get('content-type')).toContain('text/event-stream');
+      const reader = new StreamReader(res.body!);
+      opened.push(reader);
+      return reader;
+    }
+
+    it('streams project events, replays after Last-Event-ID and leaves out worker lines', async () => {
+      const seen = await note(1);
+      await say(2);
+      await note(3);
+
+      const stream = await openProject({ 'last-event-id': String(seen.seq) });
+
+      expect((await stream.frame()).row.payload.n).toBe(3);
+
+      await say(4);
+      const live = await note(5);
+
+      const frame = await stream.frame();
+      expect(frame.row.payload.n).toBe(5);
+      expect(frame.id).toBe(String(live.seq));
+      expect(frame.event).toBe('inbox.raised');
+    });
+
+    it('prefers Last-Event-ID to ?after= when a browser reconnects', async () => {
+      await note(1);
+      const seen = await note(2);
+      await note(3);
+
+      const stream = await openProject({ 'last-event-id': String(seen.seq) }, '?after=0');
+
+      expect((await stream.frame()).row.payload.n).toBe(3);
+    });
+
+    it('stops other projects’ events from reaching a stream', async () => {
+      const other = await e.store.createProject({ name: 'q', repo_path: '/q', base_branch: 'main' });
+      await note(1, other.id);
+      await note(2);
+
+      const stream = await openProject();
+      expect((await stream.frame()).row.payload.n).toBe(2);
+
+      await note(3, other.id);
+      await note(4);
+
+      expect((await stream.frame()).row.payload.n).toBe(4);
+    });
+
+    it('is 404 for an unknown project, without a stream', async () => {
+      const res = await app.request('/api/projects/nope/events', { headers: { host: `127.0.0.1:${PORT}` } });
+
+      expect(res.status).toBe(404);
+      expect(e.log.subscriberCount()).toBe(0);
+    });
+  });
+
+  it('still streams a task the same way after the helper is extracted', async () => {
+    const other = await e.addTicket(ticket({ id: 'T-2' }));
+    await say(1, other.id);
+    await say(2);
+
+    const stream = await open();
+    expect(messages([await stream.frame()])).toEqual([2]);
+
+    await say(3, other.id);
+    await say(4);
+
+    expect(messages([await stream.frame()])).toEqual([4]);
+  });
+
   it('is 404 for an unknown task, without a stream', async () => {
     const res = await app.request('/api/tasks/999/events', { headers: { host: `127.0.0.1:${PORT}` } });
 

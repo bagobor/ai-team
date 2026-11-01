@@ -98,8 +98,9 @@ export class EventLog {
     }
   }
 
-  async list(q: { taskId?: number; projectId?: number; afterSeq?: number; limit?: number }): Promise<EventRow[]> {
+  async list(q: { taskId?: number; projectId?: number; afterSeq?: number; limit?: number; workerLines?: false }): Promise<EventRow[]> {
     let query = this.db.selectFrom('events').selectAll().orderBy('seq');
+    if (q.workerLines === false) query = query.where('type', 'not like', 'worker.%');
     if (q.projectId !== undefined) query = query.where('project_id', '=', q.projectId);
     if (q.taskId !== undefined) query = query.where('task_id', '=', q.taskId);
     if (q.afterSeq !== undefined) query = query.where('seq', '>', q.afterSeq);
