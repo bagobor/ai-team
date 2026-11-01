@@ -28,8 +28,8 @@ describe('parseTicket', () => {
     expect(() => parseTicket(withField(t1, 'id', JSON.stringify(id)))).toThrow(TicketError);
   });
 
-  it('rejects inputs until M2', () => {
-    expect(() => parseTicket(withField(t1, 'inputs', '[SPEC-M1]'))).toThrow(/until M2/);
+  it('accepts inputs', () => {
+    expect(parseTicket(withField(t1, 'inputs', '[SPEC-M1@2#ac-1, BRIEF]')).inputs).toEqual(['SPEC-M1@2#ac-1', 'BRIEF']);
   });
 
   it.each(['definition_of_done', 'touches'])('rejects an empty %s', (f) => {

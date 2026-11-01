@@ -79,9 +79,6 @@ export function parseTicket(markdown: string): Ticket {
   const size = fields.size;
   if (!SIZES.includes(size as Ticket['size'])) throw new TicketError(`Ticket field size must be one of ${SIZES.join(', ')}`);
 
-  const inputs = list(fields, 'inputs');
-  if (inputs.length > 0) throw new TicketError('Ticket field inputs: inputs are not supported until M2');
-
   return {
     id: pattern(fields, 'id', SAFE_ID),
     title: text(fields, 'title'),
@@ -91,7 +88,7 @@ export function parseTicket(markdown: string): Ticket {
     touches: nonEmptyList(fields, 'touches'),
     depends_on: list(fields, 'depends_on'),
     definition_of_done: nonEmptyList(fields, 'definition_of_done'),
-    inputs,
+    inputs: list(fields, 'inputs'),
     size: size as Ticket['size'],
     body: match[2] ?? '',
   };

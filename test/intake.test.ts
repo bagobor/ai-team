@@ -2,6 +2,7 @@ import { cpSync, existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Kysely } from 'kysely';
+import { ArtifactStore } from '../src/artifacts/store.ts';
 import { openDb } from '../src/db/open.ts';
 import type { DB } from '../src/db/schema.ts';
 import { addProject, addTicket, type IntakeDeps } from '../src/engine/intake.ts';
@@ -70,6 +71,40 @@ describe('intake', () => {
     });
 
     const stateHead = () => revParse(stateRepoDir(deps.paths, 'p'));
+
+    it('refuses a hand-added ticket whose input does not resolve', async () => {
+      const added = addTicket(deps, 'p', withField(t1, 'inputs', '[SPEC-M1@1#ac-1]'));
+
+      await expect(added).rejects.toBeInstanceOf(TicketError);
+      await expect(addTicket(deps, 'p', withField(t1, 'inputs', '[SPEC-M1@1#ac-1]'))).rejects.toThrow(/SPEC-M1@1#ac-1/);
+      expect(await deps.store.listTasks((await deps.store.getProject('p'))!.id)).toEqual([]);
+    });
+
+    it('refuses an input that names a section the artifact lacks', async () => {
+      const project = (await deps.store.getProject('p'))!;
+      await new ArtifactStore(deps.store, deps.paths).commit(project, {
+        message: 'spec',
+        publish: [{ id: 'SPEC-M1', type: 'spec', status: 'approved', ownerRole: 'pm', derivedFrom: [], body: '# AC-1\nGreets.\n' }],
+      });
+
+      await expect(addTicket(deps, 'p', withField(t1, 'inputs', '[SPEC-M1#ac-9]'))).rejects.toThrow(/SPEC-M1#ac-9/);
+    });
+
+    it('accepts a ticket whose inputs resolve', async () => {
+      const project = (await deps.store.getProject('p'))!;
+      await new ArtifactStore(deps.store, deps.paths).commit(project, {
+        message: 'spec',
+        publish: [{ id: 'SPEC-M1', type: 'spec', status: 'approved', ownerRole: 'pm', derivedFrom: [], body: '# AC-1\nGreets.\n' }],
+      });
+
+      const t = await addTicket(deps, 'p', withField(t1, 'inputs', '[SPEC-M1@1#ac-1]'));
+
+      expect(t.ticket_id).toBe('T-1');
+    });
+
+    it('refuses a specialty that cannot edit the repo', async () => {
+      await expect(addTicket(deps, 'p', withField(t1, 'specialty', 'pm'))).rejects.toThrow(/pm.*edit/);
+    });
 
     it('commits the ticket first, then records its sha', async () => {
       const t = await addTicket(deps, 'p', t1);

@@ -1,4 +1,5 @@
 import { resolve } from 'node:path';
+import { ArtifactStore } from '../artifacts/store.ts';
 import { commitArtifact, initStateRepo } from '../git/state-repo.ts';
 import { prepareRepo } from '../git/workspace.ts';
 import { stateRepoDir, type Paths } from '../paths.ts';
@@ -47,9 +48,17 @@ export async function addTicket(deps: IntakeDeps, projectName: string, markdown:
     }
   }
 
-  await loadRole(deps.paths.knowledge, ticket.specialty).catch((cause: unknown) => {
+  const { role } = await loadRole(deps.paths.knowledge, ticket.specialty).catch((cause: unknown) => {
     throw new TicketError(`Ticket ${ticket.id} has the specialty ${ticket.specialty}, which no usable role provides`, { cause });
   });
+  if (!role.tools.includes('edit_repo')) throw new TicketError(`Ticket ${ticket.id} has the specialty ${ticket.specialty}, which cannot edit the repo`);
+
+  const artifacts = new ArtifactStore(deps.store, deps.paths);
+  for (const pin of ticket.inputs) {
+    await artifacts.readInput(project, pin).catch((cause: unknown) => {
+      throw new TicketError(`Ticket ${ticket.id} has the input ${pin}, which does not resolve`, { cause });
+    });
+  }
 
   const ticketPath = `artifacts/ticket/${ticket.id}.md`;
   const { sha } = await commitArtifact(stateRepoDir(deps.paths, project.name), ticketPath, markdown, `ticket: ${ticket.id}`);

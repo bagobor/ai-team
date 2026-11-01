@@ -47,6 +47,7 @@ type Work = {
   role: Role;
   charter: string;
   schema: object;
+  schemaSource: string;
   adapter: WorkerAdapter;
   ticket: Ticket;
   ticketMarkdown: string;
@@ -191,8 +192,12 @@ export class Runner {
       role,
       charter: work.charter,
       schema: work.schema,
-      ticket: work.ticket,
-      ticketMarkdown: work.ticketMarkdown,
+      schemaSource: work.schemaSource,
+      taskId: work.ticket.id,
+      taskMarkdown: work.ticketMarkdown,
+      taskSource: task.ticket_path,
+      inputs: [],
+      doneCommands: work.ticket.definition_of_done,
       repoInstructions: await readRepoInstructions(worktree),
       ...(previous ? { retry: { evidence: String(previous.failure_evidence), changeReport: previous.output } } : {}),
     });
