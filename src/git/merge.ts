@@ -1,9 +1,9 @@
 import { existsSync } from 'node:fs';
-import { cp, readdir, readFile, rm } from 'node:fs/promises';
+import { cp, lstat, readdir, readFile, rm } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { ENGINE_CONFIG, engineGit, git, gitOk } from './git.ts';
 import { inTurn } from './state-repo.ts';
-import { addAttemptWorktree, ensureIntegrationBranch, inRepoTurn, removeAttemptWorktree, snapshotAttempt } from './workspace.ts';
+import { addAttemptWorktree, ensureIntegrationBranch, inRepoTurn, linkedLocation, removeAttemptWorktree, snapshotAttempt } from './workspace.ts';
 
 export type MergeResult = { ok: true; sha: string; already: boolean } | { ok: false; conflicts: string[] };
 export type AdvanceResult = { ok: true; sha: string } | { ok: false; reason: 'moved' | 'refused'; detail: string };
@@ -31,12 +31,13 @@ async function isBeingRebased(repo: string, ref: string): Promise<boolean> {
   return false;
 }
 
-async function checkoutOf(repo: string, ref: string): Promise<string | null> {
+// The main worktree is listed first. A linked one is told where its git dir is, so its own .git is never read.
+async function checkoutOf(repo: string, ref: string): Promise<{ path: string; location: string[] } | null> {
   const listing = await gitOk(repo, ['worktree', 'list', '--porcelain']);
-  for (const block of listing.split('\n\n')) {
+  for (const [index, block] of listing.split('\n\n').entries()) {
     const lines = block.split('\n');
     const path = lines.find((line) => line.startsWith('worktree '))?.slice('worktree '.length);
-    if (path && lines.includes(`branch ${ref}`) && existsSync(path)) return path;
+    if (path && lines.includes(`branch ${ref}`) && existsSync(path)) return { path, location: index === 0 ? [] : await linkedLocation(repo, path) };
   }
   return null;
 }
@@ -52,7 +53,7 @@ async function moveBranch(repo: string, branch: string, to: string, from: string
     const swapped = await git(repo, [...ENGINE_CONFIG, 'update-ref', ref, to, from]);
     return swapped.code === 0 ? { ok: true } : { ok: false, reason: 'moved', detail: swapped.stderr.trim() };
   }
-  const merged = await git(checkout, [...ENGINE_CONFIG, 'merge', '--ff-only', '--no-autostash', to]);
+  const merged = await git(checkout.path, [...ENGINE_CONFIG, ...checkout.location, 'merge', '--ff-only', '--no-autostash', to]);
   if (merged.code === 0) return { ok: true };
   return { ok: false, reason: (await headOf(repo, ref)) === from ? 'refused' : 'moved', detail: merged.stderr.trim() };
 }
@@ -89,8 +90,12 @@ export async function syncBaseIntoIntegration(repo: string, milestone: number, b
 }
 
 async function copyState(stateDir: string, wtPath: string): Promise<void> {
+  // The branch holds what workers committed. A symlink at .aiteam would aim this rm and cp outside the worktree.
+  const root = join(wtPath, '.aiteam');
+  const found = await lstat(root).catch(() => null);
+  if (found && !found.isDirectory()) await rm(root);
   for (const folder of STATE_FOLDERS) {
-    const copy = join(wtPath, '.aiteam', folder);
+    const copy = join(root, folder);
     await rm(copy, { recursive: true, force: true });
     if (existsSync(join(stateDir, folder))) await cp(join(stateDir, folder), copy, { recursive: true });
   }

@@ -79,7 +79,7 @@ export async function addAttemptWorktree(repoPath: string, wtPath: string, branc
 // A worker can rewrite anything in its worktree, .git included, and engine git runs outside the sandbox.
 // A planted .git would run its config's filters here or aim the commit elsewhere, so the attempt's git
 // dir is found from the repo's side, and git is told where it is instead of reading the worktree's .git.
-async function attemptLocation(repoPath: string, wtPath: string): Promise<string[]> {
+export async function linkedLocation(repoPath: string, wtPath: string): Promise<string[]> {
   const common = resolve(repoPath, await gitOk(repoPath, ['rev-parse', '--git-common-dir']));
   const adminRoot = join(common, 'worktrees');
   const expected = join(await realpath(wtPath), '.git');
@@ -94,13 +94,13 @@ async function attemptLocation(repoPath: string, wtPath: string): Promise<string
 }
 
 export async function snapshotAttempt(repoPath: string, wtPath: string, message: string): Promise<{ headSha: string }> {
-  const location = await attemptLocation(repoPath, wtPath);
+  const location = await linkedLocation(repoPath, wtPath);
   await engineGit(wtPath, [...location, 'add', '-A']);
   return { headSha: await commitStaged(wtPath, message, location) };
 }
 
 export async function changedPaths(repoPath: string, wtPath: string, baseSha: string): Promise<string[]> {
-  const location = await attemptLocation(repoPath, wtPath);
+  const location = await linkedLocation(repoPath, wtPath);
   const out = await gitOk(wtPath, [...location, 'diff', '--no-ext-diff', '--no-renames', '--name-only', '-z', baseSha, 'HEAD']);
   return out.split('\0').filter(Boolean);
 }

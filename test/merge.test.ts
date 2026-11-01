@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { advanceBaseBranch, mergeIntoBranch, snapshotState, syncBaseIntoIntegration } from '../src/git/merge.ts';
 import { commitAll, makeRepo, porcelain, revParse, run, symbolicHead, tempDir } from './helpers/repo.ts';
@@ -25,6 +25,16 @@ function commitFrom(repo: string, parent: string, files: Record<string, string>,
     writeFileSync(join(wt, path), content);
   }
   const sha = commitAll(wt, message);
+  run(repo, 'worktree', 'remove', '--force', wt);
+  return sha;
+}
+
+function symlinkFrom(repo: string, parent: string, path: string, target: string): string {
+  const wt = join(tempDir('merge-wt-'), 'wt');
+  run(repo, 'worktree', 'add', '--quiet', '--detach', wt, parent);
+  mkdirSync(join(wt, path, '..'), { recursive: true });
+  symlinkSync(target, join(wt, path));
+  const sha = commitAll(wt, 'plant');
   run(repo, 'worktree', 'remove', '--force', wt);
   return sha;
 }
@@ -212,6 +222,41 @@ describe('merges', () => {
       expect(run(repo, 'worktree', 'list')).not.toContain(wtPath);
     });
 
+    describe('with a .aiteam the branch already holds', () => {
+      let outside: string;
+
+      beforeEach(() => {
+        outside = tempDir('merge-outside-');
+        mkdirSync(join(outside, 'artifacts'));
+        writeFileSync(join(outside, 'artifacts', 'precious.txt'), 'mine\n');
+      });
+
+      const expectSnapshotInTree = () => {
+        expect(run(repo, 'show', 'aiteam/m1:.aiteam/artifacts/spec/SPEC-M1.md')).toBe('# Spec');
+        expect(readFileSync(join(outside, 'artifacts', 'precious.txt'), 'utf8')).toBe('mine\n');
+        expect(existsSync(join(outside, 'artifacts', 'spec'))).toBe(false);
+      };
+
+      it('replaces a symlink at .aiteam rather than deleting and writing through it', async () => {
+        run(repo, 'branch', '-f', 'aiteam/m1', symlinkFrom(repo, base, '.aiteam', outside));
+        await snapshotState(repo, 1, stateDir, wtPath);
+        expectSnapshotInTree();
+        expect(run(repo, 'ls-tree', 'aiteam/m1', '.aiteam')).toMatch(/^040000 tree /);
+      });
+
+      it('replaces a symlink at .aiteam/artifacts rather than following it', async () => {
+        run(repo, 'branch', '-f', 'aiteam/m1', symlinkFrom(repo, base, '.aiteam/artifacts', join(outside, 'artifacts')));
+        await snapshotState(repo, 1, stateDir, wtPath);
+        expectSnapshotInTree();
+      });
+
+      it('replaces a plain file at .aiteam', async () => {
+        run(repo, 'branch', '-f', 'aiteam/m1', commitFrom(repo, base, { '.aiteam': 'not a folder\n' }));
+        await snapshotState(repo, 1, stateDir, wtPath);
+        expectSnapshotInTree();
+      });
+    });
+
     it('does not touch the checkout', async () => {
       const before = [await symbolicHead(repo), await revParse(repo), await porcelain(repo)];
       await snapshotState(repo, 1, stateDir, wtPath);
@@ -386,6 +431,25 @@ describe('merges', () => {
       expect(readFileSync(join(linked, 'feature.txt'), 'utf8')).toBe('feature\n');
       expect(await porcelain(linked)).toBe('');
       expect(existsSync(join(repo, 'feature.txt'))).toBe(false);
+    });
+
+    it('does not read a linked checkout\'s own .git, which can be aimed at a planted git dir', async () => {
+      const marker = join(tempDir('merge-marker-'), 'ran');
+      const filtered = commitFrom(repo, base, { '.gitattributes': '* filter=planted\n', 'feature.txt': 'feature\n' });
+      run(repo, 'checkout', '-q', '--detach');
+      const linked = join(tempDir('merge-linked-'), 'wt');
+      run(repo, 'worktree', 'add', '--quiet', linked, 'main');
+      const planted = join(tempDir('merge-planted-'), 'gitdir');
+      cpSync(join(repo, '.git'), planted, { recursive: true });
+      writeFileSync(join(planted, 'HEAD'), 'ref: refs/heads/main\n');
+      writeFileSync(join(planted, 'config'), `[core]\n\trepositoryformatversion = 0\n\tbare = false\n\tworktree = ${linked}\n[filter "planted"]\n\tsmudge = touch ${marker}; cat\n`);
+      writeFileSync(join(linked, '.git'), `gitdir: ${planted}\n`);
+
+      expect(await advanceBaseBranch(repo, 'main', filtered)).toEqual({ ok: true, sha: filtered });
+
+      expect(existsSync(marker)).toBe(false);
+      expect(await revParse(repo, 'main')).toBe(filtered);
+      expect(readFileSync(join(linked, 'feature.txt'), 'utf8')).toBe('feature\n');
     });
 
     it('is not fooled by a worktree whose folder has gone', async () => {
