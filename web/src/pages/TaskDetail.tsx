@@ -96,7 +96,7 @@ function TaskView({ details: { task, attempts } }: { details: TaskDetails }) {
       <header className="ph">
         <div>
           <div className="crumbs">
-            <Link to="/">Tasks</Link>
+            <Link to="/tasks">Tasks</Link>
             <span>/</span>
           </div>
           <h1>
@@ -163,7 +163,7 @@ export function TaskDetail({ id }: { id: number }) {
   if (error) {
     return (
       <p className="notice">
-        {error.message}. <Link to="/">See all tasks</Link>
+        {error.message}. <Link to="/tasks">See all tasks</Link>
       </p>
     );
   }
