@@ -42,6 +42,8 @@ export function buildClaudeInvocation(m: TaskManifest, ws: Workspace, cfg: Claud
     '--tools', tools.join(','),
     '--allowedTools', allowed.join(','),
     '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}',
+    // The CLI syncs the account's skills into the agent home; a worker's instructions come only from its manifest.
+    '--disable-slash-commands',
     // Settings in a worktree can hold hooks, which run outside the sandbox. The manifest carries the repo's instructions instead.
     '--setting-sources', 'user',
     '--max-turns', String(m.budgets.max_turns), '--max-budget-usd', String(m.budgets.max_usd),

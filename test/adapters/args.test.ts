@@ -27,6 +27,7 @@ describe('buildClaudeInvocation', () => {
       '--tools', 'Read,Glob,Grep,Edit,Write,Bash',
       '--allowedTools', 'Read(./**),Glob(./**),Grep(./**),Bash,Edit(./**),Write(./**)',
       '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}',
+      '--disable-slash-commands',
       '--setting-sources', 'user',
       '--max-turns', '60', '--max-budget-usd', '3',
       '--settings', '{"sandbox":{"enabled":true,"allowUnsandboxedCommands":false,"network":{"allowedDomains":[]},"filesystem":{"denyRead":["/secret"],"allowRead":["/w"]}}}',

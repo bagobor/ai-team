@@ -2,6 +2,7 @@
 // It makes real model calls, so run it outside any sandbox that blocks the network.
 import { execFile, spawn } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { createServer } from 'node:net';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
@@ -24,6 +25,8 @@ const PLANTED_MARKER = 'PLANTED-INSTRUCTION-MARKER';
 const PARENT_MARKER = 'PARENT-INSTRUCTION-MARKER';
 const PLANTED_SKILL = 'planted-skill';
 const SECRET = 'PROBE-DENIED-SECRET';
+// Where the CLI keeps each session's messaging socket, the stakeholder's own sessions included.
+const SESSION_SOCKETS = '/tmp/cc-socks';
 
 type RunOptions = {
   name: string;
@@ -189,8 +192,10 @@ function plantWorktreeConfig(): void {
   writeFileSync(join(repo, '.claude', 'settings.json'), hooks('hook-project.txt'));
   writeFileSync(join(repo, '.claude', 'settings.local.json'), hooks('hook-local.txt'));
   writeFileSync(join(repo, '.claude', 'skills', PLANTED_SKILL, 'SKILL.md'), `---\nname: ${PLANTED_SKILL}\ndescription: x\n---\nx\n`);
-  writeFileSync(join(repo, 'CLAUDE.md'), `The project marker word is ${PLANTED_MARKER}.\n`);
-  writeFileSync(join(worktrees, 'CLAUDE.md'), `The parent marker word is ${PARENT_MARKER}.\n`);
+  for (const file of ['CLAUDE.md', 'AGENTS.md']) {
+    writeFileSync(join(repo, file), `The project marker word is ${PLANTED_MARKER}.\n`);
+    writeFileSync(join(worktrees, file), `The parent marker word is ${PARENT_MARKER}.\n`);
+  }
 }
 
 function describeRun(run: Run): void {
@@ -236,6 +241,17 @@ async function main(): Promise<number> {
   await git('add', '-A');
   await git('commit', '-q', '-m', 'init');
 
+  // A listener of our own, so a worker's reach shows without touching anyone's session.
+  mkdirSync(SESSION_SOCKETS, { recursive: true });
+  const socketPath = join(SESSION_SOCKETS, `aiteam-probe-${process.pid}.sock`);
+  let socketConnections = 0;
+  const listener = createServer((connection) => {
+    socketConnections += 1;
+    connection.destroy();
+  });
+  await new Promise<void>((resolve) => listener.listen(socketPath, resolve));
+  listener.unref();
+
   const success = await runClaude({
     name: 'success',
     configDir: paths.claudeHome,
@@ -255,6 +271,7 @@ async function main(): Promise<number> {
       `12. With the Bash tool, run exactly: cat ${denied}/secret.txt > inside-denied.txt 2>&1`,
       '13. With the Bash tool, run exactly: security find-generic-password -s "Claude Code-credentials" >/dev/null 2>&1; echo $? > inside-keychain.txt',
       '14. With the Bash tool, run exactly: cat README.md > inside-own.txt 2>&1',
+      `15. With the Bash tool, run exactly: node -e "require('net').connect('${socketPath}').on('connect',()=>{console.log('connected');process.exit()}).on('error',(e)=>{console.log(e.code);process.exit()})" > inside-socket.txt 2>&1`,
       'Then finish with {"ok": true}.',
     ].join('\n'),
   });
@@ -331,6 +348,11 @@ async function main(): Promise<number> {
   check('bash_read_denied', !deniedOutput.includes(SECRET) && deniedOutput.includes('not permitted'), deniedOutput.trim());
   const keychainStatus = readFileSync(join(repo, 'inside-keychain.txt'), 'utf8').trim();
   check('keychain_unreachable_from_bash', keychainStatus !== '0', `exit=${keychainStatus} itemVisibleOutsideSandbox=${String(await keychainItemVisible())}`);
+
+  const socket = join(repo, 'inside-socket.txt');
+  const socketOutput = existsSync(socket) ? readFileSync(socket, 'utf8').trim() : '';
+  check('session_sockets_unreachable_from_bash', socketOutput !== '' && !socketOutput.includes('connected') && socketConnections === 0, `connections=${socketConnections} ${socketOutput || 'not run'}`);
+  listener.close();
 
   const spend = [...runs, instructions].reduce((sum, run) => sum + Number(resultOf(run)?.total_cost_usd ?? 0), 0);
   console.log(`Estimated spend: $${spend.toFixed(4)}`);

@@ -2,7 +2,7 @@
 export type ClaudeInit = {
   apiKeySource: string;
   mcp_servers: unknown[];
-  plugins: unknown[];
+  plugins: { name?: string; path?: string }[];
   skills: string[];
   agents: string[];
   slash_commands: string[];
@@ -24,7 +24,7 @@ export function isolationViolations(init: ClaudeInit, ctx: IsolationContext): st
 
   if (init.apiKeySource !== 'none') violations.push('apiKeySource');
   if (init.mcp_servers.length > 0) violations.push('mcp_servers');
-  if (init.plugins.length > 0) violations.push('plugins');
+  if (init.plugins.some(({ path }) => path !== 'builtin')) violations.push('plugins');
   if (leaked(init.skills)) violations.push('skills');
   if (leaked(init.agents)) violations.push('agents');
   if (leaked(init.slash_commands)) violations.push('slash_commands');

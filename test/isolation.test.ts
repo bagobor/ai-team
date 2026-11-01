@@ -27,6 +27,17 @@ describe('isolationViolations', () => {
     expect(isolationViolations(init, ctx)).toEqual([]);
   });
 
+  // CLI 2.1.309 reports its own telemetry plugin this way on every run, with nothing installed.
+  it('does not count a plugin built into the CLI as a leak', () => {
+    const init = { ...clean, plugins: [{ name: 'cc-plugin-telemetry', path: 'builtin' }] };
+    expect(isolationViolations(init, ctx)).toEqual([]);
+  });
+
+  it('flags an installed plugin that sits beside a built-in one', () => {
+    const init = { ...clean, plugins: [{ name: 'cc-plugin-telemetry', path: 'builtin' }, { name: 'mine', path: '/h/plugins/mine' }] };
+    expect(isolationViolations(init, ctx)).toEqual(['plugins']);
+  });
+
   it('names each leak', () => {
     const leaky: ClaudeInit = {
       ...clean,
