@@ -11,7 +11,8 @@
   ],
   "properties": {
     "body": {
-      "type": "string"
+      "type": "string",
+      "description": "Your own account of the milestone. The engine adds the sections headed Acceptance criteria, Known issues, Deviations, and Cost and time, so don't use those headings."
     },
     "known_issues": {
       "type": "array",
