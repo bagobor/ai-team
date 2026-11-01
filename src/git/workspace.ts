@@ -4,7 +4,8 @@ import { isWithin } from '../paths.ts';
 import { commitStaged, ENGINE_CONFIG, engineGit, git, gitOk } from './git.ts';
 
 // The stakeholder may be working in the target repo at any moment, so the engine never moves its HEAD,
-// index or files: branches come from `git branch`, checkouts only from `git worktree add`.
+// index or files: branches come from `git branch`, checkouts only from `git worktree add`. The exception is in
+// merge.ts, at CP4 and for a branch the stakeholder has checked out: a fast-forward, which git refuses over their edits.
 
 // A folder inside some other repo is not that repo: `git rev-parse` alone would say it is.
 async function isRepoRoot(path: string): Promise<boolean> {
@@ -40,17 +41,21 @@ export async function prepareRepo(repoPath: string, opts: { create: boolean }): 
 }
 
 // Attempts start side by side and the first to reach a milestone creates its branch, so finding it missing and
-// creating it must not interleave. Only the daemon runs this, so a queue in this process is enough.
+// creating it must not interleave, and neither must merges. Only the daemon runs this, so a queue in this process is enough.
 const branchQueues = new Map<string, Promise<unknown>>();
+
+export function inRepoTurn<T>(repoPath: string, fn: () => Promise<T>): Promise<T> {
+  const work = (branchQueues.get(repoPath) ?? Promise.resolve()).then(fn);
+  branchQueues.set(repoPath, work.catch(() => {}));
+  return work;
+}
 
 export function ensureIntegrationBranch(
   repoPath: string,
   milestone: number,
   baseBranch: string,
 ): Promise<{ branch: string; headSha: string }> {
-  const work = (branchQueues.get(repoPath) ?? Promise.resolve()).then(() => findOrCreateBranch(repoPath, milestone, baseBranch));
-  branchQueues.set(repoPath, work.catch(() => {}));
-  return work;
+  return inRepoTurn(repoPath, () => findOrCreateBranch(repoPath, milestone, baseBranch));
 }
 
 async function findOrCreateBranch(repoPath: string, milestone: number, baseBranch: string): Promise<{ branch: string; headSha: string }> {
