@@ -15,6 +15,7 @@ import { manifestDir, stateRepoDir, transcriptPath, workerDenyRead, worktreePath
 import { processStartTime } from '../proc.ts';
 import { loadRole, type Role } from '../roles/role.ts';
 import { parseTicket } from '../tickets/ticket.ts';
+import { ENV_PROFILE } from './apply/ids.ts';
 import { applyOutput } from './apply/index.ts';
 import { IllegalTransition } from './fsm.ts';
 import type { AttemptPatch, AttemptRow, ProjectRow, Store, TaskRow } from './store.ts';
@@ -84,7 +85,6 @@ type ChangeReportOutput = {
   notes?: string;
 };
 
-const ENV_PROFILE = 'ENV-PROFILE';
 const EVENT_STRING_CAP = 4000;
 const INITIAL_BACKOFF_S = 300;
 const MAX_BACKOFF_S = 3600;
@@ -554,9 +554,12 @@ export class Runner {
     const { store, artifacts } = this.deps;
     const { task, project } = work;
     await store.setTaskState(task.id, 'checks');
-    const applied = await applyOutput({ deps: this.deps, project, task, attempt, order, output, worktree: attempt.worktree_path, signal: this.checksSignal(live) });
+    const reporter = this.commandReporter(project, task.id, attempt.id);
+    const applied = await applyOutput({ deps: this.deps, project, task, attempt, order, output, worktree: attempt.worktree_path, signal: this.checksSignal(live), report: reporter });
+    await reporter.flushed();
 
     if (live.stop) return this.applyStop(task.id, live);
+    if (reporter.error() !== undefined) throw reporter.error();
     if (!applied.ok) {
       await store.setAttemptState(attempt.id, 'invalid_output', failure('invalid_output', applied.evidence));
       return this.retryOrEscalate(task.id);

@@ -1,8 +1,11 @@
 import type { ArtifactChange } from '../../artifacts/store.ts';
+import type { EventType } from '../../events.ts';
 import type { EngineDeps } from '../runner.ts';
 import type { ArtifactVersionRow, AttemptRow, ProjectRow, Store, TaskRow } from '../store.ts';
 import type { Purpose, WorkOrder } from '../workorder.ts';
-import { applyDiscovery } from './discovery.ts';
+import { applyReviseDesign, applyReviseTestPlan, applyTechDesign, applyTestPlan } from './design.ts';
+import { applyDiscovery, applyEnvironmentProfile } from './discovery.ts';
+import { applyMilestoneReview, applyMilestoneSpec } from './milestone.ts';
 
 export type ApplyCtx = {
   deps: EngineDeps;
@@ -13,6 +16,7 @@ export type ApplyCtx = {
   output: unknown;
   worktree: string;
   signal: AbortSignal;
+  report: { onEvent: (type: EventType, payload: unknown) => void; onSpawn: (pid: number) => void };
 };
 
 // after is not called then: a promise resolved with an object that has a then function calls it instead of handing the object over.
@@ -30,16 +34,16 @@ const notYet =
 
 const APPLIERS: Record<Purpose, Applier> = {
   discovery: applyDiscovery,
-  environment_profile: notYet('environment_profile'),
-  milestone_spec: notYet('milestone_spec'),
-  tech_design: notYet('tech_design'),
-  test_plan: notYet('test_plan'),
+  environment_profile: applyEnvironmentProfile,
+  milestone_spec: applyMilestoneSpec,
+  tech_design: applyTechDesign,
+  test_plan: applyTestPlan,
   code_review: notYet('code_review'),
   qa_verify: notYet('qa_verify'),
-  milestone_review: notYet('milestone_review'),
+  milestone_review: applyMilestoneReview,
   cr_recommendation: notYet('cr_recommendation'),
-  revise_design: notYet('revise_design'),
-  revise_test_plan: notYet('revise_test_plan'),
+  revise_design: applyReviseDesign,
+  revise_test_plan: applyReviseTestPlan,
 };
 
 // An applier's refusal is the worker's failed attempt. An applier's exception is the engine's bug, and escalates.

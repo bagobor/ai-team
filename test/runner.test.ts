@@ -11,7 +11,7 @@ import { eventTypes, makeEngine, okStep, resultLine, runOnce, runToSettled, tick
 import { commitAll, revParse, run, tempDir } from './helpers/repo.ts';
 
 // One purpose stands in for all of them: what the runner does with an applier's answer doesn't depend on which it was.
-vi.mock('../src/engine/apply/discovery.ts', () => ({ applyDiscovery: vi.fn() }));
+vi.mock('../src/engine/apply/discovery.ts', async (original) => ({ ...(await original<object>()), applyDiscovery: vi.fn() }));
 const applier = vi.mocked(applyDiscovery);
 
 const INIT = JSON.stringify({ type: 'system', subtype: 'init', session_id: 's', model: 'm' });
@@ -968,6 +968,22 @@ describe('Runner', () => {
   });
 
   describe('environment profile', () => {
+    it("shows the Tech Lead's smoke command on its task and publishes the profile", async () => {
+      const output = { body: '# Profile\n', commands: { build: 'true', test: 'true', lint: 'true', smoke: 'echo smoke-ran' }, toolchains: [], network_allow: [], setup: null, stakeholder_note: 'Note' };
+      const e = await engine({ steps: [{ lines: [INIT, resultLine({ structured_output: output })] }] });
+      const t = await orderTask(e, { purpose: 'environment_profile' }, { ticket_id: 'DISCOVERY-TL', role_id: 'tech_lead', purpose: 'environment_profile' });
+
+      await runToSettled(e, t.id);
+
+      expect(await task(e, t.id)).toMatchObject({ state: 'done' });
+      const types = await eventTypes(e, t.id);
+      expect(types).toContain('check.started');
+      expect(types).toContain('check.finished');
+      expect(await e.artifacts.latest((await projectOf(e)).id, 'ENV-PROFILE')).toMatchObject({ status: 'proposed', owner_role: 'tech_lead' });
+      const [a] = await e.store.listAttempts(t.id);
+      expect(a!.pid).toEqual(expect.any(Number));
+    });
+
     const domains = (a: AttemptRow) => {
       const flags = (a.manifest as TaskManifest).flags!;
       return (JSON.parse(flags[flags.indexOf('--settings') + 1]!) as { sandbox: { network: { allowedDomains: string[] } } }).sandbox.network.allowedDomains;

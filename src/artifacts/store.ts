@@ -33,7 +33,7 @@ export type NewVersion = {
   approvedBy?: string;
 };
 
-export type StatusChange = { id: string; status: ArtifactStatus; approvedBy?: string; staleSections?: string[]; derivedFrom?: string[] };
+export type StatusChange = { id: string; status: ArtifactStatus; approvedBy?: string; staleSections?: string[]; derivedFrom?: string[]; rationale?: string };
 
 export type ArtifactChange = { message: string; publish?: NewVersion[]; status?: StatusChange[] };
 
@@ -126,6 +126,7 @@ export class ArtifactStore {
               stale_sections: status.staleSections ?? [],
               ...(status.approvedBy === undefined ? {} : { approved_by: status.approvedBy, approved_at: now }),
               ...(status.derivedFrom ? { derived_from: doc.derivedFrom } : {}),
+              ...(status.rationale ? { rationale: status.rationale } : {}),
             }),
           );
           const repin = repins.get(status.id);
@@ -235,9 +236,9 @@ export class ArtifactStore {
   }
 
   // What this change's approved versions make stale, to go in the same commit. An artifact this change already
-  // gives a new version or a new pin has dealt with the change itself.
+  // gives a new version or a new pin, or retires, has dealt with the change itself.
   private async staleFrom(project: ProjectRow, drafts: Map<string, Draft>, publish: NewVersion[], statuses: StatusChange[]): Promise<StatusChange[]> {
-    const settled = new Set([...publish.map(({ id }) => id), ...statuses.filter(({ derivedFrom }) => derivedFrom).map(({ id }) => id)]);
+    const settled = new Set([...publish.map(({ id }) => id), ...statuses.filter(({ derivedFrom, status }) => derivedFrom || status === 'superseded').map(({ id }) => id)]);
     const merged = new Map<string, StatusChange>();
 
     for (const { doc } of drafts.values()) {

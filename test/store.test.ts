@@ -380,6 +380,27 @@ describe('Store for M2', () => {
     });
   });
 
+  describe('logEvent', () => {
+    it('logs an event against the project', async () => {
+      await store.logEvent(project.id, 'change_request.dropped', { reason: 'Too many' });
+
+      expect(seen).toEqual(['change_request.dropped']);
+      const [row] = await log.list({ projectId: project.id });
+      expect(row!.payload).toEqual({ reason: 'Too many' });
+    });
+
+    it('goes with the transaction it is part of', async () => {
+      const failed = store.atomically(async (s) => {
+        await s.logEvent(project.id, 'change_request.dropped', { reason: 'Too many' });
+        throw new Error('crash-marker');
+      });
+
+      await expect(failed).rejects.toThrow('crash-marker');
+      expect(seen).toEqual([]);
+      expect(await log.list({ projectId: project.id })).toEqual([]);
+    });
+  });
+
   describe('project and milestone phases', () => {
     it('starts a project in intake and moves it with an event', async () => {
       expect(project.phase).toBe('intake');

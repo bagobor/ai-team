@@ -39,6 +39,13 @@ describe('applyEvent', () => {
     expect(rows[0]?.text).toEqual(expect.any(String));
   });
 
+  it('says why a document changed when the event carries a reason', () => {
+    const { rows } = apply(event('lineage.repinned', { id: 'TECH-M1', rationale: 'Only wording moved' }), event('artifact.status', { id: 'M1-T-1', status: 'superseded', rationale: 'Replaced' }));
+
+    expect(rows[0]?.text).toBe('TECH-M1 re-pinned: Only wording moved');
+    expect(rows[1]?.text).toBe('M1-T-1 is now superseded: Replaced');
+  });
+
   it('shows a timed-out check as a failure rather than as exit null', () => {
     const { rows } = apply(event('check.finished', { ...RUN, exitCode: null, timedOut: true }));
 

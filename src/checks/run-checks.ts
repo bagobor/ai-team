@@ -26,7 +26,7 @@ export type ChecksInput = {
   signal?: AbortSignal;
 };
 
-type CommandEnv = {
+export type CommandEnv = {
   worktree: string;
   denyRead: string[];
   timeoutS: number;

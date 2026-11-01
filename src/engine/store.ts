@@ -2,7 +2,7 @@ import { sql, type Kysely, type Selectable, type Updateable } from 'kysely';
 import { AC_ID, type Criterion, type CriterionStatus, type Verification } from '../artifacts/acs.ts';
 import type { ArtifactStatus, ArtifactType } from '../artifacts/format.ts';
 import type { AcceptanceCriteriaTable, ArtifactDepsTable, ArtifactVersionsTable, AttemptsTable, DB, MilestonesTable, ProjectsTable, TasksTable, VendorPausesTable } from '../db/schema.ts';
-import type { EventLog, EventRow } from '../events.ts';
+import type { EventLog, EventRow, EventType } from '../events.ts';
 import {
   assertAttemptTransition,
   assertMilestoneTransition,
@@ -43,7 +43,7 @@ export type ArtifactVersionRow = Omit<Selectable<ArtifactVersionsTable>, 'type' 
   stale_sections: string[];
 };
 export type NewArtifactVersion = Omit<ArtifactVersionRow, 'stale_sections' | 'created_at'>;
-export type ArtifactPatch = { status: ArtifactStatus } & Partial<Pick<ArtifactVersionRow, 'sha' | 'derived_from' | 'stale_sections' | 'approved_by' | 'approved_at'>>;
+export type ArtifactPatch = { status: ArtifactStatus; rationale?: string } & Partial<Pick<ArtifactVersionRow, 'sha' | 'derived_from' | 'stale_sections' | 'approved_by' | 'approved_at'>>;
 export type ArtifactDepRow = Selectable<ArtifactDepsTable>;
 
 export type CriterionRow = Omit<Selectable<AcceptanceCriteriaTable>, 'status' | 'verification'> & {
@@ -286,7 +286,8 @@ export class Store {
   }
 
   async setArtifactStatus(projectId: number, artifactId: string, version: number, patch: ArtifactPatch): Promise<ArtifactVersionRow> {
-    const { derived_from, stale_sections, ...rest } = patch;
+    const { derived_from, stale_sections, rationale, ...rest } = patch;
+    const why = rationale ? { rationale } : {};
     return this.inTrx(async (db, emit) => {
       const updated = await db
         .updateTable('artifact_versions')
@@ -301,8 +302,8 @@ export class Store {
         .returningAll()
         .executeTakeFirst();
       if (!updated) throw new Error(`No version ${version} of artifact ${artifactId} in project ${projectId}`);
-      emit(await this.log.insert(db, { projectId, type: 'artifact.status', payload: { id: artifactId, status: patch.status } }));
-      if (derived_from) emit(await this.log.insert(db, { projectId, type: 'lineage.repinned', payload: { id: artifactId } }));
+      emit(await this.log.insert(db, { projectId, type: 'artifact.status', payload: { id: artifactId, status: patch.status, ...why } }));
+      if (derived_from) emit(await this.log.insert(db, { projectId, type: 'lineage.repinned', payload: { id: artifactId, ...why } }));
       return toArtifactRow(updated);
     });
   }
@@ -545,13 +546,25 @@ export class Store {
     return row && toAttemptRow(row);
   }
 
-  async attemptTotals(): Promise<Map<number, { attempts: number; usdEst: number | null }>> {
+  async attemptTotals(): Promise<Map<number, { attempts: number; usdEst: number | null; seconds: number | null }>> {
     const rows = await this.db
       .selectFrom('attempts')
-      .select((eb) => ['task_id', eb.fn.countAll<number>().as('attempts'), sql<number | null>`sum(json_extract(usage, '$.usdEst'))`.as('usdEst')])
+      .select((eb) => [
+        'task_id',
+        eb.fn.countAll<number>().as('attempts'),
+        sql<number | null>`sum(json_extract(usage, '$.usdEst'))`.as('usdEst'),
+        sql<number | null>`sum((julianday(ended_at) - julianday(started_at)) * 86400)`.as('seconds'),
+      ])
       .groupBy('task_id')
       .execute();
-    return new Map(rows.map(({ task_id, attempts, usdEst }) => [task_id, { attempts, usdEst }]));
+    return new Map(rows.map(({ task_id, attempts, usdEst, seconds }) => [task_id, { attempts, usdEst, seconds }]));
+  }
+
+  // For an event that nothing else in the transaction would log.
+  logEvent(projectId: number, type: EventType, payload: Record<string, unknown>): Promise<void> {
+    return this.inTrx(async (db, emit) => {
+      emit(await this.log.insert(db, { projectId, type, payload }));
+    });
   }
 
   async listAttempts(taskId: number): Promise<AttemptRow[]> {
