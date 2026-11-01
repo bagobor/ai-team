@@ -18,6 +18,7 @@ import {
   type ArtifactType,
   type Pin,
 } from './format.ts';
+import { staleHits } from './lineage.ts';
 
 export type NewVersion = {
   id: string;
@@ -76,19 +77,16 @@ export class ArtifactStore {
 
       const repins = new Map<string, Dep[]>();
       for (const status of statuses) {
-        const draft = drafts.get(status.id) ?? (await this.draftOfLatest(project, status.id));
-        drafts.set(status.id, draft);
-        draft.doc.status = status.status;
-        if (status.approvedBy !== undefined) {
-          draft.doc.approvedBy = status.approvedBy;
-          draft.doc.approvedAt = now;
-        }
+        const draft = await this.applyStatus(project, drafts, status, now);
         if (status.derivedFrom) {
           const deps = await this.resolvePins(project, drafts, draft.doc, status.derivedFrom);
           repins.set(status.id, deps);
           draft.doc.derivedFrom = deps.map(pinOf);
         }
       }
+
+      const stale = await this.staleFrom(project, drafts, publish, statuses);
+      for (const status of stale) await this.applyStatus(project, drafts, status, now);
 
       const files = [...drafts.values()].map(({ doc, path }) => ({ path, content: renderArtifact(doc) }));
       const sha = files.length > 0 ? (await commitFiles(dir, files, change.message)).sha : '';
@@ -118,7 +116,7 @@ export class ArtifactStore {
           await s.insertArtifactDeps(deps.map((dep) => ({ ...dep, project_id: project.id, from_id: version.id, from_version: doc.version })));
         }
 
-        for (const status of statuses) {
+        for (const status of [...statuses, ...stale]) {
           const { doc } = drafts.get(status.id) as Draft;
           rows.set(
             status.id,
@@ -223,6 +221,34 @@ export class ArtifactStore {
       });
     }
     return drafts;
+  }
+
+  private async applyStatus(project: ProjectRow, drafts: Map<string, Draft>, status: StatusChange, now: string): Promise<Draft> {
+    const draft = drafts.get(status.id) ?? (await this.draftOfLatest(project, status.id));
+    drafts.set(status.id, draft);
+    draft.doc.status = status.status;
+    if (status.approvedBy !== undefined) {
+      draft.doc.approvedBy = status.approvedBy;
+      draft.doc.approvedAt = now;
+    }
+    return draft;
+  }
+
+  // What this change's approved versions make stale, to go in the same commit. An artifact this change already
+  // gives a new version or a new pin has dealt with the change itself.
+  private async staleFrom(project: ProjectRow, drafts: Map<string, Draft>, publish: NewVersion[], statuses: StatusChange[]): Promise<StatusChange[]> {
+    const settled = new Set([...publish.map(({ id }) => id), ...statuses.filter(({ derivedFrom }) => derivedFrom).map(({ id }) => id)]);
+    const merged = new Map<string, StatusChange>();
+
+    for (const { doc } of drafts.values()) {
+      if (doc.status !== 'approved') continue;
+      for (const hit of await staleHits({ store: this.store }, project, doc)) {
+        if (settled.has(hit.id)) continue;
+        const sections = new Set([...(merged.get(hit.id)?.staleSections ?? []), ...(hit.staleSections ?? [])]);
+        merged.set(hit.id, { ...hit, staleSections: [...sections] });
+      }
+    }
+    return [...merged.values()];
   }
 
   private async draftOfLatest(project: ProjectRow, id: string): Promise<Draft> {

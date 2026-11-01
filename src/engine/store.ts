@@ -251,7 +251,7 @@ export class Store {
   }
 
   async listArtifactDeps(projectId: number): Promise<ArtifactDepRow[]> {
-    return this.db.selectFrom('artifact_deps').selectAll().where('project_id', '=', projectId).execute();
+    return this.db.selectFrom('artifact_deps').selectAll().where('project_id', '=', projectId).orderBy(sql`rowid`).execute();
   }
 
   // The earlier versions stop being current in the same step that makes this one current.
@@ -291,6 +291,7 @@ export class Store {
         .executeTakeFirst();
       if (!updated) throw new Error(`No version ${version} of artifact ${artifactId} in project ${projectId}`);
       emit(await this.log.insert(db, { projectId, type: 'artifact.status', payload: { id: artifactId, status: patch.status } }));
+      if (derived_from) emit(await this.log.insert(db, { projectId, type: 'lineage.repinned', payload: { id: artifactId } }));
       return toArtifactRow(updated);
     });
   }
