@@ -6,20 +6,10 @@ import type { TaskManifest } from '../src/manifest/build.ts';
 import { manifestDir } from '../src/paths.ts';
 import { apply, projectOf, publish } from './helpers/apply.ts';
 import { makeEngine, resultStep, runOnce, type TestEngine } from './helpers/engine.ts';
+import { ids, noteOf, publishLargeDesign, publishLargeSpec, ROOM_BEFORE_M3, words } from './helpers/large-milestone.ts';
 import { revParse } from './helpers/repo.ts';
 
-const CRITERIA_COUNT = 30;
-const TICKET_COUNT = 10;
 const PINS = ['SPEC-M1@1', 'TEST-PLAN-M1@1', 'QA-REPORT-M1-1@1'];
-// A role budget is 12,000, and M3 adds up to 2,000 of playbook and 1,000 of memory to every manifest.
-const ROOM_BEFORE_M3 = 9_000;
-
-const ids = Array.from({ length: CRITERIA_COUNT }, (_, i) => `AC-${i + 1}`);
-const words = (chars: number) => 'the check reads the file and compares it with what it should hold '.repeat(Math.ceil(chars / 67)).slice(0, chars);
-// Sizes from the first real run: its verification commands were shell one-liners of about 700 characters.
-const command = (ac: string) => `true # command-marker ${ac} ${words(700)}`;
-const textOf = (ac: string) => `text-${ac}-marker ${words(250)}`;
-const noteOf = (ac: string) => `note-${ac}-marker ${words(150)}`;
 const REVIEW = { body: '# How it went\n', known_issues: [], deviations: [], stakeholder_note: 'Ship it' };
 
 type QaOverrides = { notes?: (ac: string) => string; summary?: string; bugs?: unknown[] };
@@ -27,32 +17,10 @@ type QaOverrides = { notes?: (ac: string) => string; summary?: string; bugs?: un
 describe('the Milestone Review inputs', () => {
   let e: TestEngine;
 
-  // Each document comes from its real applier, so these are the sizes and shapes a real milestone leaves behind.
   async function reviewOfLargeMilestone(qa: QaOverrides = {}): Promise<TaskRow> {
     e = await makeEngine({ steps: { byTask: { 'M1-REVIEW-1': resultStep(REVIEW) } } });
-    const project = await projectOf(e);
-    await e.store.createMilestone({ project_id: project.id, n: 1, title: 'First', goal: 'Goal', phase: 'pending' });
-    await e.store.patchMilestone(project.id, 1, { verify_round: 1 });
-
-    const criteria = ids.map((id) => ({ id, text: textOf(id), verification: { method: 'automated', how: command(id) } }));
-    const [spec] = await publish(e, await apply(e, 'milestone_spec', { body: `# Goal\n\nspec-prose-marker ${words(3000)}\n`, criteria }));
-    await e.store.lockCriteria(project.id, 1, spec!.version, criteria as Parameters<typeof e.store.lockCriteria>[3]);
-
-    const tickets = Array.from({ length: TICKET_COUNT }, (_, t) => ({
-      key: `T-${t + 1}`,
-      title: `Ticket ${t + 1}`,
-      specialty: 'engineer',
-      ac_refs: ids.slice(t * 3, t * 3 + 3),
-      touches: [`src/part-${t + 1}/**`],
-      depends_on: [],
-      definition_of_done: ['npm test'],
-      inputs: [],
-      size: 'S',
-      body: 'Do it.\n',
-    }));
-    await publish(e, await apply(e, 'tech_design', { body: '# Design\n', tickets }, { inputs: ['SPEC-M1@1'], role: 'tech_lead' }));
-    const coverage = ids.map((ac) => ({ ac, commands: [command(ac)], notes: words(150) }));
-    await publish(e, await apply(e, 'test_plan', { body: `# Test plan\n\nplan-prose-marker ${words(1500)}\n`, coverage, harness_tickets: [] }, { inputs: ['SPEC-M1@1'], role: 'tech_lead' }));
+    const project = await publishLargeSpec(e);
+    await publishLargeDesign(e);
 
     const results = ids.map((ac) => ({ ac, status: 'passing', commands: [], notes: (qa.notes ?? noteOf)(ac) }));
     const output = { results, bugs: qa.bugs ?? [], summary: qa.summary ?? `qa-summary-marker ${words(600)}` };

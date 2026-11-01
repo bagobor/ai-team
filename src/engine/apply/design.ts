@@ -7,7 +7,7 @@ import type { Applier, ApplyCtx } from './index.ts';
 import { withRaised } from './raised.ts';
 import { validateTickets, type TicketDraft } from './tickets.ts';
 
-type Coverage = { ac: string; commands: string[]; notes: string };
+export type Coverage = { ac: string; commands: string[]; notes: string };
 type DesignOutput = { body: string; tickets: TicketDraft[] };
 type TestPlanOutput = { body: string; coverage: Coverage[]; harness_tickets: TicketDraft[] };
 type Decision = { ticket: string; decision: 'still_valid' | 'superseded'; rationale: string };

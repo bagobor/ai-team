@@ -20,6 +20,7 @@ import { applyOutput } from './apply/index.ts';
 import { raisedRequests } from './apply/raised.ts';
 import { IllegalTransition } from './fsm.ts';
 import { reviewInputs } from './review-inputs.ts';
+import { roleInputs, writeReference } from './role-inputs.ts';
 import type { AttemptPatch, AttemptRow, ProjectRow, Store, TaskRow } from './store.ts';
 import type { WorkOrder } from './workorder.ts';
 
@@ -62,6 +63,7 @@ type TaskText = {
   doneCommands: string[];
   inputs: ManifestInput[];
   acRefs: string[];
+  reference?: string;
   diff?: NonNullable<BuildInput['diff']>;
   comment?: string;
 };
@@ -256,6 +258,9 @@ export class Runner {
       }
     }
 
+    // After the setup, which may clean the worktree.
+    if (work.reference !== undefined) await writeReference(worktree, work.reference);
+
     const built = buildManifest({
       project: project.name,
       attemptK: k,
@@ -368,27 +373,25 @@ export class Runner {
   }
 
   private async ticketText(project: ProjectRow, task: TaskRow): Promise<TaskText> {
-    const { paths, artifacts } = this.deps;
-    const taskMarkdown = await readFile(join(stateRepoDir(paths, project.name), task.ticket_path), 'utf8');
+    const taskMarkdown = await readFile(join(stateRepoDir(this.deps.paths, project.name), task.ticket_path), 'utf8');
     const ticket = parseTicket(taskMarkdown);
     return {
       taskMarkdown,
       taskSource: task.ticket_path,
       doneCommands: ticket.definition_of_done,
       acRefs: ticket.ac_refs,
-      inputs: await Promise.all(ticket.inputs.map((pin) => artifacts.readInput(project, pin))),
+      ...(await roleInputs(this.deps, project, ticket.inputs)),
     };
   }
 
   private async orderText(project: ProjectRow, task: TaskRow, order: WorkOrder): Promise<TaskText> {
-    const { artifacts } = this.deps;
     const diff = order.purpose === 'code_review' ? await this.reviewDiff(project, order) : undefined;
     return {
       taskMarkdown: order.instructions,
       taskSource: `workorder:${order.purpose}`,
       doneCommands: order.checks,
       acRefs: task.ac_refs,
-      inputs: order.purpose === 'milestone_review' ? await reviewInputs(this.deps, project, task.milestone, order.inputs) : await Promise.all(order.inputs.map((pin) => artifacts.readInput(project, pin))),
+      ...(order.purpose === 'milestone_review' ? { inputs: await reviewInputs(this.deps, project, task.milestone, order.inputs) } : await roleInputs(this.deps, project, order.inputs)),
       ...(diff ? { diff } : {}),
       ...(order.comment ? { comment: order.comment } : {}),
     };

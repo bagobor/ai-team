@@ -122,11 +122,11 @@ After the run stopped, port 4780 was free and no daemon or script process remain
 
 ## Findings for later milestones
 
-- **The context budget is the next thing a real project will hit, and QA now hits it first.** M1-REVIEW-1-a2 used 11,841 of 12,000 tokens on a two-ticket milestone, because its inputs were the whole Spec, Test Plan and QA Report, and the PM's long verification commands appear in all three.
+- **The context budget was the next thing a real project would hit. It now holds at 30 criteria, and the first real run still has to prove how.** M1-REVIEW-1-a2 used 11,841 of 12,000 tokens on a two-ticket milestone, because its inputs were the whole Spec, Test Plan and QA Report, and the PM's long verification commands appear in all three.
 
   The review is fixed on `m2-review-manifest-budget`. It now reads the Spec's prose and each criterion's text and status, the Test Plan's prose, and what QA wrote, and it leaves out the commands (`src/engine/review-inputs.ts`). What QA wrote is capped at 3,000 tokens, and the longest notes are cut first, with a mark that says so. The pins don't change, so the lineage doesn't either.
 
-  The other roles still read whole documents, so this moves the practical limit from about 8 criteria to about 10, not to 30. Tokens per manifest, measured with the first run's sizes (about 700 characters per verification command):
+  The other roles still read whole documents at that point, so this moved the practical limit from about 8 criteria to about 10, not to 30. Tokens per manifest before `m2-role-manifest-budget`, measured with the first run's sizes (about 700 characters per verification command):
 
   | Criteria | Review before | Review now | Tech Design, Test Plan | QA |
   |---|---|---|---|---|
@@ -136,7 +136,30 @@ After the run stopped, port 4780 was free and no daemon or script process remain
   | 20 | 25,580 | 5,077 | 14,186 | 19,908 |
   | 30 | 37,143 | 6,448 | 20,246 | 28,645 |
 
-  Tech Design and Test Plan also read the Environment Profile, which adds about 660 tokens that the table leaves out. So QA goes over the 12,000 budget at about 11 criteria, and Tech Design and Test Plan at about 16. Both stop before the review is reached, with a `context_over_budget` that a retry can't fix. QA needs the commands, so it can't drop them the way the review did. It can drop the copies in the Spec's `data.criteria` and `Verified by:` lines, but at 30 criteria that still leaves about 12,850 tokens, over the budget before M3 adds up to 3,000 more of playbook and memory. So long inline commands need a structural answer too, such as scripts in the repo or verifying in batches. This needs solving before the Apple Watch project.
+  Tech Design and Test Plan also read the Environment Profile, which adds about 660 tokens that this table leaves out. So QA went over the 12,000 budget at about 11 criteria, and Tech Design and Test Plan at about 16. Both stopped before the review was reached, with a `context_over_budget` that a retry can't fix. Dropping only the copies in the Spec's `data.criteria` and `Verified by:` lines still left QA at about 12,850 tokens at 30 criteria.
+
+  The fix is on `m2-role-manifest-budget` (`src/engine/role-inputs.ts`). Every role except the review's PM now reads a whole Spec or Test Plan as what people wrote: the Spec's prose and each criterion's text, and the Test Plan's prose and notes. The commands go to `.aiteam-reference/verification.md` in the attempt's worktree, each once and word for word, and the manifest says where. The engine writes the file after a profile's setup has run. Its folder ignores itself, so it stays out of `git status` and a ticket's snapshot. An input pinned to one section stays as it was, so an Engineer's criterion keeps its command beside it. The pins don't change, so the lineage doesn't either.
+
+  Tokens per manifest now, with the same sizes, and with the Environment Profile counted where it's read:
+
+  | Criteria | QA | Tech Design | Test Plan | Revise Test Plan | Revise Tech Design | Recommendation on the Spec | Spec, round 2 |
+  |---|---|---|---|---|---|---|---|
+  | 10 | 3,825 | 3,494 | 3,535 | 4,085 | 3,199 | 2,507 | 2,549 |
+  | 12 | 4,085 | 3,655 | 3,696 | 4,345 | 3,359 | 2,667 | 2,710 |
+  | 16 | 4,607 | 3,976 | 4,017 | 4,866 | 3,681 | 2,988 | 3,031 |
+  | 20 | 5,128 | 4,297 | 4,338 | 5,387 | 4,002 | 3,310 | 3,352 |
+  | 30 | 6,431 | 5,100 | 5,141 | 6,690 | 4,805 | 4,112 | 4,155 |
+  | 60 | 10,339 | 7,509 | 7,549 | 10,599 | 7,213 | 6,521 | 6,564 |
+
+  Command length no longer counts. At 30 criteria, with several commands of 2,000 characters for each criterion, QA measures 6,439, Revise Test Plan 6,699 and Tech Design 5,100, and the file reaches 241,999 characters. What's left grows with criterion text and notes, about 130 tokens per criterion for QA. That reaches the 9,000 target at about 50 criteria and the budget at about 73.
+
+  This doesn't settle everything:
+
+  - No real worker has read the file yet, so the first real run has to show that one does. It's in a git-ignored dot-folder, which a search may skip, so the manifest gives its exact path.
+  - Reading the file costs real context, outside the manifest budget: 23,206 characters at 30 criteria, about 6,630 tokens.
+  - A worker's read tool may cut very long commands.
+  - QA could still report a command that uses the file. That fails in the fresh worktree the engine verifies in, and costs a retry. The manifest warns against it.
+  - Prose, criterion text and notes have no cap.
 - **A false Bug dead-ends.** An Engineer who correctly changes nothing gets `no_changes` three times, then escalation. The fix for exit 127 only handles commands the shell can't find. Prose that starts with a real command (exit 1, 129) relies on the new wording. The judge layer (M5) is the natural place for this.
 - **A revise's work order is frozen when it's created.** Tickets that close are now handled, but a ticket opened after that, such as a Bug filed while a revision runs, still costs an attempt before the evidence names it.
 - **Doctor passes while workers can't use the configured models.** It checks neither the CLI version nor the models, so a stakeholder finds out at the first attempt, and a permanent `worker_error` then uses all 3 attempts before escalating.
