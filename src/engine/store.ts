@@ -1,6 +1,7 @@
 import { sql, type Kysely, type Selectable, type Updateable } from 'kysely';
+import { AC_ID, type Criterion, type CriterionStatus, type Verification } from '../artifacts/acs.ts';
 import type { ArtifactStatus, ArtifactType } from '../artifacts/format.ts';
-import type { ArtifactDepsTable, ArtifactVersionsTable, AttemptsTable, DB, MilestonesTable, ProjectsTable, TasksTable, VendorPausesTable } from '../db/schema.ts';
+import type { AcceptanceCriteriaTable, ArtifactDepsTable, ArtifactVersionsTable, AttemptsTable, DB, MilestonesTable, ProjectsTable, TasksTable, VendorPausesTable } from '../db/schema.ts';
 import type { EventLog, EventRow } from '../events.ts';
 import {
   assertAttemptTransition,
@@ -43,6 +44,11 @@ export type ArtifactVersionRow = Omit<Selectable<ArtifactVersionsTable>, 'type' 
 export type NewArtifactVersion = Omit<ArtifactVersionRow, 'stale_sections' | 'created_at'>;
 export type ArtifactPatch = { status: ArtifactStatus } & Partial<Pick<ArtifactVersionRow, 'sha' | 'derived_from' | 'stale_sections' | 'approved_by' | 'approved_at'>>;
 export type ArtifactDepRow = Selectable<ArtifactDepsTable>;
+
+export type CriterionRow = Omit<Selectable<AcceptanceCriteriaTable>, 'status' | 'verification'> & {
+  status: CriterionStatus;
+  verification: Criterion['verification'];
+};
 
 export type AttemptRow = Omit<Selectable<AttemptsTable>, 'state' | 'manifest' | 'output' | 'failure_evidence' | 'usage'> & {
   state: AttemptState;
@@ -99,6 +105,10 @@ function toArtifactRow(row: Selectable<ArtifactVersionsTable>): ArtifactVersionR
     derived_from: JSON.parse(row.derived_from) as string[],
     stale_sections: JSON.parse(row.stale_sections) as string[],
   };
+}
+
+function toCriterionRow(row: Selectable<AcceptanceCriteriaTable>): CriterionRow {
+  return { ...row, status: row.status as CriterionStatus, verification: JSON.parse(row.verification) as Criterion['verification'] };
 }
 
 function toAttemptRow(row: Selectable<AttemptsTable>): AttemptRow {
@@ -302,6 +312,68 @@ export class Store {
 
   async deleteArtifactDeps(projectId: number, fromId: string, fromVersion: number): Promise<void> {
     await this.db.deleteFrom('artifact_deps').where('project_id', '=', projectId).where('from_id', '=', fromId).where('from_version', '=', fromVersion).execute();
+  }
+
+  async lockCriteria(projectId: number, milestone: number, specVersion: number, criteria: Criterion[]): Promise<void> {
+    if (criteria.length === 0) throw new Error(`Milestone ${milestone} has no acceptance criteria to lock`);
+    const bad = criteria.find((c, i) => !AC_ID.test(c.id) || c.text.trim() === '' || criteria.findIndex((other) => other.id === c.id) !== i);
+    if (bad) throw new Error(`Acceptance criterion ${bad.id} needs a unique AC-n id and some text`);
+
+    return this.inTrx(async (db, emit) => {
+      const existing = await db.selectFrom('acceptance_criteria').select('ac_id').where('project_id', '=', projectId).where('milestone', '=', milestone).executeTakeFirst();
+      if (existing) throw new Error(`The acceptance criteria of milestone ${milestone} are already locked`);
+
+      const now = new Date().toISOString();
+      for (const c of criteria) {
+        await db
+          .insertInto('acceptance_criteria')
+          .values({ project_id: projectId, milestone, ac_id: c.id, text: c.text, verification: JSON.stringify(c.verification), spec_version: specVersion, updated_at: now })
+          .execute();
+        emit(await this.log.insert(db, { projectId, type: 'ac.status', payload: { acId: c.id, status: 'unverified' } }));
+      }
+    });
+  }
+
+  async listCriteria(projectId: number, milestone?: number): Promise<CriterionRow[]> {
+    let query = this.db.selectFrom('acceptance_criteria').selectAll().where('project_id', '=', projectId);
+    if (milestone !== undefined) query = query.where('milestone', '=', milestone);
+    const rows = await query.orderBy('milestone').orderBy(sql`CAST(SUBSTR(ac_id, 4) AS INTEGER)`).execute();
+    return rows.map(toCriterionRow);
+  }
+
+  // Only QA moves a criterion, and only by pointing at its evidence (§7.5).
+  async recordVerification(projectId: number, milestone: number, acId: string, verification: Verification): Promise<void> {
+    if (verification.evidenceRef.trim() === '') throw new Error(`A verification of ${acId} needs an evidence reference`);
+
+    return this.inTrx(async (db, emit) => {
+      const task = await db.selectFrom('tasks').select(['kind', 'project_id']).where('id', '=', verification.verifiedBy.taskId).executeTakeFirst();
+      if (task?.kind !== 'qa_verify' || task.project_id !== projectId) throw new Error(`Only a QA verification task of this project can verify ${acId}`);
+
+      const updated = await db
+        .updateTable('acceptance_criteria')
+        .set({ status: verification.status, evidence_ref: verification.evidenceRef, updated_at: new Date().toISOString() })
+        .where('project_id', '=', projectId)
+        .where('milestone', '=', milestone)
+        .where('ac_id', '=', acId)
+        .executeTakeFirst();
+      if (updated.numUpdatedRows === 0n) throw new Error(`Milestone ${milestone} has no acceptance criterion ${acId}`);
+      emit(await this.log.insert(db, { projectId, type: 'ac.status', payload: { acId, status: verification.status } }));
+    });
+  }
+
+  // New text is a new promise, so what QA proved about the old text no longer counts.
+  async reviseCriterion(projectId: number, milestone: number, acId: string, revision: { text: string; crId: string; specVersion: number }): Promise<void> {
+    return this.inTrx(async (db, emit) => {
+      const updated = await db
+        .updateTable('acceptance_criteria')
+        .set({ text: revision.text, cr_id: revision.crId, spec_version: revision.specVersion, status: 'unverified', evidence_ref: null, updated_at: new Date().toISOString() })
+        .where('project_id', '=', projectId)
+        .where('milestone', '=', milestone)
+        .where('ac_id', '=', acId)
+        .executeTakeFirst();
+      if (updated.numUpdatedRows === 0n) throw new Error(`Milestone ${milestone} has no acceptance criterion ${acId}`);
+      emit(await this.log.insert(db, { projectId, type: 'ac.status', payload: { acId, status: 'unverified' } }));
+    });
   }
 
   async listMilestones(projectId: number): Promise<MilestoneRow[]> {
