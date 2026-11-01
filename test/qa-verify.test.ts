@@ -120,6 +120,33 @@ describe('qa_verify applier', () => {
     expect(section).toContain('exit code 7');
   });
 
+  it('runs every Test Plan command before any of QA\'s, so QA cannot rewrite the tests of a later criterion', async () => {
+    await start([covers('AC-1', 'true'), covers('AC-2', 'sh check.sh')]);
+    await writeFile(join(e.repoPath, 'check.sh'), 'exit 7\n');
+    commitAll(e.repoPath, 'the test AC-2 runs');
+
+    await publish(e, await verify({ results: [pass('AC-1', ["printf 'exit 0\\n' > check.sh"]), pass('AC-2')] }));
+
+    expect((await criterion('AC-2')).status).toBe('failing');
+    expect(await evidence('AC-2')).toContain('exit code 7');
+  });
+
+  it('still reports each criterion with its own commands, the Test Plan\'s first', async () => {
+    await start([covers('AC-1', 'echo plan-one-$((1+1))', 'echo shared'), covers('AC-2', 'echo plan-two-$((1+2))')]);
+
+    await publish(e, await verify({ results: [pass('AC-1', ['echo qa-one-$((1+3))', 'echo shared']), pass('AC-2', ['echo qa-two-$((1+4))'])] }));
+
+    const one = await evidence('AC-1');
+    expect(one.indexOf('plan-one-2')).toBeGreaterThan(-1);
+    expect(one.indexOf('plan-one-2')).toBeLessThan(one.indexOf('qa-one-4'));
+    expect(one.match(/Command, /g)).toHaveLength(3);
+    expect(one).not.toContain('plan-two-3');
+    const two = await evidence('AC-2');
+    expect(two).toContain('plan-two-3');
+    expect(two).toContain('qa-two-5');
+    expect(two).not.toContain('qa-one-4');
+  });
+
   it('runs every command, so a later failure is on record too', async () => {
     await start([covers('AC-1', 'exit 3'), covers('AC-2', 'true')]);
     await publish(e, await verify({ results: [pass('AC-1', ['echo still-$((1+1)); exit 4']), pass('AC-2')] }));

@@ -87,10 +87,18 @@ async function verifyAll(ctx: ApplyCtx, worktree: string, results: QaResult[], c
     if (!installed.ok) return ctx.signal.aborted ? STOPPED : { ok: false, evidence: `The Environment Profile's setup failed, so nothing could be verified.\n${installed.evidence}` };
   }
 
+  // Every Test Plan command goes before any of QA's, which share this worktree and could otherwise rewrite the tests they run.
+  const plannedFor = (ac: string) => [...new Set(nonBlank(coverage.filter((entry) => entry.ac === ac).flatMap((entry) => entry.commands)))];
+  const planned = new Map<string, CheckRun[]>();
+  for (const { ac } of results) {
+    planned.set(ac, await runEach(ctx, worktree, plannedFor(ac)));
+    if (ctx.signal.aborted) return STOPPED;
+  }
+
   const verdicts: Verdict[] = [];
   for (const { ac, status: claimed, commands, notes } of results) {
-    const planned = coverage.filter((entry) => entry.ac === ac).flatMap((entry) => entry.commands);
-    const runs = await runEach(ctx, worktree, [...new Set(nonBlank([...planned, ...commands]))]);
+    const own = [...new Set(nonBlank(commands))].filter((command) => !plannedFor(ac).includes(command));
+    const runs = [...(planned.get(ac) ?? []), ...(await runEach(ctx, worktree, own))];
     if (ctx.signal.aborted) return STOPPED;
     const held = claimed === 'passing' && runs.length > 0 && runs.every((run) => run.exitCode === 0);
     verdicts.push({ ac, claimed, status: held ? 'passing' : 'failing', notes, runs });
