@@ -17,6 +17,7 @@ type QaOutput = { results: QaResult[]; bugs: QaBug[]; summary: string };
 type Verdict = { ac: string; claimed: QaResult['status']; status: QaResult['status']; notes: string; runs: CheckRun[] };
 
 const OUTPUT_TAIL = 2000;
+const COMMAND_NOT_FOUND = 127;
 
 const failedCommands = (runs: CheckRun[]) => runs.filter((run) => run.exitCode !== 0).map((run) => run.command);
 const nonBlank = (commands: string[]) => commands.map((command) => command.trim()).filter((command) => command !== '');
@@ -96,13 +97,18 @@ async function verifyAll(ctx: ApplyCtx, worktree: string, results: QaResult[], c
   }
 
   const verdicts: Verdict[] = [];
+  const unrunnable: string[] = [];
   for (const { ac, status: claimed, commands, notes } of results) {
     const own = [...new Set(nonBlank(commands))].filter((command) => !plannedFor(ac).includes(command));
-    const runs = [...(planned.get(ac) ?? []), ...(await runEach(ctx, worktree, own))];
+    const ownRuns = await runEach(ctx, worktree, own);
     if (ctx.signal.aborted) return STOPPED;
+    // QA says this passed by running something no shell can find: that's a bad report, not a Bug for an Engineer to chase.
+    if (claimed === 'passing') unrunnable.push(...ownRuns.filter((run) => run.exitCode === COMMAND_NOT_FOUND).map((run) => `${ac}: ${run.command}`));
+    const runs = [...(planned.get(ac) ?? []), ...ownRuns];
     const held = claimed === 'passing' && runs.length > 0 && runs.every((run) => run.exitCode === 0);
     verdicts.push({ ac, claimed, status: held ? 'passing' : 'failing', notes, runs });
   }
+  if (unrunnable.length > 0) return { ok: false, evidence: [`Each entry in \`commands\` must be one exact shell command, because the engine runs it as written. The shell could not find these, so nothing was recorded:`, ...unrunnable.map((line) => `- ${line}`)].join('\n') };
   return { ok: true, verdicts };
 }
 

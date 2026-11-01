@@ -93,6 +93,36 @@ describe('qa_verify applier', () => {
     expect(filed.fields.data).toMatchObject({ ac: 'AC-1' });
   });
 
+  it('sends QA back, with no Bug filed, when a command it claims passed on is a description no shell can run', async () => {
+    await start();
+
+    const evidenceText = evidenceOf(await verify({ results: [pass('AC-1', ['spec AC-1 conv command, verbatim']), pass('AC-2')] }));
+
+    expect(evidenceText).toContain('spec AC-1 conv command, verbatim');
+    expect(evidenceText).toContain('AC-1');
+    expect(await ids()).not.toContain('BUG-M1-1');
+    expect(await ids()).not.toContain('QA-REPORT-M1-1');
+    expect((await criterion('AC-1')).status).toBe('unverified');
+  });
+
+  it('still records failing when a Test Plan command cannot be found, because that one is the plan\'s', async () => {
+    await start([covers('AC-1', 'no-such-tool-on-this-machine'), covers('AC-2', 'true')]);
+
+    await publish(e, await verify({ results: [pass('AC-1'), pass('AC-2')] }));
+
+    expect((await criterion('AC-1')).status).toBe('failing');
+    expect(await evidence('AC-1')).toContain('exit code 127');
+  });
+
+  it('still records failing when QA itself says failing and names a command that cannot be found', async () => {
+    await start();
+
+    await publish(e, await verify({ results: [fail('AC-1', ['no-such-tool-on-this-machine'], 'It is not installed'), pass('AC-2')], bugs: [bug('AC-1')] }));
+
+    expect((await criterion('AC-1')).status).toBe('failing');
+    expect(await ids()).toContain('BUG-M1-1');
+  });
+
   it('records failing when QA claims passing with no commands and the Test Plan has none to run', async () => {
     await start([covers('AC-1'), covers('AC-2', 'true')]);
 

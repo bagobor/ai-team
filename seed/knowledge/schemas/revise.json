@@ -42,6 +42,7 @@
             "type": "string"
           },
           "commands": {
+            "description": "Exact shell commands, each one as a shell would run it, never a description. The engine runs every entry as written.",
             "type": "array",
             "items": {
               "type": "string"
@@ -98,12 +99,14 @@
         ],
         "properties": {
           "key": {
+            "description": "T-n when revising a Tech Design, Q-n when revising a Test Plan, with a number no ticket of this milestone has used, even a superseded one.",
             "type": "string"
           },
           "title": {
             "type": "string"
           },
           "specialty": {
+            "description": "A role that can edit the repository. Use engineer unless the team has another.",
             "type": "string"
           },
           "ac_refs": {
@@ -125,12 +128,14 @@
             }
           },
           "definition_of_done": {
+            "description": "Exact shell commands that prove the ticket worked, each one as a shell would run it, never a description.",
             "type": "array",
             "items": {
               "type": "string"
             }
           },
           "inputs": {
+            "description": "Artifact pins: an id, @ and its version, then optionally # and a section's slug, its heading in lower case with hyphens. For example SPEC-M1@1#ac-1 or SPEC-M1@1#what-it-must-do.",
             "type": "array",
             "items": {
               "type": "string"

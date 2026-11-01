@@ -31,6 +31,7 @@
             ]
           },
           "commands": {
+            "description": "Exact shell commands, each one as a shell would run it, never a description. The engine runs every entry as written. One the shell can't find sends this attempt back, and one that fails fails the criterion.",
             "type": "array",
             "items": {
               "type": "string"
@@ -71,6 +72,7 @@
             }
           },
           "commands": {
+            "description": "Exact shell commands, each one as a shell would run it, never a description. The engine runs every entry as written.",
             "type": "array",
             "items": {
               "type": "string"

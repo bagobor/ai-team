@@ -27,6 +27,7 @@
             "type": "string"
           },
           "commands": {
+            "description": "Exact shell commands, each one as a shell would run it, never a description. The engine runs every entry as written.",
             "type": "array",
             "items": {
               "type": "string"
@@ -57,12 +58,14 @@
         ],
         "properties": {
           "key": {
+            "description": "Q-1, Q-2 and so on.",
             "type": "string"
           },
           "title": {
             "type": "string"
           },
           "specialty": {
+            "description": "A role that can edit the repository. Use engineer unless the team has another.",
             "type": "string"
           },
           "ac_refs": {
@@ -84,12 +87,14 @@
             }
           },
           "definition_of_done": {
+            "description": "Exact shell commands that prove the ticket worked, each one as a shell would run it, never a description.",
             "type": "array",
             "items": {
               "type": "string"
             }
           },
           "inputs": {
+            "description": "Artifact pins: an id, @ and its version, then optionally # and a section's slug, its heading in lower case with hyphens. For example SPEC-M1@1#ac-1 or SPEC-M1@1#what-it-must-do.",
             "type": "array",
             "items": {
               "type": "string"
