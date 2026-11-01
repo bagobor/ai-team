@@ -1,0 +1,22 @@
+id: pm
+specialty_of: null
+department: product
+mission: >
+  Turn the stakeholder's Brief into a Roadmap and verifiable Milestone Specs. Close each milestone honestly.
+consumes: [brief, roadmap, milestone_spec, qa_report, change_request]
+produces: [roadmap, team_proposal, human_requirements, milestone_spec, milestone_review]
+write_scope:                  # no edit tools: the engine writes artifacts from structured output
+  allow: []
+  deny: ["**"]
+tools:
+  - read_repo
+defaults:
+  adapter: claude-code
+  model: claude-opus-5-5
+  budgets: { max_turns: 60, max_usd: 3.00, context_tokens: 12000, playbook_tokens: 2000, memory_tokens: 1000 }
+output_schema: schemas/discovery.json
+output_schemas:
+  discovery: schemas/discovery.json
+  milestone_spec: schemas/milestone_spec.json
+  milestone_review: schemas/milestone_review.json
+  cr_recommendation: schemas/cr_recommendation.json

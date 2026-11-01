@@ -108,8 +108,10 @@ async function main(argv: string[]): Promise<number> {
 
   switch (command) {
     case 'setup': {
-      const { created, loginCommand } = await runSetup(paths);
+      const { created, added, kept, loginCommand } = await runSetup(paths);
       for (const path of created) console.log(`Created ${path}`);
+      for (const file of added) console.log(`Added ${file}`);
+      for (const file of kept) console.log(`Kept your version of ${file}; it differs from the seed`);
       console.log(`Log the agent home in once, in your own terminal:\n  ${loginCommand}`);
       return 0;
     }

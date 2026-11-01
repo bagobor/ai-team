@@ -31,6 +31,7 @@ export type Role = {
   tools: RoleTool[];
   defaults: { adapter: string; model: string; budgets: Budgets };
   output_schema: string;
+  output_schemas?: Record<string, string>;
 };
 
 const stringList = { type: 'array', items: { type: 'string' } };
@@ -81,6 +82,7 @@ const ROLE_SCHEMA = {
       },
     },
     output_schema: { type: 'string' },
+    output_schemas: { type: 'object', additionalProperties: { type: 'string' } },
   },
 };
 
@@ -105,10 +107,17 @@ function parseRole(text: string, roleId: string): Role {
   return parsed;
 }
 
-async function loadOutputSchema(knowledgeDir: string, role: Role): Promise<object> {
-  const path = resolve(knowledgeDir, role.output_schema);
+function schemaSourceFor(role: Role, purpose: string | undefined): string {
+  if (purpose === undefined) return role.output_schema;
+  const source = role.output_schemas && Object.hasOwn(role.output_schemas, purpose) ? role.output_schemas[purpose] : undefined;
+  if (source === undefined) throw new Error(`Role ${role.id} has no output schema for the purpose ${purpose}`);
+  return source;
+}
+
+async function loadOutputSchema(knowledgeDir: string, role: Role, source: string): Promise<object> {
+  const path = resolve(knowledgeDir, source);
   if (!isWithin(resolve(knowledgeDir), path)) {
-    throw new Error(`Role ${role.id}: output schema ${role.output_schema} is outside the knowledge repo`);
+    throw new Error(`Role ${role.id}: output schema ${source} is outside the knowledge repo`);
   }
   const text = await readOrFail(path, role.id, 'its output schema');
   try {
@@ -117,15 +126,17 @@ async function loadOutputSchema(knowledgeDir: string, role: Role): Promise<objec
     new Ajv({ strict: false }).compile(schema as object);
     return schema as object;
   } catch (cause) {
-    throw new Error(`Role ${role.id}: output schema ${role.output_schema} does not compile`, { cause });
+    throw new Error(`Role ${role.id}: output schema ${source} does not compile`, { cause });
   }
 }
 
-export async function loadRole(knowledgeDir: string, roleId: string): Promise<{ role: Role; charter: string; schema: object }> {
+export async function loadRole(knowledgeDir: string, roleId: string, purpose?: string): Promise<{ role: Role; charter: string; schema: object; schemaSource: string }> {
   if (!ROLE_ID.test(roleId)) throw new Error(`"${roleId}" is not a valid role id`);
 
   const dir = join(knowledgeDir, 'roles', roleId);
   const role = parseRole(await readOrFail(join(dir, 'role.yaml'), roleId, 'role.yaml'), roleId);
+
+  const schemaSource = schemaSourceFor(role, purpose);
 
   const charter = await readOrFail(join(dir, 'charter.md'), roleId, 'its charter');
   const tokens = estimateTokens(charter);
@@ -133,5 +144,5 @@ export async function loadRole(knowledgeDir: string, roleId: string): Promise<{ 
     throw new Error(`Role ${roleId}: charter is ${tokens} tokens, over the limit of ${CHARTER_TOKEN_LIMIT}`);
   }
 
-  return { role, charter, schema: await loadOutputSchema(knowledgeDir, role) };
+  return { role, charter, schema: await loadOutputSchema(knowledgeDir, role, schemaSource), schemaSource };
 }

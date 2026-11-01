@@ -1,0 +1,118 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Tech Design",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "body",
+    "tickets"
+  ],
+  "properties": {
+    "body": {
+      "type": "string"
+    },
+    "tickets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "key",
+          "title",
+          "specialty",
+          "ac_refs",
+          "touches",
+          "depends_on",
+          "definition_of_done",
+          "inputs",
+          "size",
+          "body"
+        ],
+        "properties": {
+          "key": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "specialty": {
+            "type": "string"
+          },
+          "ac_refs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "touches": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "depends_on": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "definition_of_done": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "inputs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "size": {
+            "enum": [
+              "S",
+              "M",
+              "L"
+            ]
+          },
+          "body": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "change_requests": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "target_artifact",
+          "proposed_text",
+          "rationale",
+          "evidence"
+        ],
+        "properties": {
+          "target_artifact": {
+            "type": "string"
+          },
+          "target_section": {
+            "type": "string"
+          },
+          "target_ac": {
+            "type": "string"
+          },
+          "proposed_text": {
+            "type": "string"
+          },
+          "rationale": {
+            "type": "string"
+          },
+          "evidence": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,97 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Environment Profile",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "body",
+    "commands",
+    "toolchains",
+    "network_allow",
+    "setup",
+    "stakeholder_note"
+  ],
+  "properties": {
+    "body": {
+      "type": "string"
+    },
+    "commands": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "build",
+        "test",
+        "lint",
+        "smoke"
+      ],
+      "properties": {
+        "build": {
+          "type": "string"
+        },
+        "test": {
+          "type": "string"
+        },
+        "lint": {
+          "type": "string"
+        },
+        "smoke": {
+          "type": "string"
+        }
+      }
+    },
+    "toolchains": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "network_allow": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "setup": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "stakeholder_note": {
+      "type": "string"
+    },
+    "change_requests": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "target_artifact",
+          "proposed_text",
+          "rationale",
+          "evidence"
+        ],
+        "properties": {
+          "target_artifact": {
+            "type": "string"
+          },
+          "target_section": {
+            "type": "string"
+          },
+          "target_ac": {
+            "type": "string"
+          },
+          "proposed_text": {
+            "type": "string"
+          },
+          "rationale": {
+            "type": "string"
+          },
+          "evidence": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

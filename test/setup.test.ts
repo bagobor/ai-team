@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -31,6 +31,18 @@ describe('runSetup', () => {
     const second = await runSetup(p);
     expect(readFileSync(charter, 'utf8')).toBe('curated by a human\n');
     expect(second.created).toEqual([]);
+  });
+
+  it('reports a kept file and adds missing ones when re-run', async () => {
+    const p = freshHome();
+    await runSetup(p);
+    writeFileSync(join(p.knowledge, 'roles/engineer/charter.md'), 'curated by a human\n');
+    rmSync(join(p.knowledge, 'roles/pm'), { recursive: true });
+
+    const second = await runSetup(p);
+
+    expect(second.kept).toEqual(['roles/engineer/charter.md']);
+    expect(second.added).toEqual(['roles/pm/charter.md', 'roles/pm/role.yaml']);
   });
 
   it('keeps existing agent-home files when re-run', async () => {

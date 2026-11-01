@@ -1,0 +1,54 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Change Request Recommendation",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "decision",
+    "rationale"
+  ],
+  "properties": {
+    "decision": {
+      "enum": [
+        "approve",
+        "reject"
+      ]
+    },
+    "rationale": {
+      "type": "string"
+    },
+    "change_requests": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "target_artifact",
+          "proposed_text",
+          "rationale",
+          "evidence"
+        ],
+        "properties": {
+          "target_artifact": {
+            "type": "string"
+          },
+          "target_section": {
+            "type": "string"
+          },
+          "target_ac": {
+            "type": "string"
+          },
+          "proposed_text": {
+            "type": "string"
+          },
+          "rationale": {
+            "type": "string"
+          },
+          "evidence": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

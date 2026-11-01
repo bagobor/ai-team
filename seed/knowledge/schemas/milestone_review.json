@@ -1,0 +1,65 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Milestone Review",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "body",
+    "known_issues",
+    "deviations",
+    "stakeholder_note"
+  ],
+  "properties": {
+    "body": {
+      "type": "string"
+    },
+    "known_issues": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "deviations": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "stakeholder_note": {
+      "type": "string"
+    },
+    "change_requests": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "target_artifact",
+          "proposed_text",
+          "rationale",
+          "evidence"
+        ],
+        "properties": {
+          "target_artifact": {
+            "type": "string"
+          },
+          "target_section": {
+            "type": "string"
+          },
+          "target_ac": {
+            "type": "string"
+          },
+          "proposed_text": {
+            "type": "string"
+          },
+          "rationale": {
+            "type": "string"
+          },
+          "evidence": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,90 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Milestone Spec",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "body",
+    "criteria",
+    "stakeholder_note"
+  ],
+  "properties": {
+    "body": {
+      "type": "string"
+    },
+    "criteria": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "text",
+          "verification"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          },
+          "verification": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "method",
+              "how"
+            ],
+            "properties": {
+              "method": {
+                "enum": [
+                  "automated"
+                ]
+              },
+              "how": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    },
+    "stakeholder_note": {
+      "type": "string"
+    },
+    "change_requests": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "target_artifact",
+          "proposed_text",
+          "rationale",
+          "evidence"
+        ],
+        "properties": {
+          "target_artifact": {
+            "type": "string"
+          },
+          "target_section": {
+            "type": "string"
+          },
+          "target_ac": {
+            "type": "string"
+          },
+          "proposed_text": {
+            "type": "string"
+          },
+          "rationale": {
+            "type": "string"
+          },
+          "evidence": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

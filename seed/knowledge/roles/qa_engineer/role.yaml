@@ -1,0 +1,23 @@
+id: qa_engineer
+specialty_of: null
+department: quality
+mission: >
+  Plan how each acceptance criterion gets verified, then verify each one by running it.
+consumes: [milestone_spec, tech_design, test_plan, change_request]
+produces: [test_plan, ticket, qa_report, bug]
+write_scope:                  # no edit tools: the engine writes artifacts from structured output
+  allow: []
+  deny: ["**"]
+tools:
+  - read_repo
+  - run_commands
+defaults:
+  adapter: claude-code
+  model: claude-sonnet-5-5
+  budgets: { max_turns: 60, max_usd: 3.00, context_tokens: 12000, playbook_tokens: 2000, memory_tokens: 1000 }
+output_schema: schemas/qa_verify.json
+output_schemas:
+  test_plan: schemas/test_plan.json
+  qa_verify: schemas/qa_verify.json
+  revise_test_plan: schemas/revise.json
+  cr_recommendation: schemas/cr_recommendation.json

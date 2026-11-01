@@ -3,22 +3,75 @@
   "title": "Change Report",
   "type": "object",
   "additionalProperties": false,
-  "required": ["summary", "files_changed", "commands_run"],
+  "required": [
+    "summary",
+    "files_changed",
+    "commands_run"
+  ],
   "properties": {
-    "summary": { "type": "string" },
-    "files_changed": { "type": "array", "items": { "type": "string" } },
+    "summary": {
+      "type": "string"
+    },
+    "files_changed": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
     "commands_run": {
       "type": "array",
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["command", "exit_code"],
+        "required": [
+          "command",
+          "exit_code"
+        ],
         "properties": {
-          "command": { "type": "string" },
-          "exit_code": { "type": "integer" }
+          "command": {
+            "type": "string"
+          },
+          "exit_code": {
+            "type": "integer"
+          }
         }
       }
     },
-    "notes": { "type": "string" }
+    "notes": {
+      "type": "string"
+    },
+    "change_requests": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "target_artifact",
+          "proposed_text",
+          "rationale",
+          "evidence"
+        ],
+        "properties": {
+          "target_artifact": {
+            "type": "string"
+          },
+          "target_section": {
+            "type": "string"
+          },
+          "target_ac": {
+            "type": "string"
+          },
+          "proposed_text": {
+            "type": "string"
+          },
+          "rationale": {
+            "type": "string"
+          },
+          "evidence": {
+            "type": "string"
+          }
+        }
+      }
+    }
   }
 }
