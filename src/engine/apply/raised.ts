@@ -1,19 +1,19 @@
 import type { ArtifactChange, NewVersion } from '../../artifacts/store.ts';
 import { changeRequestDocs, type ChangeRequestInput } from '../change-requests.ts';
 import type { EngineDeps } from '../runner.ts';
-import type { ProjectRow } from '../store.ts';
+import type { ProjectRow, TaskRow } from '../store.ts';
 import type { ApplyCtx, ApplyResult } from './index.ts';
 
 export type Raised = { docs: NewVersion[]; dropped: string[] };
 
-// A worker that finds a problem with something upstream says so here, and the engine knows which role it was.
-export async function raisedRequests(deps: Pick<EngineDeps, 'artifacts' | 'store'>, project: ProjectRow, roleId: string, output: unknown): Promise<Raised> {
+// A worker that finds a problem with something upstream says so here, and the engine knows which role and task it was.
+export async function raisedRequests(deps: Pick<EngineDeps, 'artifacts' | 'store'>, project: ProjectRow, task: Pick<TaskRow, 'role_id' | 'ticket_id'>, output: unknown): Promise<Raised> {
   const raised = (output as { change_requests?: unknown } | null | undefined)?.change_requests;
   if (!Array.isArray(raised)) return { docs: [], dropped: [] };
-  return changeRequestDocs(deps, project, raised.map((request) => ({ ...(request as object), raised_by: roleId }) as ChangeRequestInput));
+  return changeRequestDocs(deps, project, raised.map((request) => ({ ...(request as object), raised_by: task.role_id, raised_in: task.ticket_id }) as ChangeRequestInput));
 }
 
-export const raisedOf = (ctx: ApplyCtx): Promise<Raised> => raisedRequests(ctx.deps, ctx.project, ctx.task.role_id, ctx.output);
+export const raisedOf = (ctx: ApplyCtx): Promise<Raised> => raisedRequests(ctx.deps, ctx.project, ctx.task, ctx.output);
 
 const isLastAttempt = async (ctx: ApplyCtx): Promise<boolean> => (await ctx.deps.store.failedAttemptCount(ctx.task.id)) + 1 >= ctx.deps.config.maxAttempts;
 

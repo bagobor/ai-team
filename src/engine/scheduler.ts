@@ -12,6 +12,8 @@ const HOLDS_LOCK: TaskState[] = ['running', 'checks', 'review'];
 // A worker is still on it. A probe past this has already found out what the vendor answers.
 const WORKING: TaskState[] = ['running', 'checks'];
 const FINISHED: TaskState[] = ['done', 'cancelled'];
+// Something other than the scheduler lets these go: a person, or the conductor once a Change Request is decided.
+const WAITS_ON_OTHERS = ['human_request', 'change_request'];
 
 // The filesystem here folds case, so the comparison does too: a false positive only serializes two tickets.
 function fixedSegments(glob: string): string[] {
@@ -123,7 +125,7 @@ export class Scheduler {
     for (const task of tasks) {
       if (task.state === 'ready') {
         ready.push(task);
-      } else if (task.state === 'queued' || (task.state === 'blocked' && task.blocked_on !== 'human_request')) {
+      } else if (task.state === 'queued' || (task.state === 'blocked' && !WAITS_ON_OTHERS.includes(task.blocked_on ?? ''))) {
         // Nothing would ever finish this dependency, so waiting for it would hold up the milestone with nobody told.
         const gone = task.depends_on.filter((id) => cancelled.has(doneKey(task.project_id, id)));
         if (gone.length > 0) {

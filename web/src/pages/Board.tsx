@@ -12,6 +12,7 @@ const WAITING_FOR: Record<string, string> = {
   dependency: 'Waiting for a ticket it depends on',
   path_lock: 'Waiting for a ticket on the same files',
   human_request: 'Waiting for you',
+  change_request: 'Waiting for a Change Request it raised',
 };
 
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`;

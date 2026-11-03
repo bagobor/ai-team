@@ -116,6 +116,23 @@ async function reviseStale(deps: Deps, project: ProjectRow): Promise<void> {
   }
 }
 
+// A ticket held on what it raised goes back to ready once each request is decided, unless the decision left the ticket stale,
+// in which case it waits for its owner to keep or replace it rather than retry against what is about to change.
+async function releaseHeld(deps: Deps, project: ProjectRow): Promise<void> {
+  const held = (await deps.store.listTasks(project.id)).filter(({ state, blocked_on }) => state === 'blocked' && blocked_on === 'change_request');
+  if (held.length === 0) return;
+  const waiting = new Set<string>();
+  for (const { artifact_id, type, status } of await deps.artifacts.list(project.id)) {
+    if (type !== 'change_request' || status !== 'proposed') continue;
+    const { raised_in } = requestOf(await deps.artifacts.read(project, artifact_id));
+    if (raised_in) waiting.add(raised_in);
+  }
+  for (const task of held) {
+    if (waiting.has(task.ticket_id) || (await deps.artifacts.latest(project.id, task.ticket_id))?.status === 'stale') continue;
+    await deps.store.setTaskState(task.id, 'ready');
+  }
+}
+
 export async function advanceChangeRequests(deps: Deps, runner: Runner, project: ProjectRow): Promise<void> {
   const requests = (await deps.artifacts.list(project.id))
     .filter(({ type, status }) => type === 'change_request' && status === 'proposed')
@@ -124,4 +141,5 @@ export async function advanceChangeRequests(deps: Deps, runner: Runner, project:
   await withdrawClosed(deps, project);
   await cancelSuperseded(deps, runner, project);
   await reviseStale(deps, project);
+  await releaseHeld(deps, project);
 }

@@ -5,7 +5,7 @@ import { applyChangeRequest, ChangeRequestError, changeRequestDocs, fileChangeRe
 import { addProject } from '../src/engine/intake.ts';
 import type { ProjectRow } from '../src/engine/store.ts';
 import { apply, CRITERIA, ctxFor, evidenceOf, lockSpec, projectOf, publish, ticketTask } from './helpers/apply.ts';
-import { makeEngine, okStep, runToSettled, ticket, type TestEngine } from './helpers/engine.ts';
+import { makeEngine, okStep, runOnce, runToSettled, ticket, type TestEngine } from './helpers/engine.ts';
 import { makeRepo } from './helpers/repo.ts';
 
 const BODY = '# Design\n\n## Approach\n\nThe old approach.\n\n## Risks\n\nThere are some.\n\n## Notes\n\nNothing yet.\n';
@@ -539,13 +539,15 @@ describe('Change Requests', () => {
     const { raised_by: _raisedBy, ...raised } = onSection();
     const invalid = { ...raised, target_artifact: 'NOPE' };
 
-    const worker = async (requests: unknown[]) => {
-      const engine = await makeEngine({ steps: [okStep({ 'src/a.mjs': '' }, { change_requests: requests })] });
+    type Worker = { files?: Record<string, string>; dod?: string[]; maxAttempts?: number; once?: boolean };
+    const worker = async (requests: unknown[], { files = { 'src/a.mjs': '' }, dod = ['true'], maxAttempts, once = false }: Worker = {}) => {
+      const engine = await makeEngine({ steps: [okStep(files, { change_requests: requests })], ...(maxAttempts ? { config: { maxAttempts } } : {}) });
       const project = await projectOf(engine);
       await engine.artifacts.commit(project, { message: 'a document', publish: [{ id: 'TECH-M1', type: 'tech_design', status: 'approved', ownerRole: 'tech_lead', derivedFrom: [], milestone: 1, body: BODY }] });
-      const task = await engine.addTicket(ticket());
-      await runToSettled(engine, task.id);
-      return { engine, project, state: (await engine.store.getTask(task.id))?.state };
+      const task = await engine.addTicket(ticket({ definition_of_done: dod }));
+      await (once ? runOnce : runToSettled)(engine, task.id);
+      const [attempt] = await engine.store.listAttempts(task.id);
+      return { engine, project, attempt, task: await engine.store.getTask(task.id), state: (await engine.store.getTask(task.id))?.state };
     };
 
     it('drops an invalid request from a worker, logs why, and does not fail the attempt', async () => {
@@ -560,11 +562,48 @@ describe('Change Requests', () => {
       }
     });
 
-    it('files a request raised in a Change Report', async () => {
+    it('files a request raised in a Change Report, naming the ticket it came from', async () => {
       const { engine, project, state } = await worker([raised]);
       try {
         expect(state).toBe('review');
-        expect((await engine.artifacts.read(project, 'CR-1')).fields.data).toEqual(onSection());
+        expect((await engine.artifacts.read(project, 'CR-1')).fields.data).toEqual(onSection({ raised_in: 'T-1' }));
+      } finally {
+        await engine.cleanup();
+      }
+    });
+
+    it.each([
+      ['fails its checks', { 'src/a.mjs': '' }, ['false'], 'check_failed'],
+      ['changes nothing', {}, ['true'], 'no_changes'],
+    ])('files what a ticket raised when it %s, and holds the ticket while the request is open', async (_how, files, dod, kind) => {
+      const { engine, project, attempt, task } = await worker([raised], { files, dod, once: true });
+      try {
+        expect(attempt).toMatchObject({ state: 'failed', failure_kind: kind });
+        expect(attempt!.failure_evidence).toContain('CR-1');
+        expect((await engine.artifacts.read(project, 'CR-1')).fields.data).toEqual(onSection({ raised_in: 'T-1' }));
+        expect(task).toMatchObject({ state: 'blocked', blocked_on: 'change_request' });
+      } finally {
+        await engine.cleanup();
+      }
+    });
+
+    it('logs a request a failed attempt could not file, and lets the ticket retry', async () => {
+      const { engine, project, task } = await worker([invalid], { dod: ['false'], once: true });
+      try {
+        expect(task?.state).toBe('ready');
+        expect(await engine.artifacts.latest(project.id, 'CR-1')).toBeUndefined();
+        const dropped = (await engine.log.list({ projectId: project.id })).filter((event) => event.type === 'change_request.dropped');
+        expect(dropped.map((event) => event.payload.reason)).toEqual([expect.stringContaining('NOPE')]);
+      } finally {
+        await engine.cleanup();
+      }
+    });
+
+    it('escalates a last attempt that raised a request, rather than holding it', async () => {
+      const { engine, project, task } = await worker([raised], { dod: ['false'], maxAttempts: 1, once: true });
+      try {
+        expect(task).toMatchObject({ state: 'escalated', escalation_reason: 'attempts_exhausted' });
+        expect((await engine.artifacts.latest(project.id, 'CR-1'))?.status).toBe('proposed');
       } finally {
         await engine.cleanup();
       }
@@ -587,7 +626,8 @@ describe('Change Requests', () => {
 
       await publish(e, await apply(e, 'discovery', output, { inputs: ['BRIEF'], role: 'pm' }));
 
-      expect((await read('CR-1')).fields.data).toEqual(onSection({ raised_by: 'pm' }));
+      const [task] = await e.store.listTasks(p.id);
+      expect((await read('CR-1')).fields.data).toEqual(onSection({ raised_by: 'pm', raised_in: task!.ticket_id }));
     });
 
     it('sends an authoring worker back with the reason when a request it raised cannot be filed', async () => {
@@ -611,7 +651,7 @@ describe('Change Requests', () => {
       await publish(e, await applyOutput(ctx));
 
       expect((await latest('ROADMAP'))?.status).toBe('proposed');
-      expect((await read('CR-1')).fields.data).toEqual(onSection({ raised_by: 'pm' }));
+      expect((await read('CR-1')).fields.data).toEqual(onSection({ raised_by: 'pm', raised_in: ctx.task.ticket_id }));
       expect((await eventsOf('change_request.dropped')).map((event) => event.payload.reason)).toEqual([expect.stringContaining('NOPE')]);
     });
 

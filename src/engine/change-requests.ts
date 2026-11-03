@@ -14,6 +14,8 @@ export type ChangeRequestInput = {
   rationale: string;
   evidence: string;
   raised_by: string;
+  // The task whose worker raised it. A ticket that failed on what it raised waits for it to be decided.
+  raised_in?: string;
 };
 
 export class ChangeRequestError extends Error {
@@ -52,6 +54,7 @@ function normalized(raw: ChangeRequestInput): ChangeRequestInput {
   const pin = pinIn(named);
   const ac = text(raw.target_ac).trim();
   const section = text(raw.target_section).trim() || (ac ? '' : (pin?.section ?? ''));
+  const raisedIn = text(raw.raised_in).trim();
   return {
     target_artifact: pin?.id ?? named,
     ...(section ? { target_section: section } : {}),
@@ -60,6 +63,7 @@ function normalized(raw: ChangeRequestInput): ChangeRequestInput {
     rationale: text(raw.rationale),
     evidence: text(raw.evidence),
     raised_by: text(raw.raised_by),
+    ...(raisedIn ? { raised_in: raisedIn } : {}),
   };
 }
 
@@ -189,7 +193,7 @@ function requestBody(id: string, input: ChangeRequestInput, target: ArtifactVers
   const where = !input.target_ac ? `section ${input.target_section}` : target.type === 'test_plan' ? `the commands for ${input.target_ac}` : `criterion ${input.target_ac}`;
   return [
     `# ${id}`,
-    `Raised by ${oneLine(input.raised_by)} against ${oneLine(`${target.artifact_id}@${target.version}, ${where}`)}.`,
+    `Raised by ${oneLine(input.raised_by)}${input.raised_in ? ` in ${oneLine(input.raised_in)}` : ''} against ${oneLine(`${target.artifact_id}@${target.version}, ${where}`)}.`,
     '## Proposed text',
     fenced(input.proposed_text),
     '## Rationale',

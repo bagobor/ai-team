@@ -521,8 +521,8 @@ export class Runner {
     if (live.stop) return this.applyStop(task.id, live);
     if (reporter.error() !== undefined) throw reporter.error();
 
+    const { docs, dropped } = await raisedRequests(this.deps, project, task, output);
     if (checks.ok) {
-      const { docs, dropped } = await raisedRequests(this.deps, project, task.role_id, output);
       const report = await this.changeReport(work, attempt, output);
       await artifacts.commit(project, { ...report, publish: [...(report.publish ?? []), ...docs] }, async (s) => {
         await s.setTaskState(task.id, 'review');
@@ -531,8 +531,18 @@ export class Runner {
       });
       return;
     }
-    await store.setAttemptState(attempt.id, 'failed', failure(checks.kind, checks.evidence));
-    await this.retryOrEscalate(task.id);
+
+    // A check can fail on a problem upstream that only a request can fix, so what the attempt raised is filed and the ticket waits for it.
+    // A last attempt escalates instead, with the requests in its evidence.
+    const filed = docs.map(({ id }) => id);
+    const settle = async (s: Store) => {
+      await s.setAttemptState(attempt.id, 'failed', failure(checks.kind, filed.length === 0 ? checks.evidence : `${checks.evidence.trimEnd()}\nFiled from this attempt: ${filed.join(', ')}.\n`));
+      for (const reason of dropped) await s.logEvent(project.id, 'change_request.dropped', { reason });
+      if (filed.length > 0 && (await s.failedAttemptCount(task.id)) < config.maxAttempts) await s.setTaskState(task.id, 'blocked', { blockedOn: 'change_request' });
+      else await this.retryOrEscalate(task.id, s);
+    };
+    if (docs.length === 0) await store.atomically(settle);
+    else await artifacts.commit(project, { message: `${task.ticket_id} attempt ${attempt.k}: change requests`, publish: docs }, settle);
   }
 
   private async changeReport(work: Work, attempt: AttemptRow, output: unknown): Promise<ArtifactChange> {

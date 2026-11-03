@@ -242,8 +242,8 @@ async function ownerApplies(h: Harness, request: Parameters<typeof fileChangeReq
 }
 
 // A criterion change, from filing to applied by the stakeholder.
-async function stakeholderApplies(h: Harness): Promise<string> {
-  const { artifact_id: id } = await fileChangeRequest(h, h.project, criterionChange);
+async function stakeholderApplies(h: Harness, request: Parameters<typeof fileChangeRequest>[2] = criterionChange): Promise<string> {
+  const { artifact_id: id } = await fileChangeRequest(h, h.project, request);
   await h.conductor.tick();
   await finish(h, `${id}-REC`, { decision: 'approve', rationale: 'Yes' });
   await h.conductor.tick();
@@ -1251,5 +1251,93 @@ describe('review focus: a change mid-flight', () => {
     await expect(h.store.answerInbox(cp4.id, { action: 'approve' })).rejects.toThrow(AlreadyAnswered);
     await h.conductor.tick();
     expect(await milestonePhase(h)).toBe('build');
+  });
+});
+
+describe('a ticket held on a Change Request it raised', () => {
+  const held = async (h: Harness): Promise<TaskRow> => {
+    await toBuild(h);
+    const task = await byTicket(h, 'M1-T-1');
+    await h.store.setTaskState(task.id, 'blocked', { blockedOn: 'change_request' });
+    return task;
+  };
+  const stateOf = async (h: Harness, task: TaskRow) => (await h.store.getTask(task.id))!.state;
+
+  it('stays held while the request is open, and goes back to ready once it is rejected', async () => {
+    const h = await harness();
+    const task = await held(h);
+    const { artifact_id: id } = await fileChangeRequest(h, h.project, { ...scopeChange, raised_in: 'M1-T-1' });
+    await h.conductor.tick();
+    expect(await stateOf(h, task)).toBe('blocked');
+
+    await finish(h, `${id}-REC`, { decision: 'reject', rationale: 'No' });
+    await h.conductor.tick();
+
+    expect(await stateOf(h, task)).toBe('ready');
+  });
+
+  it('is not held by a request another ticket raised', async () => {
+    const h = await harness();
+    const task = await held(h);
+    await fileChangeRequest(h, h.project, { ...scopeChange, raised_in: 'M1-T-9' });
+    await h.conductor.tick();
+
+    expect(await stateOf(h, task)).toBe('ready');
+  });
+
+  it('stays held while an approved request leaves the ticket stale, until the Tech Lead decides on it', async () => {
+    const h = await harness();
+    const task = await held(h);
+    await stakeholderApplies(h, { ...criterionChange, raised_in: 'M1-T-1' });
+    expect(await statusOf(h, 'M1-T-1')).toBe('stale');
+    expect(await stateOf(h, task)).toBe('blocked');
+
+    await finish(h, 'M1-REVISE-TECH-M1-1', revised([stillValid('M1-T-1')]));
+    await h.conductor.tick();
+
+    expect(await stateOf(h, task)).toBe('ready');
+  });
+});
+
+describe('an escalated task', () => {
+  const failedAttempt = async (h: Harness, task: TaskRow, output: unknown, evidence: string) => {
+    const attempt = await h.store.createAttempt({ task_id: task.id, adapter: 'claude', model: 'm', worktree_path: h.repoPath, branch: 'b' });
+    await h.store.setAttemptState(attempt.id, 'running');
+    await h.store.patchAttempt(attempt.id, { output });
+    await h.store.setAttemptState(attempt.id, 'failed', { failure_kind: 'check_failed', failure_evidence: evidence });
+  };
+  const report = (notes: string) => ({ summary: 'Wrote the tests', files_changed: [], commands_run: [], notes });
+
+  it('shows the last failure, what the worker said, and each request the ticket raised', async () => {
+    const h = await harness();
+    await toBuild(h);
+    const task = await byTicket(h, 'M1-T-1');
+    await advanceTo(h, task.id, ['ready', 'running', 'checks']);
+    await failedAttempt(h, task, report('The first try'), 'Check `true` exited with 1.\n');
+    await failedAttempt(h, task, report('The grep in the check never matches on Node 25'), 'Check `grep -q x out` exited with 1.\n');
+    const { artifact_id: id } = await fileChangeRequest(h, h.project, { ...scopeChange, raised_in: 'M1-T-1' });
+    await fileChangeRequest(h, h.project, { ...scopeChange, raised_in: 'M1-T-9' });
+    await h.store.setTaskState(task.id, 'escalated', { reason: 'attempts_exhausted' });
+    await h.conductor.tick();
+
+    expect((await pending(h, 'escalation')).evidence).toEqual([
+      { label: 'Last failure', value: 'check_failed: Check `grep -q x out` exited with 1.' },
+      { label: 'What the worker said', value: 'Wrote the tests\n\nThe grep in the check never matches on Node 25' },
+      { label: id, value: 'proposed, against SPEC-M1#scope: Less to do', pin: `${id}@1` },
+    ]);
+  });
+
+  it('cuts what the worker said short', async () => {
+    const h = await harness();
+    await toBuild(h);
+    const task = await byTicket(h, 'M1-T-1');
+    await advanceTo(h, task.id, ['ready', 'running', 'checks']);
+    await failedAttempt(h, task, report('x'.repeat(5000)), 'Check `true` exited with 1.\n');
+    await h.store.setTaskState(task.id, 'escalated', { reason: 'attempts_exhausted' });
+    await h.conductor.tick();
+
+    const said = (await pending(h, 'escalation')).evidence.find(({ label }) => label === 'What the worker said')!.value;
+    expect(said.length).toBe(1500);
+    expect(said.endsWith('…')).toBe(true);
   });
 });

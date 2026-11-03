@@ -400,14 +400,14 @@ describe('Scheduler', () => {
     expect(await stateEvents()).toBe(afterFirstTick);
   });
 
-  it('leaves a task that waits on a person alone', async () => {
+  it.each(['human_request', 'change_request'])('leaves a task that waits on a %s alone', async (blockedOn) => {
     const { e, sched } = await engine({ steps: [okStep({ 'src/a.mjs': '' })] });
     const t = await e.addTicket(ticket());
-    await e.store.setTaskState(t.id, 'blocked', { blockedOn: 'human_request' });
+    await e.store.setTaskState(t.id, 'blocked', { blockedOn });
 
     await sched.tick();
 
-    expect(await e.store.getTask(t.id)).toMatchObject({ state: 'blocked', blocked_on: 'human_request' });
+    expect(await e.store.getTask(t.id)).toMatchObject({ state: 'blocked', blocked_on: blockedOn });
     expect(e.spawnCount()).toBe(0);
   });
 
