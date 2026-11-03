@@ -467,10 +467,20 @@ async function checkAfterMerge(killedTask: number | undefined): Promise<void> {
     check('5. No ticket existed before design finished', earlyTicket === '', earlyTicket);
     check('5. Every ticket has acceptance criteria', tickets.length > 0 && tickets.every(({ ac_refs }) => ac_refs.length > 0), tickets.map(({ ticket_id, ac_refs }) => `${ticket_id}: ${ac_refs.join('+')}`).join(', '));
 
-    const sizes = await Promise.all(tasks.flatMap((task) => [details(task.id).then(({ attempts }) => Promise.all(attempts.map(async ({ id, k }) => ({ at: `${task.ticket_id}-a${k}`, tokens: (await get<TaskManifest>(`/api/attempts/${id}/manifest`)).totalTokens }))))]));
-    const all = sizes.flat();
+    note(`Tickets: ${tickets.map(({ ticket_id, title }) => `${ticket_id} ${title}`).join('; ')}`);
+
+    const manifests = (await Promise.all(tasks.map(async (task) => Promise.all((await details(task.id)).attempts.map(async ({ id, k }) => ({ at: `${task.ticket_id}-a${k}`, manifest: await get<TaskManifest>(`/api/attempts/${id}/manifest`) })))))).flat();
+    const all = manifests.map(({ at, manifest }) => ({ at, tokens: manifest.totalTokens }));
     const largest = all.reduce((most, size) => (size.tokens > most.tokens ? size : most), { at: 'none', tokens: 0 });
     check('5. Every manifest is within 12,000 tokens', all.length > 0 && all.every(({ tokens }) => tokens <= MAX_CONTEXT_TOKENS), `${all.length} manifests, the largest is ${largest.at} at ${largest.tokens}`);
+
+    // A whole Spec keeps what the PM wrote, and the engine's own list of criteria loses its commands.
+    const wholeSpecs = manifests.flatMap(({ at, manifest }) => [...manifest.task.matchAll(/<input pin="(SPEC-M\d+@\d+)">([\s\S]*?)<\/input>/g)].map(([, pin, content]) => ({ at: `${at} ${pin}`, content: content! })));
+    const withCommands = wholeSpecs.filter(({ content }) => /^Verified by:/m.test(content));
+    check('5. No whole Spec in a manifest carries the engine\'s commands', wholeSpecs.length > 0 && withCommands.length === 0, withCommands.length === 0 ? `${wholeSpecs.length} whole Specs` : withCommands.map(({ at }) => at).join(', '));
+    const commands = (await criteria()).map(({ verification }) => verification.how);
+    const quoted = wholeSpecs.filter(({ content }) => commands.some((command) => content.includes(command)));
+    if (quoted.length > 0) note(`The PM's own text quotes a command, in ${quoted.map(({ at }) => at).join(', ')}`);
   });
 
   await guarded('6. The interrupted ticket finishes', async () => {

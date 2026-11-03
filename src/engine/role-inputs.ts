@@ -4,20 +4,22 @@ import type { Criterion } from '../artifacts/acs.ts';
 import { parsePin, replaceSection, type ArtifactDoc } from '../artifacts/format.ts';
 import type { ManifestInput } from '../manifest/build.ts';
 import type { Coverage } from './apply/design.ts';
+import { criteriaSlug } from './apply/milestone.ts';
 import { fenced, oneLine } from './apply/text.ts';
 import type { EngineDeps } from './runner.ts';
 import type { ProjectRow } from './store.ts';
 
 const REFERENCE_DIR = '.aiteam-reference';
 const REFERENCE_FILE = 'verification.md';
-const POINTER = `The commands that verify each criterion are in \`${REFERENCE_DIR}/${REFERENCE_FILE}\` in your working directory, word for word, under a heading for each criterion. That file is a copy for you to read: it isn't in the repository, and it won't exist when the engine runs the commands in your output, so none of them may use it.`;
+const POINTER = `The commands that verify each criterion are in \`${REFERENCE_DIR}/${REFERENCE_FILE}\` in your working directory, word for word, under a heading for each criterion, and nowhere else in your inputs. Read the whole file, not just its start, before you write, run or judge any command. That file is a copy for you to read: it isn't in the repository, and it won't exist when the engine runs the commands in your output, so none of them may use it.`;
 
 const criteriaOf = (doc: ArtifactDoc) => (doc.type === 'spec' ? (doc.fields.data as { criteria?: Criterion[] } | undefined)?.criteria : undefined);
 const coverageOf = (doc: ArtifactDoc) => (doc.type === 'test_plan' ? (doc.fields.data as { coverage?: Coverage[] } | undefined)?.coverage : undefined);
 
 function specView(doc: ArtifactDoc, criteria: Criterion[]): string {
   const sections = criteria.map(({ id, text }) => `### ${id}\n\n${text.trim()}\n`).join('\n');
-  return replaceSection(doc.body, 'acceptance-criteria', `${POINTER}\n\n${sections}`) ?? doc.body;
+  const slug = criteriaSlug(doc.body);
+  return (slug === undefined ? undefined : replaceSection(doc.body, slug, `${POINTER}\n\n${sections}`)) ?? doc.body;
 }
 
 function testPlanView(doc: ArtifactDoc, coverage: Coverage[]): string {

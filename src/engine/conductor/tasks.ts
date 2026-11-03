@@ -185,7 +185,7 @@ export function testPlanTask(project: ProjectRow, n: number, inputs: string[]): 
     milestone: n,
     role_id: 'qa_engineer',
     kind: 'authoring',
-    order: workOrder('test_plan', `Write the Test Plan for milestone ${n}. Name the commands that verify each acceptance criterion, and add harness tickets for anything those commands need that doesn't exist yet.`, inputs, INTEGRATION),
+    order: workOrder('test_plan', `Write the Test Plan for milestone ${n}. Name the commands that verify each acceptance criterion. Add a harness ticket only for test tooling those commands need that the product won't include. The Tech Lead is splitting the product into tickets at the same time, and those tickets build the product and everything its criteria ask it to include, such as its tests.`, inputs, INTEGRATION),
   };
 }
 

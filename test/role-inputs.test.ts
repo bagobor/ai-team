@@ -6,7 +6,7 @@ import type { TaskManifest } from '../src/manifest/build.ts';
 import { manifestDir } from '../src/paths.ts';
 import { apply, publish } from './helpers/apply.ts';
 import { makeEngine, okStep, resultStep, runOnce, ticket, type TestEngine } from './helpers/engine.ts';
-import { command, ids, largeCoverage, largeDesign, largeTestPlan, largeTickets, noteOf, planNoteOf, publishLargeDesign, publishLargeSpec, publishProfile, ROOM_BEFORE_M3, textOf } from './helpers/large-milestone.ts';
+import { command, ids, largeCoverage, largeDesign, largeTestPlan, largeTickets, noteOf, planNoteOf, pmRowOf, publishLargeDesign, publishLargeSpec, publishProfile, ROOM_BEFORE_M4, textOf } from './helpers/large-milestone.ts';
 import { commitAll, porcelain, run, tempDir } from './helpers/repo.ts';
 
 const QA_PINS = ['SPEC-M1@1', 'TEST-PLAN-M1@1'];
@@ -22,9 +22,9 @@ const RECOMMENDATION = { decision: 'approve', rationale: 'It costs little' };
 describe('what a role reads on a milestone of 10 tickets and 30 criteria', () => {
   let e: TestEngine;
 
-  async function engineWith(ticketId: string, output: unknown): Promise<ProjectRow> {
+  async function engineWith(ticketId: string, output: unknown, spec = { ownCriteriaSection: true }): Promise<ProjectRow> {
     e = await makeEngine({ steps: { byTask: { [ticketId]: resultStep(output) } } });
-    return publishLargeSpec(e);
+    return publishLargeSpec(e, spec);
   }
 
   async function workOn(spec: TaskSpec) {
@@ -34,10 +34,10 @@ describe('what a role reads on a milestone of 10 tickets and 30 criteria', () =>
     return { state: (await e.store.getTask(task.id))!.state, attempt: attempt!, manifest: attempt!.manifest as TaskManifest };
   }
 
-  function expectRoomForM3({ attempt, manifest }: { attempt: AttemptRow; manifest: TaskManifest }): void {
+  function expectRoomForM4({ attempt, manifest }: { attempt: AttemptRow; manifest: TaskManifest }): void {
     expect(attempt).toMatchObject({ failure_kind: null });
     expect(manifest.contextBudget).toBe(12_000);
-    expect(manifest.totalTokens).toBeLessThanOrEqual(ROOM_BEFORE_M3);
+    expect(manifest.totalTokens).toBeLessThanOrEqual(ROOM_BEFORE_M4);
   }
 
   const taskText = (ticketId: string) => readFileSync(join(manifestDir(e.paths, 'p', ticketId, 1), 'task.md'), 'utf8');
@@ -53,13 +53,13 @@ describe('what a role reads on a milestone of 10 tickets and 30 criteria', () =>
   });
 
   describe('QA', () => {
-    it('fits the budget with room left for M3, and its output still applies', async () => {
+    it('fits the budget with room left for M4, and its output still applies', async () => {
       const project = await engineWith('M1-QA-1', QA_OUTPUT);
       await publishLargeDesign(e);
 
       const ran = await workOn(qaTask(project, 1, 1, QA_PINS));
 
-      expectRoomForM3(ran);
+      expectRoomForM4(ran);
       expect(ran.state).toBe('done');
       expect(await e.artifacts.latest(project.id, 'QA-REPORT-M1-1')).toMatchObject({ derived_from: QA_PINS });
     });
@@ -84,12 +84,25 @@ describe('what a role reads on a milestone of 10 tickets and 30 criteria', () =>
       const text = taskText('M1-QA-1');
       for (const pin of QA_PINS) expect(text).toContain(`<input pin="${pin}">`);
       expect(text).toContain('spec-prose-marker');
+      expect(text).toContain('assumption-marker');
       expect(text).toContain('plan-prose-marker');
       for (const ac of ids) {
         expect(text).toContain(textOf(ac));
+        expect(text).toContain(pmRowOf(ac));
         expect(text).toContain(planNoteOf(ac));
       }
       expect(text).toContain('.aiteam-reference/verification.md');
+    });
+
+    it('leaves the commands out of a Spec without an Acceptance criteria section of its own as well', async () => {
+      const project = await engineWith('M1-QA-1', QA_REFUSED, { ownCriteriaSection: false });
+      await publishLargeDesign(e);
+
+      const { attempt } = await workOn(qaTask(project, 1, 1, QA_PINS));
+
+      expectAllCommands(referenceOf(attempt));
+      expect(taskText('M1-QA-1')).not.toContain('command-marker');
+      for (const ac of ids) expect(taskText('M1-QA-1')).toContain(textOf(ac));
     });
 
     it('sees the Spec\'s command and the Test Plan\'s under the same criterion when they differ', async () => {
@@ -108,13 +121,13 @@ describe('what a role reads on a milestone of 10 tickets and 30 criteria', () =>
   });
 
   describe('Tech Design', () => {
-    it('fits the budget with room left for M3, and its output still applies', async () => {
+    it('fits the budget with room left for M4, and its output still applies', async () => {
       const project = await engineWith('M1-TECH', largeDesign);
       const inputs = ['SPEC-M1@1', await publishProfile(e)];
 
       const ran = await workOn(techTask(project, 1, inputs));
 
-      expectRoomForM3(ran);
+      expectRoomForM4(ran);
       expect(ran.state).toBe('done');
       expect(await e.artifacts.latest(project.id, 'TECH-M1')).toMatchObject({ derived_from: inputs });
     });
@@ -135,13 +148,13 @@ describe('what a role reads on a milestone of 10 tickets and 30 criteria', () =>
   });
 
   describe('Test Plan', () => {
-    it('fits the budget with room left for M3, and its output is published whole', async () => {
+    it('fits the budget with room left for M4, and its output is published whole', async () => {
       const project = await engineWith('M1-TESTPLAN', largeTestPlan);
       const inputs = ['SPEC-M1@1', await publishProfile(e)];
 
       const ran = await workOn(testPlanTask(project, 1, inputs));
 
-      expectRoomForM3(ran);
+      expectRoomForM4(ran);
       expect(ran.state).toBe('done');
       expect(await e.artifacts.latest(project.id, 'TEST-PLAN-M1')).toMatchObject({ derived_from: inputs });
       expect((await e.artifacts.read(project, 'TEST-PLAN-M1@1')).fields.data).toEqual({ coverage: largeCoverage });
@@ -170,7 +183,7 @@ describe('what a role reads on a milestone of 10 tickets and 30 criteria', () =>
     it('of the Test Plan fits the budget and can publish its full coverage', async () => {
       const { project, ...ran } = await reviseOf('TEST-PLAN-M1', 'M1-REVISE-TEST-PLAN-M1-1', REVISED_PLAN, 'revise_test_plan');
 
-      expectRoomForM3(ran);
+      expectRoomForM4(ran);
       expect(ran.state).toBe('done');
       expect((await e.artifacts.read(project, 'TEST-PLAN-M1@2')).fields.data).toEqual({ coverage: largeCoverage });
     });
@@ -188,7 +201,7 @@ describe('what a role reads on a milestone of 10 tickets and 30 criteria', () =>
     it('of the Tech Design fits the budget', async () => {
       const ran = await reviseOf('TECH-M1', 'M1-REVISE-TECH-M1-1', STILL_RIGHT, 'revise_design');
 
-      expectRoomForM3(ran);
+      expectRoomForM4(ran);
       expect(ran.state).toBe('done');
     });
   });
@@ -202,7 +215,7 @@ describe('what a role reads on a milestone of 10 tickets and 30 criteria', () =>
 
       const ran = await workOn(recommendationTask(project, 'CR-1', target, ['CR-1@1', `${id}@1`]));
 
-      expectRoomForM3(ran);
+      expectRoomForM4(ran);
       expect(ran.state).toBe('done');
       expect(taskText('CR-1-REC')).toContain('Change it');
     });
@@ -226,7 +239,7 @@ describe('what a role reads on a milestone of 10 tickets and 30 criteria', () =>
     const { attempt, manifest } = await workOn(specTask(project, 1, 2, ['SPEC-M1@1']));
 
     expect(attempt.state).toBe('invalid_output');
-    expect(manifest.totalTokens).toBeLessThanOrEqual(ROOM_BEFORE_M3);
+    expect(manifest.totalTokens).toBeLessThanOrEqual(ROOM_BEFORE_M4);
     expectAllCommands(referenceOf(attempt));
     for (const ac of ids) expect(taskText('M1-SPEC-r2')).toContain(textOf(ac));
   });
@@ -274,7 +287,7 @@ describe('what a role reads on a milestone of 10 tickets and 30 criteria', () =>
     it('whose ticket pins the whole Spec fits the budget, and its commit leaves the reference out', async () => {
       const ran = await ticketRun({ inputs: ['SPEC-M1@1'] });
 
-      expectRoomForM3(ran);
+      expectRoomForM4(ran);
       const tree = run(e.repoPath, 'ls-tree', '-r', '--name-only', ran.attempt.branch);
       expect(tree).toContain('src/done.txt');
       expect(tree).not.toContain('.aiteam-reference');

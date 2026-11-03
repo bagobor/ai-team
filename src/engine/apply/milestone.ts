@@ -9,12 +9,18 @@ type SpecOutput = { body: string; criteria: Criterion[] };
 type ReviewOutput = { body: string; known_issues: string[]; deviations: string[] };
 
 
+const CRITERIA_HEADING = 'Acceptance criteria';
 const criterionSection = ({ id, text, verification }: Criterion) => `### ${id}\n\n${text.trim()}\n\nVerified by: ${verification.how}\n`;
 
 // The engine writes these sections so that #ac-1 always resolves, which leaves nothing in the body or a criterion
 // that may look like one: a ticket pinned to it would follow the forgery.
 function specBody(body: string, criteria: Criterion[]): string {
-  return `${body.trimEnd()}\n\n## Acceptance criteria\n\n${criteria.map(criterionSection).join('\n')}`;
+  return `${body.trimEnd()}\n\n## ${CRITERIA_HEADING}\n\n${criteria.map(criterionSection).join('\n')}`;
+}
+
+// The PM may write a section under the same heading, which then takes the plain slug. The engine's always comes last.
+export function criteriaSlug(body: string): string | undefined {
+  return sectionsOf(body).filter(({ level, title }) => level === 2 && title === CRITERIA_HEADING).at(-1)?.slug;
 }
 
 function specProblems(body: string, criteria: Criterion[], locked: { ac_id: string; text: string }[]): string[] {

@@ -40,6 +40,7 @@
       }
     },
     "harness_tickets": {
+      "description": "Test tooling the commands need that the product won't include, such as a replay harness or recorded data. Never the product, or anything a criterion asks it to include, such as its tests: the Tech Lead's tickets build those. Often empty.",
       "type": "array",
       "items": {
         "type": "object",

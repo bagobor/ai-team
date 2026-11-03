@@ -6,20 +6,20 @@ import type { TaskManifest } from '../src/manifest/build.ts';
 import { manifestDir } from '../src/paths.ts';
 import { apply, projectOf, publish } from './helpers/apply.ts';
 import { makeEngine, resultStep, runOnce, type TestEngine } from './helpers/engine.ts';
-import { ids, noteOf, publishLargeDesign, publishLargeSpec, ROOM_BEFORE_M3, words } from './helpers/large-milestone.ts';
+import { ids, noteOf, pmRowOf, publishLargeDesign, publishLargeSpec, ROOM_BEFORE_M4, words } from './helpers/large-milestone.ts';
 import { revParse } from './helpers/repo.ts';
 
 const PINS = ['SPEC-M1@1', 'TEST-PLAN-M1@1', 'QA-REPORT-M1-1@1'];
 const REVIEW = { body: '# How it went\n', known_issues: [], deviations: [], stakeholder_note: 'Ship it' };
 
-type QaOverrides = { notes?: (ac: string) => string; summary?: string; bugs?: unknown[] };
+type QaOverrides = { notes?: (ac: string) => string; summary?: string; bugs?: unknown[]; ownCriteriaSection?: boolean };
 
 describe('the Milestone Review inputs', () => {
   let e: TestEngine;
 
   async function reviewOfLargeMilestone(qa: QaOverrides = {}): Promise<TaskRow> {
     e = await makeEngine({ steps: { byTask: { 'M1-REVIEW-1': resultStep(REVIEW) } } });
-    const project = await publishLargeSpec(e);
+    const project = await publishLargeSpec(e, { ownCriteriaSection: qa.ownCriteriaSection ?? true });
     await publishLargeDesign(e);
 
     const results = ids.map((ac) => ({ ac, status: 'passing', commands: [], notes: (qa.notes ?? noteOf)(ac) }));
@@ -36,7 +36,7 @@ describe('the Milestone Review inputs', () => {
     await e.cleanup();
   });
 
-  it('fit the budget on a milestone of 10 tickets and 30 criteria, with room left for M3', async () => {
+  it('fit the budget on a milestone of 10 tickets and 30 criteria, with room left for M4', async () => {
     const task = await reviewOfLargeMilestone();
 
     await runOnce(e, task.id);
@@ -45,7 +45,7 @@ describe('the Milestone Review inputs', () => {
     expect(attempt).toMatchObject({ failure_kind: null });
     const manifest = attempt!.manifest as TaskManifest;
     expect(manifest.contextBudget).toBe(12_000);
-    expect(manifest.totalTokens).toBeLessThanOrEqual(ROOM_BEFORE_M3);
+    expect(manifest.totalTokens).toBeLessThanOrEqual(ROOM_BEFORE_M4);
   });
 
   it('give the PM the prose, every criterion with its status, and everything QA wrote', async () => {
@@ -56,9 +56,11 @@ describe('the Milestone Review inputs', () => {
 
     const text = taskText();
     expect(text).toContain('spec-prose-marker');
+    expect(text).toContain('assumption-marker');
     expect(text).toContain('plan-prose-marker');
     expect(text).toContain('qa-summary-marker');
     for (const ac of ids) {
+      expect(text).toContain(pmRowOf(ac));
       expect(text).toContain(`- ${ac} (passing): text-${ac}-marker`);
       expect(text).toContain(`note-${ac}-marker`);
     }
@@ -71,6 +73,15 @@ describe('the Milestone Review inputs', () => {
     await runOnce(e, task.id);
 
     expect(taskText()).not.toContain('command-marker');
+  });
+
+  it('leave out the commands of a Spec without an Acceptance criteria section of its own as well', async () => {
+    const task = await reviewOfLargeMilestone({ ownCriteriaSection: false });
+
+    await runOnce(e, task.id);
+
+    expect(taskText()).not.toContain('command-marker');
+    for (const ac of ids) expect(taskText()).toContain(`- ${ac} (passing): text-${ac}-marker`);
   });
 
   it('still name their three documents, and the review still derives from them', async () => {
@@ -96,7 +107,7 @@ describe('the Milestone Review inputs', () => {
     expect(text).toMatch(/\[cut: \d+ more characters\]/);
     expect(text.match(/\[cut:/g)).toHaveLength(1);
     expect(text).toContain(noteOf('AC-30'));
-    expect((await manifestOf(task)).totalTokens).toBeLessThanOrEqual(ROOM_BEFORE_M3);
+    expect((await manifestOf(task)).totalTokens).toBeLessThanOrEqual(ROOM_BEFORE_M4);
   });
 
   it('stay within budget however much QA writes', async () => {
@@ -106,7 +117,7 @@ describe('the Milestone Review inputs', () => {
 
     const [attempt] = await e.store.listAttempts(task.id);
     expect(attempt).toMatchObject({ failure_kind: null });
-    expect((attempt!.manifest as TaskManifest).totalTokens).toBeLessThanOrEqual(ROOM_BEFORE_M3);
+    expect((attempt!.manifest as TaskManifest).totalTokens).toBeLessThanOrEqual(ROOM_BEFORE_M4);
     const text = taskText();
     for (const ac of ids) expect(text).toContain(`note-${ac}-marker`);
     expect(text).toContain('qa-summary-marker');

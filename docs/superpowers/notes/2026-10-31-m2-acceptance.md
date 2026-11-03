@@ -6,6 +6,8 @@ The brief asked for a small dependency-free tool that converts temperatures from
 
 **Result: `M2 ACCEPTANCE PASS`, 73 checks, 0 failed, on the third run.** The first two runs failed and found real problems, described below. The two small fixes the third run led to came after it, and the run was not repeated. Tests cover both.
 
+**Run 4, on `main` at `25c77d6` on 2026-11-02: `M2 ACCEPTANCE PASS`, 81 checks, 0 failed, about $3.58.** It was meant to prove the two manifest-budget fixes. It proves less than that, and it found two problems the checks don't look for, both under "What the runs found". The sections on checks, drills and UI below still describe run 3.
+
 ## Runs and spend
 
 Spend is the CLI's own estimate, taken from each attempt's final `result`. An interrupted attempt never reports a cost, so the crash drill's attempt is not in these figures.
@@ -15,8 +17,9 @@ Spend is the CLI's own estimate, taken from each attempt's final `result`. An in
 | 1 | `smoke-m2` | Failed at discovery: every attempt `claude_code_version_too_old` | 3 | none | $0.00 |
 | 2 | `smoke-m2-2` | Failed at QA: `M1-B-1 needs you. AC-1 failed verification: attempts_exhausted` | 25 | 1073s | $4.54 |
 | 3 | `smoke-m2-3` | Passed | 17 | 860s | $3.66 |
+| 4 | `smoke-m2-4` | Passed, with two problems the checks don't look for | 22 | 921s | $3.58 |
 
-The script's cap is $25. Isolation probes added about $0.04, so the total counted is about $8.24.
+The script's cap is $25. Isolation probes added about $0.04, so the total counted is about $8.24 for runs 1 to 3 and about $11.82 with run 4.
 
 Run 3, task by task:
 
@@ -36,6 +39,30 @@ Run 3, task by task:
 | M1-T-2-R1 | code_review | code_reviewer | 1 | $0.18 | 35 |
 | M1-QA-1 | qa_verify | qa_engineer | 1 | $0.28 | 71 |
 | M1-REVIEW-1 | authoring | pm | 2 (a1 `invalid_output`) | $0.67 | 110 |
+
+Run 4, task by task. It had 10 criteria to run 3's 8, so the two compare only roughly:
+
+| Task | Attempts | Estimate | Seconds |
+|---|---|---|---|
+| DISCOVERY-PM | 1 | $0.12 | 30 |
+| DISCOVERY-TL | 1 | $0.12 | 23 |
+| M1-SPEC | 1 | $0.31 | 113 |
+| M1-TECH | 1 | $0.42 | 133 |
+| M1-TESTPLAN | 1 | $0.12 | 30 |
+| M1-Q-1 | 2 (a1 interrupted by the drill) | $0.07 | 27 |
+| M1-Q-2 | 2 | $0.17 | 57 |
+| M1-T-1 | 2 (a1 interrupted by the drill) | $0.07 | 27 |
+| M1-T-2 | 1 | $0.09 | 28 |
+| M1-Q-1-R2 | 1 | $0.26 | 48 |
+| M1-T-1-R2 | 1 | $0.17 | 32 |
+| CR-1-REC | 1 | $0.17 | 27 |
+| M1-T-2-R1 | 1 | $0.20 | 36 |
+| M1-REVISE-TEST-PLAN-M1-1 | 1 | $0.09 | 8 |
+| M1-REVISE-TECH-M1-1 | 1 | $0.31 | 64 |
+| M1-Q-2-R1 | 1 | $0.27 | 64 |
+| M1-Q-2-R2 | 1 | $0.27 | 80 |
+| M1-QA-1 | 1 | $0.12 | 44 |
+| M1-REVIEW-1 | 1 | $0.24 | 51 |
 
 ## Checks on the passing run
 
@@ -111,9 +138,35 @@ Run 2 also burned attempts on rules workers were never told, such as ticket key 
 
 **Run 3: the PM wasn't told which review headings the engine writes (fixed after the run).** M1-REVIEW-1-a1 used the heading "Acceptance criteria", which is correctly refused. The `body` in `milestone_review.json` now says so. It's the same kind of gap as run 2's unstated rules.
 
+**Run 4: what the budget fixes did on a real project.** The manifests shrank: the largest is M1-REVISE-TECH-M1-1-a1 at 6,355 tokens on 10 criteria, against 11,841 on 8 in run 3. No attempt failed with `invalid_output`, and M1-REVIEW-1 succeeded first time at 4,330. The drills held too: the worker killed on M1-Q-1 outlived the daemon, the daemon was healthy 6.6s after the SIGKILL, and the PM again recommended rejecting the Change Request. Time to each stop: CP1 55.1s, CP2 114.3s, first ticket running 134.3s, CP4 271.4s after the Change Request, merge 2.0s.
+
+**Run 4: the Spec's commands stayed in every manifest (not fixed, and on `main`).** The PM wrote its own `## Acceptance criteria` in the Spec's body, a table of the criteria. The applier then added the engine's section under the same heading, which holds the `### AC-n` entries and the `Verified by:` lines. `replaceSection` takes the first match, so `specView` in both `role-inputs.ts` and `review-inputs.ts` replaced the PM's table and kept all ten commands. All six task texts I saved carry `Verified by:` ten times: Tech Design, Test Plan, Revise Test Plan, QA, the recommendation on the Change Request, and the Milestone Review.
+
+- The test fixture's Spec has no such heading, so the suite couldn't catch this. Of the four Specs in temp repos that reached `main`, only this one has two such headings, so it depends on what the PM writes.
+- The run doesn't show that a worker can get its commands from the file alone, because they were in the manifest as well. M1-TESTPLAN read 2 of the 10 criteria in the file, and all ten of its commands still match the Spec word for word.
+- What did take effect is dropping the copy in the Spec's frontmatter and the Test Plan's commands. That's why the manifests fell anyway, helped by real commands averaging 223 characters, not 700.
+- The tables under "Findings for later milestones" hold only for a Spec without that heading. By estimate, at 700 characters a Spec like this one adds about 204 tokens per criterion, so QA, Revise Test Plan and the review each reach 12,000 at about 28 criteria. At this run's 223 characters, QA reaches it at about 48.
+- The PM's table was lost from every manifest, and nothing was meant to touch it.
+
+**Run 4: workers found the file, but most read only the start of it.** Once the commands really are only in the file, a worker that stops early won't see them, so the manifest should say to read all of it.
+
+| Attempt | Manifest tokens | What it did with the file |
+|---|---|---|
+| M1-TECH | 4,690 | `Read`, all of it |
+| M1-TESTPLAN | 4,731 | `head -20`: 2 of 10 criteria |
+| M1-REVISE-TECH-M1-1 | 6,355 | `Glob`, then `Read`, all of it |
+| M1-REVISE-TEST-PLAN-M1-1 | 5,864 | `head -60`, then answered `unaffected: true` after 8 seconds |
+| M1-QA-1 | 4,875 | `head -80`: stops just before AC-10's command |
+| CR-1-REC | 3,874 | Saw it in a `Glob`, didn't open it |
+| M1-REVIEW-1 | 4,330 | Its role gets no file |
+
+**Run 4: the Test Plan asked for the product itself as a harness, and two tools were merged (not fixed).** The Test Plan and the Tech Design are written at the same time, so the QA Engineer can't see the Tech Lead's tickets. No code existed and its commands need a CLI, so it filed Q-1 "Implement the temperature converter CLI" and Q-2 "Add node --test suite" as `harness_tickets`. Q-1's own text says the syntax is "the Tech Lead's choice". The Tech Lead filed T-1 and T-2 for the same work, and all four merged. `main` holds `convert.js`, an untested `temperatures.js` that behaves differently, and three overlapping test files.
+
+Code review approved Q-1, and all 81 checks passed, because nothing compares the two sets of tickets. The PM's Milestone Review caught it and named it under both Known issues and Deviations. The Q tickets and their reviews cost about $1.04 of the $3.58. Run 3's QA filed none, and nothing in the budget fixes points to this, so it looks like the model's call on the day, with nothing to stop it.
+
 ## What it leaves behind
 
-- The projects `smoke-m2`, `smoke-m2-2` and `smoke-m2-3` stay in the real `~/.aiteam`, because M2 has no project delete. The first two are halted and the third is closed. `smoke` and `smoke-2` from M1 were halted, because M2 would otherwise have started paid reviews for them.
+- The projects `smoke-m2`, `smoke-m2-2`, `smoke-m2-3` and `smoke-m2-4` stay in the real `~/.aiteam`, because M2 has no project delete. The first two are halted and the other two are closed. `smoke` and `smoke-2` from M1 were halted, because M2 would otherwise have started paid reviews for them.
 - Their temp repos stay in the system temp folder as `aiteam-smoke-m2-*`.
 - `aiteam.m1-backup.db` holds the database as it was before the M2 migration.
 - `~/.aiteam/knowledge` has hand commits bringing existing files up to the seed, because `syncSeed` never overwrites a file that exists.
@@ -122,7 +175,7 @@ After the run stopped, port 4780 was free and no daemon or script process remain
 
 ## Findings for later milestones
 
-- **The context budget was the next thing a real project would hit. It now holds at 30 criteria, and the first real run still has to prove how.** M1-REVIEW-1-a2 used 11,841 of 12,000 tokens on a two-ticket milestone, because its inputs were the whole Spec, Test Plan and QA Report, and the PM's long verification commands appear in all three.
+- **The context budget was the next thing a real project would hit. The fixes hold at 30 criteria only for a Spec without its own `## Acceptance criteria` heading, and run 4's Spec has one.** M1-REVIEW-1-a2 used 11,841 of 12,000 tokens on a two-ticket milestone, because its inputs were the whole Spec, Test Plan and QA Report, and the PM's long verification commands appear in all three.
 
   The review is fixed on `m2-review-manifest-budget`. It now reads the Spec's prose and each criterion's text and status, the Test Plan's prose, and what QA wrote, and it leaves out the commands (`src/engine/review-inputs.ts`). What QA wrote is capped at 3,000 tokens, and the longest notes are cut first, with a mark that says so. The pins don't change, so the lineage doesn't either.
 
@@ -140,7 +193,7 @@ After the run stopped, port 4780 was free and no daemon or script process remain
 
   The fix is on `m2-role-manifest-budget` (`src/engine/role-inputs.ts`). Every role except the review's PM now reads a whole Spec or Test Plan as what people wrote: the Spec's prose and each criterion's text, and the Test Plan's prose and notes. The commands go to `.aiteam-reference/verification.md` in the attempt's worktree, each once and word for word, and the manifest says where. The engine writes the file after a profile's setup has run. Its folder ignores itself, so it stays out of `git status` and a ticket's snapshot. An input pinned to one section stays as it was, so an Engineer's criterion keeps its command beside it. The pins don't change, so the lineage doesn't either.
 
-  Tokens per manifest now, with the same sizes, and with the Environment Profile counted where it's read:
+  Tokens per manifest now, with the same sizes, with the Environment Profile counted where it's read, and for a Spec without its own heading (run 4 shows what happens with one):
 
   | Criteria | QA | Tech Design | Test Plan | Revise Test Plan | Revise Tech Design | Recommendation on the Spec | Spec, round 2 |
   |---|---|---|---|---|---|---|---|
@@ -151,11 +204,11 @@ After the run stopped, port 4780 was free and no daemon or script process remain
   | 30 | 6,431 | 5,100 | 5,141 | 6,690 | 4,805 | 4,112 | 4,155 |
   | 60 | 10,339 | 7,509 | 7,549 | 10,599 | 7,213 | 6,521 | 6,564 |
 
-  Command length no longer counts. At 30 criteria, with several commands of 2,000 characters for each criterion, QA measures 6,439, Revise Test Plan 6,699 and Tech Design 5,100, and the file reaches 241,999 characters. What's left grows with criterion text and notes, about 130 tokens per criterion for QA. That reaches the 9,000 target at about 50 criteria and the budget at about 73.
+  For such a Spec, command length no longer counts. At 30 criteria, with several commands of 2,000 characters for each criterion, QA measures 6,439, Revise Test Plan 6,699 and Tech Design 5,100, and the file reaches 241,999 characters. What's left grows with criterion text and notes, about 130 tokens per criterion for QA. That reaches the 9,000 target at about 50 criteria and the budget at about 73.
 
   This doesn't settle everything:
 
-  - No real worker has read the file yet, so the first real run has to show that one does. It's in a git-ignored dot-folder, which a search may skip, so the manifest gives its exact path.
+  - No run has yet shown a worker managing with the commands only in the file. Run 4's workers found it, and a `Glob` lists it even though the folder is git-ignored, but three of the five that opened it read only the start.
   - Reading the file costs real context, outside the manifest budget: 23,206 characters at 30 criteria, about 6,630 tokens.
   - A worker's read tool may cut very long commands.
   - QA could still report a command that uses the file. That fails in the fresh worktree the engine verifies in, and costs a retry. The manifest warns against it.
@@ -168,7 +221,7 @@ After the run stopped, port 4780 was free and no daemon or script process remain
 - **An install gets no new seed wording for existing files**, except by hand.
 - **`AITEAM_HOME=''` is treated as a root** and creates `aiteam.db` in the current folder.
 - **QA's inputs are only the Spec and Test Plan.** In run 2 QA said it hadn't run the ENV-PROFILE commands "because I don't have their definitions". Check whether its manifest should carry them.
-- **QA's sandbox and the engine's differ.** Run 3's QA reported that `mktemp -d` was blocked for it and worked around that, and also merged four checks into one script. The engine's own re-run used the commands as written, so the result stands, but a QA summary can describe a different run from the one that decided.
+- **QA's sandbox and the engine's differ.** Run 3's QA reported that `mktemp -d` was blocked for it and worked around that, and also merged four checks into one script. The engine's own re-run used the commands as written, so the result stands, but a QA summary can describe a different run from the one that decided. Run 4's QA hit the same block on AC-10, and the Milestone Review reported that as a deviation even though the engine's re-run passed the command as written.
 - **Verification commands are heavy.** Run 3's are long `node -e` one-liners, repeated across documents. They work, but they're hard for a person to read in the traceability table.
 - **A worker outlives a SIGKILLed daemon** until recovery kills it, 3.7s in this run.
 - **The Board scrolls sideways at 800px**, so Done is off-screen in a narrow window.
