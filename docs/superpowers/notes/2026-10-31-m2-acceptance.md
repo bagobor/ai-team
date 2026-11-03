@@ -10,6 +10,8 @@ The brief asked for a small dependency-free tool that converts temperatures from
 
 **Run 5, on `m2-spec-view-and-harness` at `4aed29c` on 2026-11-02: `M2 ACCEPTANCE FAIL`, about $2.48.** It was meant to prove the fixes for run 4's two problems. The Spec's commands are now out of every manifest, and every worker read the whole reference file. QA filed no harness tickets. The run then stopped at QA on a third problem, older than the branch: the engine drops a change request whose target is written as a pin. That turned QA's correct findings about two of its own commands into false Bugs. Details are under "What the runs found".
 
+**Run 6, on `m2-spec-view-and-harness` at `098e686` on 2026-11-02: `M2 ACCEPTANCE FAIL`, about $1.75.** It was meant to prove the fix for run 5's dropped change requests. It never reached QA, so that fix is proven only by the suite. It stopped at build: M1-T-2's definition of done greps for TAP lines that Node 25 doesn't print, so all three attempts failed `check_failed` on work that passes. The Engineer saw why each time and raised a correct change request, and the engine threw all three away, because a failed attempt's output is never applied. Details are under "What the runs found".
+
 ## Runs and spend
 
 Spend is the CLI's own estimate, taken from each attempt's final `result`. An interrupted attempt never reports a cost, so the crash drill's attempt is not in these figures.
@@ -21,8 +23,9 @@ Spend is the CLI's own estimate, taken from each attempt's final `result`. An in
 | 3 | `smoke-m2-3` | Passed | 17 | 860s | $3.66 |
 | 4 | `smoke-m2-4` | Passed, with two problems the checks don't look for | 22 | 921s | $3.58 |
 | 5 | `smoke-m2-5` | Failed at QA: `M1-B-1 needs you. AC-6 failed verification: attempts_exhausted` | 22 | 532s | $2.48 |
+| 6 | `smoke-m2-6` | Failed at build: `M1-T-2 needs you. node:test suite under test/: attempts_exhausted` | 17 | 393s | $1.75 |
 
-The script's cap is $25. Isolation probes added about $0.04, so the total counted is about $8.24 for runs 1 to 3, about $11.82 with run 4 and about $14.30 with run 5.
+The script's cap is $25. Isolation probes added about $0.04, so the total counted is about $8.24 for runs 1 to 3, about $11.82 with run 4, about $14.30 with run 5 and about $16.05 with run 6.
 
 Run 3, task by task:
 
@@ -89,6 +92,24 @@ Run 5, task by task, with 8 criteria:
 | M1-B-1 | 3 (a1 changes requested, a2 and a3 `no_changes`), then cancelled | $0.22 | 52 |
 | M1-B-1-R1 | 1 | $0.09 | 20 |
 | M1-B-2 | cancelled before it ran | $0.00 | 0 |
+
+Run 6, task by task, with 10 criteria:
+
+| Task | Attempts | Estimate | Seconds |
+|---|---|---|---|
+| DISCOVERY-PM | 1 | $0.10 | 23 |
+| DISCOVERY-TL | 1 | $0.11 | 29 |
+| M1-SPEC | 1 | $0.19 | 58 |
+| M1-TECH | 1 | $0.24 | 56 |
+| M1-TESTPLAN | 1 | $0.09 | 15 |
+| M1-T-1 | 2 (a1 interrupted by the drill) | $0.09 | 34 |
+| M1-T-2 | 3, each `check_failed`, then cancelled | $0.26 | 73 |
+| M1-T-3 | 2 (a1 interrupted by the drill) | $0.04 | 14 |
+| M1-T-3-R2 | 1 | $0.13 | 17 |
+| M1-T-1-R2 | 1 | $0.12 | 19 |
+| CR-1-REC | 1 | $0.12 | 17 |
+| M1-REVISE-TECH-M1-1 | 1 | $0.17 | 31 |
+| M1-REVISE-TEST-PLAN-M1-1 | 1 | $0.09 | 7 |
 
 ## Checks on the passing run
 
@@ -212,9 +233,21 @@ The largest of 22 manifests was M1-SPEC-a2 at 4,797 tokens. The Test Plan filed 
 - Workers are taught pins such as `SPEC-M1@1#ac-1` for `inputs`, and no schema describes `target_artifact`, so writing a pin there is the natural mistake. The fix is the engine's to choose: accept a pin and take its id, or send the output back as `invalid_output` the way other rule breaks go back.
 - Even with the requests filed, the engine would still have filed the two Bugs, because it decides on the Test Plan's commands as written. A QA request against the very command that failed should probably hold that criterion's Bug until the request is decided.
 
+**The fix for run 5's dropped requests (`098e686` on `m2-spec-view-and-harness`).** A pin such as `TEST-PLAN-M1@1#risks` is filed against the document's latest version, with the pin's section when none is named. A request that names both a section and a criterion keeps the criterion on a Spec or Test Plan, and the section elsewhere. A missing section's refusal lists the sections the document has. On a Test Plan, a criterion request replaces that criterion's commands, one per line, and the plan's owner decides it. Any other request that can't be filed sends the worker back with the reasons, except on its last attempt, which keeps its work and logs `change_request.dropped`. QA's verdict is checked for that before any command runs. When QA reports a criterion passing, every command of its own exited 0, a Test Plan command failed, and QA asked to change that criterion's commands, the engine files no Bug for it and the report names the request; the next round runs whatever is decided. Every schema now describes the four request fields. Suite 1357/1357.
+
+**Run 6: the drills held, and the CR drill went the same way.** The worker killed on M1-T-1 outlived the daemon, and the daemon was healthy 7.8s after the SIGKILL. The PM again recommended rejecting CR-1, approving it published SPEC-M1@2, and M1-T-1, M1-T-2, TECH-M1 and TEST-PLAN-M1 went stale. Time to each stop: CP1 54.9s, CP2 56.9s, first ticket running 56.7s. No worker raised a malformed request, so the send-back path didn't run. The Engineer's three requests named `TEST-PLAN-M1` as a bare id with a criterion, which the new schema text asks for. One role in one run is weak evidence for that wording.
+
+**Run 6: a check that can't pass on this Node, and a correct request thrown away three times (not fixed).** The PM's AC-8 says `node --test` passes, verified by `node --test > /tmp/m1t 2>&1` and then `grep -qE '^# fail 0$' /tmp/m1t && grep -qE '^# pass [1-9][0-9]*$' /tmp/m1t`. Node 25.9.0 uses the `spec` reporter even when output goes to a file, so it writes `ℹ fail 0`, and only `--test-reporter=tap` gives `# fail 0`. The Test Plan's AC-8 and M1-T-2's definition of done copy the Spec's five commands word for word. All 13 tests on a3's branch pass, and the check still exits 1. Run 5's AC-7 had the same mistake with `# tests`.
+
+- Each Engineer attempt said exactly this in its notes, refused to fake `# pass` lines, and raised a change request against `TEST-PLAN-M1` AC-8 adding `--test-reporter=tap`. The checks run before the applier, so a `check_failed` attempt never reaches `withRaised`. All three requests were lost without even a `change_request.dropped` event. Run 5's `no_changes` attempts lost theirs the same way.
+- Filing it would not have been enough. A Spec request replaces a criterion's text and keeps its `Verified by:` commands (`criterionReplacement`), the ticket's check comes from the Tech Design's `definition_of_done`, and the tickets derive from the Tech Design and the Spec, so a Test Plan change makes neither stale. Nothing a worker can raise changes a wrong command that lives in all three.
+- The escalation the stakeholder got says "Read the last failure first" with no evidence. The last failure is "exited with 1" and an empty output tail, because `grep -q` prints nothing. The Engineer's diagnosis was only in the attempt's stored output.
+- The Environment Profile says "Node.js 20 or newer", and its own smoke check printed `node v25.9.0 ok` at CP1. Nobody downstream was told the real version or what it changes.
+- The worker's sandbox refuses writes to `/tmp`, and the engine's checks write there. Every attempt ran its check with `$TMPDIR` instead, so no worker can run its definition of done as written.
+
 ## What it leaves behind
 
-- The projects `smoke-m2` to `smoke-m2-5` stay in the real `~/.aiteam`, because M2 has no project delete. `smoke-m2-3` and `smoke-m2-4` are closed, and the others are halted. Run 5's escalation and its attempt worktrees under `~/.aiteam/worktrees/smoke-m2-5` were left as they stopped, for inspection. `smoke` and `smoke-2` from M1 were halted, because M2 would otherwise have started paid reviews for them.
+- The projects `smoke-m2` to `smoke-m2-6` stay in the real `~/.aiteam`, because M2 has no project delete. `smoke-m2-3` and `smoke-m2-4` are closed, and the others are halted. Run 5's escalation and its attempt worktrees under `~/.aiteam/worktrees/smoke-m2-5` were left as they stopped, for inspection, and so were run 6's under `~/.aiteam/worktrees/smoke-m2-6`. `smoke` and `smoke-2` from M1 were halted, because M2 would otherwise have started paid reviews for them.
 - Their temp repos stay in the system temp folder as `aiteam-smoke-m2-*`.
 - `aiteam.m1-backup.db` holds the database as it was before the M2 migration.
 - `~/.aiteam/knowledge` has hand commits bringing existing files up to the seed, because `syncSeed` never overwrites a file that exists.
@@ -261,7 +294,11 @@ After the run stopped, port 4780 was free and no daemon or script process remain
   - A worker's read tool may cut very long commands.
   - QA could still report a command that uses the file. That fails in the fresh worktree the engine verifies in, and costs a retry. The manifest warns against it.
   - Prose, criterion text and notes have no cap.
-- **A change request can be lost without anyone seeing it.** See run 5. Until that's fixed, a worker's correct finding about an upstream document can disappear, and the engine acts on the document as written.
+- **A change request can be lost without anyone seeing it.** `098e686` fixes run 5's cases for an attempt that is applied. A `check_failed` or `no_changes` attempt still loses every request it raised, as run 6 lost three. Ideally the engine files them and holds the ticket while one is open against the document its failing check came from.
+- **A wrong verification command has no route to a fix.** It is copied from the Spec into the Test Plan and the ticket's definition of done, and a request can change only the Test Plan's copy. See run 6.
+- **An escalation carries no evidence.** It should carry the last attempt's notes and any requests it raised.
+- **Roles write commands for a Node they haven't seen.** Twice now the Spec's commands assumed TAP output on Node 25. The Environment Profile should record the real versions its smoke check finds, and the knowledge base should keep what they change.
+- **A self-approved command change.** A Test Plan command change that QA raises is decided by QA as the plan's owner, so QA could replace a failing command with `true`. The criterion's Bug is held only until the next round, but that round runs whatever QA decided, so a weaker command would pass it. Only the Milestone Review and CP4 put it in front of a person. A Test Plan change raised by its own owner should go to the Tech Lead or the stakeholder.
 - **A false Bug dead-ends.** An Engineer who correctly changes nothing gets `no_changes` three times, then escalation. Run 5 hit it again, and its Engineer's request to fix the checker was lost with the failed attempt. The fix for exit 127 only handles commands the shell can't find. Prose that starts with a real command (exit 1, 129) relies on the new wording. The judge layer (M5) is the natural place for this.
 - **A revise's work order is frozen when it's created.** Tickets that close are now handled, but a ticket opened after that, such as a Bug filed while a revision runs, still costs an attempt before the evidence names it.
 - **Doctor passes while workers can't use the configured models.** It checks neither the CLI version nor the models, so a stakeholder finds out at the first attempt, and a permanent `worker_error` then uses all 3 attempts before escalating.
