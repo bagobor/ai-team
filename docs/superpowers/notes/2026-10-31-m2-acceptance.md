@@ -8,6 +8,8 @@ The brief asked for a small dependency-free tool that converts temperatures from
 
 **Run 4, on `main` at `25c77d6` on 2026-11-02: `M2 ACCEPTANCE PASS`, 81 checks, 0 failed, about $3.58.** It was meant to prove the two manifest-budget fixes. It proves less than that, and it found two problems the checks don't look for, both under "What the runs found". The sections on checks, drills and UI below still describe run 3.
 
+**Run 5, on `m2-spec-view-and-harness` at `4aed29c` on 2026-11-02: `M2 ACCEPTANCE FAIL`, about $2.48.** It was meant to prove the fixes for run 4's two problems. The Spec's commands are now out of every manifest, and every worker read the whole reference file. QA filed no harness tickets. The run then stopped at QA on a third problem, older than the branch: the engine drops a change request whose target is written as a pin. That turned QA's correct findings about two of its own commands into false Bugs. Details are under "What the runs found".
+
 ## Runs and spend
 
 Spend is the CLI's own estimate, taken from each attempt's final `result`. An interrupted attempt never reports a cost, so the crash drill's attempt is not in these figures.
@@ -18,8 +20,9 @@ Spend is the CLI's own estimate, taken from each attempt's final `result`. An in
 | 2 | `smoke-m2-2` | Failed at QA: `M1-B-1 needs you. AC-1 failed verification: attempts_exhausted` | 25 | 1073s | $4.54 |
 | 3 | `smoke-m2-3` | Passed | 17 | 860s | $3.66 |
 | 4 | `smoke-m2-4` | Passed, with two problems the checks don't look for | 22 | 921s | $3.58 |
+| 5 | `smoke-m2-5` | Failed at QA: `M1-B-1 needs you. AC-6 failed verification: attempts_exhausted` | 22 | 532s | $2.48 |
 
-The script's cap is $25. Isolation probes added about $0.04, so the total counted is about $8.24 for runs 1 to 3 and about $11.82 with run 4.
+The script's cap is $25. Isolation probes added about $0.04, so the total counted is about $8.24 for runs 1 to 3, about $11.82 with run 4 and about $14.30 with run 5.
 
 Run 3, task by task:
 
@@ -63,6 +66,29 @@ Run 4, task by task. It had 10 criteria to run 3's 8, so the two compare only ro
 | M1-Q-2-R2 | 1 | $0.27 | 80 |
 | M1-QA-1 | 1 | $0.12 | 44 |
 | M1-REVIEW-1 | 1 | $0.24 | 51 |
+
+Run 5, task by task, with 8 criteria:
+
+| Task | Attempts | Estimate | Seconds |
+|---|---|---|---|
+| DISCOVERY-PM | 1 | $0.11 | 27 |
+| DISCOVERY-TL | 1 | $0.12 | 22 |
+| M1-SPEC | 2 (a1 `invalid_output`: ids `AC1` instead of `AC-1`) | $0.30 | 79 |
+| M1-TECH | 1 | $0.36 | 86 |
+| M1-TESTPLAN | 1 | $0.11 | 24 |
+| M1-T-1 | 2 (a1 interrupted by the drill) | $0.08 | 29 |
+| M1-T-2 | 1 | $0.07 | 18 |
+| M1-T-3 | 1 | $0.05 | 10 |
+| M1-T-1-R2 | 1 | $0.18 | 22 |
+| CR-1-REC | 1 | $0.13 | 19 |
+| M1-T-3-R1 | 1 | $0.09 | 13 |
+| M1-T-2-R1 | 1 | $0.11 | 15 |
+| M1-REVISE-TECH-M1-1 | 1 | $0.21 | 41 |
+| M1-REVISE-TEST-PLAN-M1-1 | 1 | $0.09 | 8 |
+| M1-QA-1 | 1 | $0.17 | 47 |
+| M1-B-1 | 3 (a1 changes requested, a2 and a3 `no_changes`), then cancelled | $0.22 | 52 |
+| M1-B-1-R1 | 1 | $0.09 | 20 |
+| M1-B-2 | cancelled before it ran | $0.00 | 0 |
 
 ## Checks on the passing run
 
@@ -140,7 +166,7 @@ Run 2 also burned attempts on rules workers were never told, such as ticket key 
 
 **Run 4: what the budget fixes did on a real project.** The manifests shrank: the largest is M1-REVISE-TECH-M1-1-a1 at 6,355 tokens on 10 criteria, against 11,841 on 8 in run 3. No attempt failed with `invalid_output`, and M1-REVIEW-1 succeeded first time at 4,330. The drills held too: the worker killed on M1-Q-1 outlived the daemon, the daemon was healthy 6.6s after the SIGKILL, and the PM again recommended rejecting the Change Request. Time to each stop: CP1 55.1s, CP2 114.3s, first ticket running 134.3s, CP4 271.4s after the Change Request, merge 2.0s.
 
-**Run 4: the Spec's commands stayed in every manifest (not fixed, and on `main`).** The PM wrote its own `## Acceptance criteria` in the Spec's body, a table of the criteria. The applier then added the engine's section under the same heading, which holds the `### AC-n` entries and the `Verified by:` lines. `replaceSection` takes the first match, so `specView` in both `role-inputs.ts` and `review-inputs.ts` replaced the PM's table and kept all ten commands. All six task texts I saved carry `Verified by:` ten times: Tech Design, Test Plan, Revise Test Plan, QA, the recommendation on the Change Request, and the Milestone Review.
+**Run 4: the Spec's commands stayed in every manifest (fixed on `m2-spec-view-and-harness`).** The PM wrote its own `## Acceptance criteria` in the Spec's body, a table of the criteria. The applier then added the engine's section under the same heading, which holds the `### AC-n` entries and the `Verified by:` lines. `replaceSection` takes the first match, so `specView` in both `role-inputs.ts` and `review-inputs.ts` replaced the PM's table and kept all ten commands. All six task texts I saved carry `Verified by:` ten times: Tech Design, Test Plan, Revise Test Plan, QA, the recommendation on the Change Request, and the Milestone Review.
 
 - The test fixture's Spec has no such heading, so the suite couldn't catch this. Of the four Specs in temp repos that reached `main`, only this one has two such headings, so it depends on what the PM writes.
 - The run doesn't show that a worker can get its commands from the file alone, because they were in the manifest as well. M1-TESTPLAN read 2 of the 10 criteria in the file, and all ten of its commands still match the Spec word for word.
@@ -160,13 +186,35 @@ Run 2 also burned attempts on rules workers were never told, such as ticket key 
 | CR-1-REC | 3,874 | Saw it in a `Glob`, didn't open it |
 | M1-REVIEW-1 | 4,330 | Its role gets no file |
 
-**Run 4: the Test Plan asked for the product itself as a harness, and two tools were merged (not fixed).** The Test Plan and the Tech Design are written at the same time, so the QA Engineer can't see the Tech Lead's tickets. No code existed and its commands need a CLI, so it filed Q-1 "Implement the temperature converter CLI" and Q-2 "Add node --test suite" as `harness_tickets`. Q-1's own text says the syntax is "the Tech Lead's choice". The Tech Lead filed T-1 and T-2 for the same work, and all four merged. `main` holds `convert.js`, an untested `temperatures.js` that behaves differently, and three overlapping test files.
+**Run 4: the Test Plan asked for the product itself as a harness, and two tools were merged (wording fixed on `m2-spec-view-and-harness`).** The Test Plan and the Tech Design are written at the same time, so the QA Engineer can't see the Tech Lead's tickets. No code existed and its commands need a CLI, so it filed Q-1 "Implement the temperature converter CLI" and Q-2 "Add node --test suite" as `harness_tickets`. Q-1's own text says the syntax is "the Tech Lead's choice". The Tech Lead filed T-1 and T-2 for the same work, and all four merged. `main` holds `convert.js`, an untested `temperatures.js` that behaves differently, and three overlapping test files.
 
 Code review approved Q-1, and all 81 checks passed, because nothing compares the two sets of tickets. The PM's Milestone Review caught it and named it under both Known issues and Deviations. The Q tickets and their reviews cost about $1.04 of the $3.58. Run 3's QA filed none, and nothing in the budget fixes points to this, so it looks like the model's call on the day, with nothing to stop it.
 
+**The fixes for run 4's problems.** Both Spec views now replace the engine's own `## Acceptance criteria`, which is always the last level-2 section with that title, and keep the PM's text, including a table under the same heading (`criteriaSlug` in `src/engine/apply/milestone.ts`). The large-milestone fixture now writes a PM section of its own, as run 4's PM did, and 22 tests failed on it before the fix, 10 of them with `context_over_budget` at 30 criteria. The PM's table takes room in the Milestone Review, so what QA wrote is now capped at 2,500 tokens instead of 3,000. The manifest now tells workers to read the whole reference file. For harnesses, the QA charter, the Test Plan schema and its work order say that a harness is test tooling the product won't include, and that the Tech Lead's tickets build the product and everything its criteria ask it to include. Nothing structural enforces that. The smoke run now fails if a whole Spec in any manifest carries the engine's `Verified by:` lines, and it notes every ticket's title.
+
+**Run 5: the fixes on a real project.** Six task texts read a whole Spec, and none has a `Verified by:` line. This PM wrote no section of its own, so the real run didn't exercise the two-heading case; the tests do. All six readers opened the whole file:
+
+| Attempt | Manifest tokens | What it did with the file |
+|---|---|---|
+| M1-TECH | 3,331 | `Read`, all of it |
+| M1-TESTPLAN | 3,576 | `Read`, all of it |
+| CR-1-REC | 2,485 | `Glob`, then `Read`, all of it |
+| M1-REVISE-TECH-M1-1 | 4,709 | `Glob`, then `Read`, all of it |
+| M1-REVISE-TEST-PLAN-M1-1 | 4,326 | `cat`, all of it |
+| M1-QA-1 | 3,304 | `cat`, all of it |
+
+The largest of 22 manifests was M1-SPEC-a2 at 4,797 tokens. The Test Plan filed no harness tickets, and the Tech Lead's T-1 to T-3 built the product. Run 3 had none either, so this is weak evidence for the wording. The drills held: the worker killed on M1-T-1 outlived the daemon, and the daemon was healthy 4.7s after the SIGKILL. Time to each stop: CP1 52.6s, CP2 79.2s, first ticket running 85.6s.
+
+**Run 5: the engine drops a change request that names its target as a pin, and turned QA's correct findings into false Bugs (not fixed, older than the branch).** The PM's verification for AC-6 says each specifier must appear in `require('node:module').builtinModules`, and for AC-7 that the TAP summary shows `# tests`. The Test Plan followed both. On Node 25.9.0 both are wrong: `builtinModules` has no plain `test` for `node:test`, and `node --test` prints `ℹ tests 19`. QA saw this, ran corrected commands, reported every criterion passing and "No product bugs", and raised two change requests against the Test Plan's commands. It named the target `TEST-PLAN-M1@1`. `changeRequestDocs` looks the target up as a bare id, so both were dropped with only a `change_request.dropped` event: "There is no document "TEST-PLAN-M1@1"". The engine's own re-run then failed AC-6 and AC-7 as written and filed BUG-M1-1 and BUG-M1-2 against a product that works.
+
+- M1-B-1-a1 made the check pass by loading `node:test` through a variable, so the checker's pattern no longer saw it. The Code Reviewer rejected that. a2 and a3 changed nothing and raised a change request to fix the checker, so each failed with `no_changes`, and the ticket escalated. A failed attempt's output isn't applied, so those requests were lost too. The Code Reviewer's own request named `M1-B-1@1` and was dropped the same way.
+- Seven change requests were raised in run 5 and none was filed. The other two, from CR-1-REC and M1-REVISE-TECH-M1-1, named both a section and a criterion, which the engine refuses. Run 4 dropped three: `ENV-PROFILE@1` and `M1-Q-2@1` as pins, and a section that doesn't exist. Nothing a person sees shows any of them.
+- Workers are taught pins such as `SPEC-M1@1#ac-1` for `inputs`, and no schema describes `target_artifact`, so writing a pin there is the natural mistake. The fix is the engine's to choose: accept a pin and take its id, or send the output back as `invalid_output` the way other rule breaks go back.
+- Even with the requests filed, the engine would still have filed the two Bugs, because it decides on the Test Plan's commands as written. A QA request against the very command that failed should probably hold that criterion's Bug until the request is decided.
+
 ## What it leaves behind
 
-- The projects `smoke-m2`, `smoke-m2-2`, `smoke-m2-3` and `smoke-m2-4` stay in the real `~/.aiteam`, because M2 has no project delete. The first two are halted and the other two are closed. `smoke` and `smoke-2` from M1 were halted, because M2 would otherwise have started paid reviews for them.
+- The projects `smoke-m2` to `smoke-m2-5` stay in the real `~/.aiteam`, because M2 has no project delete. `smoke-m2-3` and `smoke-m2-4` are closed, and the others are halted. Run 5's escalation and its attempt worktrees under `~/.aiteam/worktrees/smoke-m2-5` were left as they stopped, for inspection. `smoke` and `smoke-2` from M1 were halted, because M2 would otherwise have started paid reviews for them.
 - Their temp repos stay in the system temp folder as `aiteam-smoke-m2-*`.
 - `aiteam.m1-backup.db` holds the database as it was before the M2 migration.
 - `~/.aiteam/knowledge` has hand commits bringing existing files up to the seed, because `syncSeed` never overwrites a file that exists.
@@ -175,9 +223,9 @@ After the run stopped, port 4780 was free and no daemon or script process remain
 
 ## Findings for later milestones
 
-- **The context budget was the next thing a real project would hit. The fixes hold at 30 criteria only for a Spec without its own `## Acceptance criteria` heading, and run 4's Spec has one.** M1-REVIEW-1-a2 used 11,841 of 12,000 tokens on a two-ticket milestone, because its inputs were the whole Spec, Test Plan and QA Report, and the PM's long verification commands appear in all three.
+- **The context budget was the next thing a real project would hit. The fixes held at 30 criteria only for a Spec without its own `## Acceptance criteria` heading, and run 4's Spec has one. `m2-spec-view-and-harness` fixes that, and the tables below now hold for both.** M1-REVIEW-1-a2 used 11,841 of 12,000 tokens on a two-ticket milestone, because its inputs were the whole Spec, Test Plan and QA Report, and the PM's long verification commands appear in all three.
 
-  The review is fixed on `m2-review-manifest-budget`. It now reads the Spec's prose and each criterion's text and status, the Test Plan's prose, and what QA wrote, and it leaves out the commands (`src/engine/review-inputs.ts`). What QA wrote is capped at 3,000 tokens, and the longest notes are cut first, with a mark that says so. The pins don't change, so the lineage doesn't either.
+  The review is fixed on `m2-review-manifest-budget`. It now reads the Spec's prose and each criterion's text and status, the Test Plan's prose, and what QA wrote, and it leaves out the commands (`src/engine/review-inputs.ts`). What QA wrote is capped at 3,000 tokens (2,500 since `m2-spec-view-and-harness`), and the longest notes are cut first, with a mark that says so. The pins don't change, so the lineage doesn't either.
 
   The other roles still read whole documents at that point, so this moved the practical limit from about 8 criteria to about 10, not to 30. Tokens per manifest before `m2-role-manifest-budget`, measured with the first run's sizes (about 700 characters per verification command):
 
@@ -208,12 +256,13 @@ After the run stopped, port 4780 was free and no daemon or script process remain
 
   This doesn't settle everything:
 
-  - No run has yet shown a worker managing with the commands only in the file. Run 4's workers found it, and a `Glob` lists it even though the folder is git-ignored, but three of the five that opened it read only the start.
+  - Run 5 is the first run with the commands only in the file. All six workers that needed it read all of it, and the Test Plan's commands follow the Spec's prose. Run 4's workers found it too, but three of the five that opened it read only the start.
   - Reading the file costs real context, outside the manifest budget: 23,206 characters at 30 criteria, about 6,630 tokens.
   - A worker's read tool may cut very long commands.
   - QA could still report a command that uses the file. That fails in the fresh worktree the engine verifies in, and costs a retry. The manifest warns against it.
   - Prose, criterion text and notes have no cap.
-- **A false Bug dead-ends.** An Engineer who correctly changes nothing gets `no_changes` three times, then escalation. The fix for exit 127 only handles commands the shell can't find. Prose that starts with a real command (exit 1, 129) relies on the new wording. The judge layer (M5) is the natural place for this.
+- **A change request can be lost without anyone seeing it.** See run 5. Until that's fixed, a worker's correct finding about an upstream document can disappear, and the engine acts on the document as written.
+- **A false Bug dead-ends.** An Engineer who correctly changes nothing gets `no_changes` three times, then escalation. Run 5 hit it again, and its Engineer's request to fix the checker was lost with the failed attempt. The fix for exit 127 only handles commands the shell can't find. Prose that starts with a real command (exit 1, 129) relies on the new wording. The judge layer (M5) is the natural place for this.
 - **A revise's work order is frozen when it's created.** Tickets that close are now handled, but a ticket opened after that, such as a Bug filed while a revision runs, still costs an attempt before the evidence names it.
 - **Doctor passes while workers can't use the configured models.** It checks neither the CLI version nor the models, so a stakeholder finds out at the first attempt, and a permanent `worker_error` then uses all 3 attempts before escalating.
 - **Nothing re-runs the isolation probe when `claude.binary` changes.** The path also includes the app's version and a hash, so an app update can remove it.
