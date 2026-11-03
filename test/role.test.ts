@@ -135,6 +135,15 @@ describe('loadRole', () => {
     }
   });
 
+  it('tells every worker the same way how to name what a change request targets', () => {
+    const requests = readdirSync(join(seedKnowledge, 'schemas')).map((name) => {
+      const schema = JSON.parse(readFileSync(join(seedKnowledge, 'schemas', name), 'utf8')) as { properties: { change_requests: { items: { properties: Record<string, { description?: string }> } } } };
+      return schema.properties.change_requests.items.properties;
+    });
+    for (const request of requests) expect(request).toEqual(requests[0]);
+    for (const field of ['target_artifact', 'target_section', 'target_ac', 'proposed_text']) expect(requests[0]?.[field]?.description, field).toBeDefined();
+  });
+
   it('rejects an oversized charter', async () => {
     writeFileSync(roleFile('charter.md'), 'x'.repeat(3000));
     await expect(loadRole(knowledge, 'engineer')).rejects.toThrow(/charter.*600/);

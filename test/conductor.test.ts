@@ -175,7 +175,7 @@ async function addBrief(h: Harness): Promise<void> {
   await h.artifacts.commit(h.project, { message: 'brief', publish: [{ id: 'BRIEF', type: 'brief', status: 'approved', approvedBy: 'stakeholder', ownerRole: 'stakeholder', derivedFrom: [], body: '# Brief\n' }] });
 }
 
-type Flow = { discovery?: unknown; profile?: unknown; design?: unknown };
+type Flow = { discovery?: unknown; profile?: unknown; design?: unknown; plan?: unknown };
 
 async function toCp1(h: Harness, flow: Flow = {}): Promise<InboxRow> {
   await addBrief(h);
@@ -204,7 +204,7 @@ async function toDesign(h: Harness, flow: Flow = {}): Promise<void> {
 async function toBuild(h: Harness, flow: Flow = {}): Promise<void> {
   await toDesign(h, flow);
   await finish(h, 'M1-TECH', flow.design ?? ONE_TICKET);
-  await finish(h, 'M1-TESTPLAN', TEST_PLAN);
+  await finish(h, 'M1-TESTPLAN', flow.plan ?? TEST_PLAN);
   await h.conductor.tick();
 }
 
@@ -1188,6 +1188,31 @@ describe('review focus: a change mid-flight', () => {
 
     expect((await h.store.getTask(review.id))!.state).toBe('cancelled');
     expect(await milestonePhase(h)).toBe('build');
+  });
+
+  it('holds the Bug while QA asks to change a Test Plan command, then verifies again with the new one', async () => {
+    const h = await harness();
+    const plan = { ...TEST_PLAN, coverage: [{ ac: 'AC-1', commands: ['false'], notes: '' }, { ac: 'AC-2', commands: ['true'], notes: '' }] };
+    await toVerify(h, { plan });
+    const dispute = { target_artifact: 'TEST-PLAN-M1@1', target_ac: 'AC-1', proposed_text: 'true', rationale: 'It checks the wrong thing', evidence: 'The Spec never names that file' };
+
+    await finish(h, 'M1-QA-1', { ...PASS, change_requests: [dispute] });
+    await h.conductor.tick();
+    await h.conductor.tick();
+    expect(await h.artifacts.latest(h.project.id, 'M1-B-1')).toBeUndefined();
+    expect(await milestonePhase(h)).toBe('build');
+    expect(await taskIds(h)).not.toContain('M1-QA-2');
+
+    await finish(h, 'CR-1-REC', { decision: 'approve', rationale: 'Yes' });
+    await h.conductor.tick();
+    await h.conductor.tick();
+    const plan2 = await h.artifacts.read(h.project, 'TEST-PLAN-M1');
+    expect((plan2.fields.data as { coverage: { commands: string[] }[] }).coverage.map(({ commands }) => commands)).toEqual([['true'], ['true']]);
+    expect(orderOf(await byTicket(h, 'M1-QA-2')).inputs).toContain('TEST-PLAN-M1@2');
+
+    await finish(h, 'M1-QA-2', PASS);
+    await h.conductor.tick();
+    expect(await milestonePhase(h)).toBe('milestone_review');
   });
 
   it('goes back to build when QA was cancelled by a crash between the two steps', async () => {

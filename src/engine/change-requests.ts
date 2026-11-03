@@ -1,6 +1,7 @@
 import { AC_SLUG, type Criterion } from '../artifacts/acs.ts';
-import { replaceSection, sectionsOf, type ArtifactDoc, type ArtifactType, type Section } from '../artifacts/format.ts';
+import { parsePin, replaceSection, sectionsOf, type ArtifactDoc, type ArtifactType, type Pin, type Section } from '../artifacts/format.ts';
 import type { NewVersion } from '../artifacts/store.ts';
+import type { Coverage } from './apply/design.ts';
 import { fenced, oneLine, quoted } from './apply/text.ts';
 import type { EngineDeps } from './runner.ts';
 import type { ArtifactVersionRow, ProjectRow, Store } from './store.ts';
@@ -32,15 +33,27 @@ export const ownerOf = (target: ArtifactVersionRow): string => target.owner_role
 
 export const requestOf = (cr: Pick<ArtifactDoc, 'fields'>): ChangeRequestInput => cr.fields.data as ChangeRequestInput;
 
-export const touchesCriterionText = (cr: Pick<ArtifactDoc, 'fields'>): boolean => Boolean(requestOf(cr).target_ac);
+// A Test Plan's criterion is its commands, which its owner decides like any other section.
+export const touchesCriterionText = (cr: Pick<ArtifactDoc, 'fields'>, target: Pick<ArtifactVersionRow, 'type'>): boolean => target.type === 'spec' && Boolean(requestOf(cr).target_ac);
+
+const pinIn = (text: string): Pin | undefined => {
+  try {
+    return parsePin(text);
+  } catch {
+    return undefined;
+  }
+};
 
 // A worker's schema may have made it fill in the target it doesn't mean, so blank counts as not named.
+// Workers name what they read, which is a pin. The request is filed against the latest version, and applying it checks nothing moved.
 function normalized(raw: ChangeRequestInput): ChangeRequestInput {
   const text = (value: unknown): string => (typeof value === 'string' ? value : '');
-  const section = text(raw.target_section).trim();
+  const named = text(raw.target_artifact).trim();
+  const pin = pinIn(named);
   const ac = text(raw.target_ac).trim();
+  const section = text(raw.target_section).trim() || (ac ? '' : (pin?.section ?? ''));
   return {
-    target_artifact: text(raw.target_artifact).trim(),
+    target_artifact: pin?.id ?? named,
     ...(section ? { target_section: section } : {}),
     ...(ac ? { target_ac: ac } : {}),
     proposed_text: text(raw.proposed_text),
@@ -94,8 +107,9 @@ function replaced(doc: ArtifactDoc, slug: string, text: string): { body: string;
 type Replacement = { body: string; fields: Record<string, unknown>; criterionText?: string };
 
 function sectionReplacement(target: ArtifactVersionRow, doc: ArtifactDoc, slug: string, proposed: string): Replacement {
-  const section = sectionsOf(doc.body).find((other) => other.slug === slug);
-  if (!section) throw new ChangeRequestError(`${doc.id} has no section ${JSON.stringify(slug)}`);
+  const sections = sectionsOf(doc.body);
+  const section = sections.find((other) => other.slug === slug);
+  if (!section) throw new ChangeRequestError(`${doc.id} has no section ${JSON.stringify(slug)}. ${sections.length === 0 ? 'It has no sections' : `Its sections are ${sections.map((other) => other.slug).join(', ')}`}`);
 
   const { body, before, after } = replaced(doc, slug, withoutHeading(proposed, section));
   if (target.type === 'spec' && !same(criteriaIn(before), criteriaIn(after))) {
@@ -104,8 +118,23 @@ function sectionReplacement(target: ArtifactVersionRow, doc: ArtifactDoc, slug: 
   return { body, fields: doc.fields };
 }
 
+const coverageIn = (doc: ArtifactDoc): Coverage[] => {
+  const coverage = (doc.fields.data as { coverage?: unknown } | undefined)?.coverage;
+  return Array.isArray(coverage) ? (coverage as Coverage[]) : [];
+};
+
+// What QA verify runs is the coverage, not the prose, so a Test Plan criterion takes new commands, one per line.
+function commandsReplacement(doc: ArtifactDoc, ac: string, proposed: string): Replacement {
+  const coverage = coverageIn(doc);
+  if (!coverage.some((row) => row.ac === ac)) throw new ChangeRequestError(`${doc.id} has no commands for ${ac}. It covers ${coverage.map((row) => row.ac).join(', ')}`);
+  const commands = proposed.split('\n').map((line) => line.trim()).filter((line) => line !== '');
+  const data = doc.fields.data as Record<string, unknown>;
+  return { body: doc.body, fields: { ...doc.fields, data: { ...data, coverage: coverage.map((row) => (row.ac === ac ? { ...row, commands } : row)) } } };
+}
+
 async function criterionReplacement(deps: Deps, project: ProjectRow, target: ArtifactVersionRow, doc: ArtifactDoc, ac: string, proposed: string): Promise<Replacement> {
-  if (target.type !== 'spec' || target.milestone === null) throw new ChangeRequestError(`${doc.id} is not a spec, and only a spec holds criteria`);
+  if (target.type === 'test_plan') return commandsReplacement(doc, ac, proposed);
+  if (target.type !== 'spec' || target.milestone === null) throw new ChangeRequestError(`${doc.id} is a ${target.type}, and only a Spec or a Test Plan holds criteria`);
   const criterion = (await deps.store.listCriteria(project.id, target.milestone)).find((row) => row.ac_id === ac);
   const slug = ac.toLowerCase();
   const section = sectionsOf(doc.body).find((other) => other.slug === slug);
@@ -144,14 +173,20 @@ async function validated(deps: Deps, project: ProjectRow, raw: ChangeRequestInpu
   }
   const { target, doc } = await currentTarget(deps, project, input);
   if (!CR_TARGET_TYPES.includes(target.type)) throw new ChangeRequestError(`${target.artifact_id} is a ${target.type}, which no role can recommend on`);
-  if (input.target_section && input.target_ac) throw new ChangeRequestError(`The request against ${target.artifact_id} names both a section and a criterion`);
   if (!input.target_section && !input.target_ac) throw new ChangeRequestError(`The request against ${target.artifact_id} names neither a section nor a criterion`);
-  await replacement(deps, project, target, doc, input);
-  return { input, target };
+  const resolved = input.target_section && input.target_ac ? oneTarget(input, target) : input;
+  await replacement(deps, project, target, doc, resolved);
+  return { input: resolved, target };
+}
+
+// Workers name the heading a criterion sits under as well as the criterion. Only a Spec or a Test Plan has criteria to mean.
+function oneTarget(input: ChangeRequestInput, target: ArtifactVersionRow): ChangeRequestInput {
+  const { target_section, target_ac, ...rest } = input;
+  return target.type === 'spec' || target.type === 'test_plan' ? { ...rest, target_ac: target_ac as string } : { ...rest, target_section: target_section as string };
 }
 
 function requestBody(id: string, input: ChangeRequestInput, target: ArtifactVersionRow): string {
-  const where = input.target_ac ? `criterion ${input.target_ac}` : `section ${input.target_section}`;
+  const where = !input.target_ac ? `section ${input.target_section}` : target.type === 'test_plan' ? `the commands for ${input.target_ac}` : `criterion ${input.target_ac}`;
   return [
     `# ${id}`,
     `Raised by ${oneLine(input.raised_by)} against ${oneLine(`${target.artifact_id}@${target.version}, ${where}`)}.`,
@@ -197,7 +232,7 @@ export async function fileChangeRequest(deps: Deps, project: ProjectRow, raw: Ch
   return row as ArtifactVersionRow;
 }
 
-// A worker's finished work isn't thrown away over a bad request, so what can't be filed comes back as a reason.
+// What can't be filed comes back as a reason: the caller sends the worker back with it, or logs it when it keeps the work anyway.
 export async function changeRequestDocs(deps: Deps, project: ProjectRow, inputs: ChangeRequestInput[]): Promise<{ docs: NewVersion[]; dropped: string[] }> {
   const accepted: Awaited<ReturnType<typeof validated>>[] = [];
   const dropped: string[] = [];
@@ -229,9 +264,15 @@ async function refuseIfMoved(deps: Deps, project: ProjectRow, cr: ArtifactVersio
   const filedAgainst = cr.derived_from[0] as string;
   if (filedAgainst === `${doc.id}@${doc.version}`) return;
   const slug = input.target_ac?.toLowerCase() ?? (input.target_section as string);
-  const hashOf = (body: string) => sectionsOf(body).find((section) => section.slug === slug)?.hash;
-  const was = hashOf((await deps.artifacts.read(project, filedAgainst)).body);
-  if (was === undefined || was !== hashOf(doc.body)) throw new ChangeRequestError(`${slug} of ${doc.id} has changed since ${cr.artifact_id} was filed against ${filedAgainst}`);
+  const wordsOf = (version: ArtifactDoc): string | undefined => {
+    if (version.type === 'test_plan' && input.target_ac) {
+      const commands = coverageIn(version).find((row) => row.ac === input.target_ac)?.commands;
+      return commands === undefined ? undefined : JSON.stringify(commands);
+    }
+    return sectionsOf(version.body).find((section) => section.slug === slug)?.hash;
+  };
+  const was = wordsOf(await deps.artifacts.read(project, filedAgainst));
+  if (was === undefined || was !== wordsOf(doc)) throw new ChangeRequestError(`${slug} of ${doc.id} has changed since ${cr.artifact_id} was filed against ${filedAgainst}`);
 }
 
 export async function applyChangeRequest(deps: Deps, project: ProjectRow, crId: string, then?: Then): Promise<void> {
@@ -265,7 +306,7 @@ export async function applyChangeRequest(deps: Deps, project: ProjectRow, crId: 
         acceptanceCriteria: doc.acceptanceCriteria,
         body,
       }],
-      status: [{ id: crId, status: 'approved', approvedBy: touchesCriterionText(request) ? 'stakeholder' : `owner:${cr.owner_role}` }],
+      status: [{ id: crId, status: 'approved', approvedBy: touchesCriterionText(request, target) ? 'stakeholder' : `owner:${cr.owner_role}` }],
     },
     async (s, rows) => {
       if (criterionText !== undefined) {

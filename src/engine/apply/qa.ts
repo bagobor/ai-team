@@ -1,10 +1,11 @@
 import type { NewVersion } from '../../artifacts/store.ts';
 import { runSandboxed, type CheckRun } from '../../checks/run-checks.ts';
+import { requestOf } from '../change-requests.ts';
 import { addAttemptWorktree, removeAttemptWorktree } from '../../git/workspace.ts';
 import { worktreePath } from '../../paths.ts';
 import { ENV_PROFILE, specId, techId, testPlanId } from './ids.ts';
 import type { Applier, ApplyCtx } from './index.ts';
-import { withRaised } from './raised.ts';
+import { raisedOf, sentBack, withRaised, type Raised } from './raised.ts';
 import { sandboxEnv } from './sandbox.ts';
 import { fenced, oneLine, quoted } from './text.ts';
 import { renderTicket, ticketIdFor, touchesProblem } from './tickets.ts';
@@ -17,7 +18,8 @@ type QaOutput = { results: QaResult[]; bugs: QaBug[]; summary: string };
 export type QaRecord = { summary: string; verdicts: { ac: string; status: 'passing' | 'failing'; notes: string; noted: string[] }[] };
 
 // What the engine concludes about a criterion: what QA said is only ever part of it.
-type Verdict = { ac: string; claimed: QaResult['status']; status: QaResult['status']; notes: string; runs: CheckRun[] };
+// The Test Plan's runs come first, and planned says how many there are.
+type Verdict = { ac: string; claimed: QaResult['status']; status: QaResult['status']; notes: string; runs: CheckRun[]; planned: number; disputedIn?: string };
 
 const OUTPUT_TAIL = 2000;
 const COMMAND_NOT_FOUND = 127;
@@ -109,7 +111,7 @@ async function verifyAll(ctx: ApplyCtx, worktree: string, results: QaResult[], c
     if (claimed === 'passing') unrunnable.push(...ownRuns.filter((run) => run.exitCode === COMMAND_NOT_FOUND).map((run) => `${ac}: ${run.command}`));
     const runs = [...(planned.get(ac) ?? []), ...ownRuns];
     const held = claimed === 'passing' && runs.length > 0 && runs.every((run) => run.exitCode === 0);
-    verdicts.push({ ac, claimed, status: held ? 'passing' : 'failing', notes, runs });
+    verdicts.push({ ac, claimed, status: held ? 'passing' : 'failing', notes, runs, planned: planned.get(ac)?.length ?? 0 });
   }
   if (unrunnable.length > 0) return { ok: false, evidence: [`Each entry in \`commands\` must be one exact shell command, because the engine runs it as written. The shell could not find these, so nothing was recorded:`, ...unrunnable.map((line) => `- ${line}`)].join('\n') };
   return { ok: true, verdicts };
@@ -124,13 +126,14 @@ const runLines = (runs: CheckRun[]) =>
 
 export const notedLines = (noted: string[]): string[] => (noted.length === 0 ? [] : ['QA also noted, with no ticket opened because the criterion passes:', '', ...noted.map((line) => `- ${line}`), '']);
 
-function reportSection({ ac, claimed, status, notes, runs }: Verdict, noted: string[]): string[] {
+function reportSection({ ac, claimed, status, notes, runs, disputedIn }: Verdict, noted: string[]): string[] {
   return [
     `## ${ac}`,
     '',
     `Status: ${status}`,
     `QA said: ${claimed}`,
     '',
+    ...(disputedIn === undefined ? [] : [`No Bug was filed: only the Test Plan's commands failed, and QA asked to change them in ${disputedIn}. The next round runs whatever is decided.`, '']),
     ...(notes.trim() === '' ? [] : [quoted(notes), '']),
     ...runLines(runs),
     ...notedLines(noted),
@@ -165,6 +168,18 @@ function bugDoc(milestone: number, k: number, reportId: string, verdict: Verdict
   return { id: `BUG-M${milestone}-${k}`, type: 'bug', status: 'approved', ownerRole: 'qa_engineer', approvedBy: 'owner:qa_engineer', milestone, derivedFrom: [`${reportId}#${ac.toLowerCase()}`], fields: { data: { ac, touches, commands: failedCommands(runs) } }, body };
 }
 
+// QA says it passes, and only the Test Plan's commands fail: QA's request to change them decides it, not an Engineer's fix of the product.
+// The criterion still fails, so the milestone goes back to build, which waits on that request before the next round.
+function disputed(verdict: Verdict, raised: Raised, planId: string): string | undefined {
+  const { ac, claimed, runs, planned } = verdict;
+  const onlyThePlan = runs.slice(0, planned).some((run) => run.exitCode !== 0) && runs.slice(planned).every((run) => run.exitCode === 0);
+  if (claimed !== 'passing' || !onlyThePlan) return undefined;
+  return raised.docs.find((doc) => {
+    const request = requestOf({ fields: doc.fields ?? {} });
+    return request.target_artifact === planId && request.target_ac === ac;
+  })?.id;
+}
+
 // QA's claims are only claims: the engine runs its commands and the Test Plan's in a clean checkout, and records what it saw.
 export const applyQaVerify: Applier = async (ctx) => {
   const output = ctx.output as QaOutput;
@@ -180,9 +195,17 @@ export const applyQaVerify: Applier = async (ctx) => {
   if (round === undefined) throw new Error(`QA task ${task.ticket_id} names milestone ${milestone}, which does not exist`);
   const { coverage } = (await artifacts.read(project, testPlanId(milestone))).fields.data as { coverage: { ac: string; commands: string[] }[] };
 
+  // A bad request sends QA back anyway, so nothing runs for it.
+  const raised = await raisedOf(ctx);
+  const back = await sentBack(ctx, raised);
+  if (back) return back;
+
   const verified = await inFreshWorktree(ctx, (worktree) => verifyAll(ctx, worktree, output.results, coverage));
   if (!verified.ok) return verified;
-  const { verdicts } = verified;
+  const verdicts = verified.verdicts.map((verdict) => {
+    const disputedIn = verdict.status === 'failing' ? disputed(verdict, raised, testPlanId(milestone)) : undefined;
+    return disputedIn === undefined ? verdict : { ...verdict, disputedIn };
+  });
 
   const reportId = `QA-REPORT-M${milestone}-${round}`;
   const notedOn = ({ ac, status }: Verdict) => (status === 'passing' ? output.bugs.filter((bug) => bug.ac === ac).map(({ title, description }) => `${oneLine(title)}: ${oneLine(description)}`) : []);
@@ -190,7 +213,7 @@ export const applyQaVerify: Applier = async (ctx) => {
   const record: QaRecord = { summary: output.summary, verdicts: verdicts.map((verdict) => ({ ac: verdict.ac, status: verdict.status, notes: verdict.notes, noted: notedOn(verdict) })) };
   const publish: NewVersion[] = [{ id: reportId, type: 'qa_report', status: 'approved', ownerRole: 'qa_engineer', approvedBy: 'owner:qa_engineer', milestone, derivedFrom: ctx.order.inputs, fields: { data: record }, body: report }];
 
-  const failing = verdicts.filter(({ status }) => status === 'failing');
+  const failing = verdicts.filter(({ status, disputedIn }) => status === 'failing' && disputedIn === undefined);
   if (failing.length > 0) {
     const tech = await artifacts.latest(project.id, techId(milestone));
     if (!tech) throw new Error(`QA task ${task.ticket_id} found failures, but milestone ${milestone} has no Tech Design`);
@@ -218,5 +241,5 @@ export const applyQaVerify: Applier = async (ctx) => {
     for (const { ac, status } of verdicts) {
       await s.recordVerification(project.id, milestone, ac, { status, evidenceRef: `${reportId}@${version}#${ac.toLowerCase()}`, verifiedBy: { kind: 'qa_verify', taskId: task.id } });
     }
-  });
+  }, raised);
 };

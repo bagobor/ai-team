@@ -127,16 +127,20 @@
         ],
         "properties": {
           "target_artifact": {
-            "type": "string"
+            "type": "string",
+            "description": "The document id alone, such as SPEC-M1 or TEST-PLAN-M1, with no @version or #section."
           },
           "target_section": {
-            "type": "string"
+            "type": "string",
+            "description": "The slug of the heading whose text you would replace, such as risks. Name this or target_ac, not both."
           },
           "target_ac": {
-            "type": "string"
+            "type": "string",
+            "description": "A criterion id, such as AC-3. On a Spec, proposed_text is that criterion's new text, which the stakeholder decides. On a Test Plan, proposed_text is that criterion's new commands, one exact shell command per line."
           },
           "proposed_text": {
-            "type": "string"
+            "type": "string",
+            "description": "The whole replacement for that section, criterion text or list of commands."
           },
           "rationale": {
             "type": "string"

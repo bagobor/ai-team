@@ -20,6 +20,8 @@ const pass = (ac: string, commands: string[] = ['true'], notes = 'Looks good'): 
 const fail = (ac: string, commands: string[] = [], notes = 'It broke'): Result => ({ ac, status: 'failing', commands, notes });
 const bug = (ac: string, overrides: Partial<Bug> = {}): Bug => ({ ac, title: `${ac} is broken`, description: 'It does the wrong thing', touches: ['src/**'], commands: [], ...overrides });
 const covers = (ac: string, ...commands: string[]): Coverage => ({ ac, commands, notes: '' });
+// As QA wrote one in a real run: a pin, and a section beside the criterion.
+const disputes = (ac: string) => ({ target_artifact: 'TEST-PLAN-M1@1', target_section: `${ac} commands`, target_ac: ac, proposed_text: 'true', rationale: 'The command checks the wrong file', evidence: 'It reads README.txt, which the Spec never names' });
 
 describe('qa_verify applier', () => {
   let e: TestEngine;
@@ -45,7 +47,7 @@ describe('qa_verify applier', () => {
     await e.cleanup();
   });
 
-  const qaCtx = async (output: { results: Result[]; bugs?: Bug[]; summary?: string }, worktree?: string) =>
+  const qaCtx = async (output: { results: Result[]; bugs?: Bug[]; summary?: string; change_requests?: unknown[] }, worktree?: string) =>
     ctxFor(e, 'qa_verify', { bugs: [], summary: 'Done', ...output }, { kind: 'qa_verify', role: 'qa_engineer', inputs: ['SPEC-M1@1', 'TEST-PLAN-M1@1'], baseSha: await revParse(e.repoPath), ...(worktree ? { worktree } : {}) });
   const verify = async (output: Parameters<typeof qaCtx>[0], worktree?: string) => applyOutput(await qaCtx(output, worktree));
   const criterion = async (ac: string) => {
@@ -298,6 +300,29 @@ describe('qa_verify applier', () => {
     expect((await criterion('AC-1')).status).toBe('passing');
     expect((await ids()).filter((id) => id.startsWith('BUG') || id.includes('-B-'))).toEqual([]);
     expect(await evidence('AC-1')).toContain('A side observation');
+  });
+
+  it('files no Bug for a criterion whose only failure is a Test Plan command QA asked to change', async () => {
+    await start([covers('AC-1', 'exit 1'), covers('AC-2', 'true')]);
+
+    await publish(e, await verify({ results: [pass('AC-1'), pass('AC-2')], change_requests: [disputes('AC-1')] }));
+
+    expect((await criterion('AC-1')).status).toBe('failing');
+    expect((await ids()).filter((id) => id.startsWith('BUG') || id.includes('-B-'))).toEqual([]);
+    expect((await e.artifacts.read(await projectOf(e), 'CR-1')).fields.data).toMatchObject({ target_artifact: 'TEST-PLAN-M1', target_ac: 'AC-1', proposed_text: 'true' });
+    expect(await evidence('AC-1')).toContain('CR-1');
+  });
+
+  it.each([
+    ['one of QA\'s own commands fails as well', { results: [pass('AC-1', ['exit 3']), pass('AC-2')] }],
+    ['QA itself says it fails', { results: [fail('AC-1'), pass('AC-2')] }],
+    ['the request is about another criterion', { results: [pass('AC-1'), pass('AC-2')], change_requests: [disputes('AC-2')] }],
+  ])('still files the Bug when %s', async (_, output) => {
+    await start([covers('AC-1', 'exit 1'), covers('AC-2', 'true')]);
+
+    await publish(e, await verify({ change_requests: [disputes('AC-1')], ...output }));
+
+    expect(await ids()).toEqual(expect.arrayContaining(['BUG-M1-1', 'M1-B-1']));
   });
 
   it('numbers Bugs across rounds without reusing one', async () => {

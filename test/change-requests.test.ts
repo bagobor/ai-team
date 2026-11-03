@@ -1,9 +1,10 @@
 import { sectionsOf, sectionText } from '../src/artifacts/format.ts';
+import { applyOutput } from '../src/engine/apply/index.ts';
 import type { NewVersion } from '../src/artifacts/store.ts';
 import { applyChangeRequest, ChangeRequestError, changeRequestDocs, fileChangeRequest, ownerOf, rejectChangeRequest, touchesCriterionText, type ChangeRequestInput } from '../src/engine/change-requests.ts';
 import { addProject } from '../src/engine/intake.ts';
 import type { ProjectRow } from '../src/engine/store.ts';
-import { apply, CRITERIA, lockSpec, projectOf, publish, ticketTask } from './helpers/apply.ts';
+import { apply, CRITERIA, ctxFor, evidenceOf, lockSpec, projectOf, publish, ticketTask } from './helpers/apply.ts';
 import { makeEngine, okStep, runToSettled, ticket, type TestEngine } from './helpers/engine.ts';
 import { makeRepo } from './helpers/repo.ts';
 
@@ -12,6 +13,11 @@ const BODY = '# Design\n\n## Approach\n\nThe old approach.\n\n## Risks\n\nThere 
 const asked = { proposed_text: 'There are none.', rationale: 'We removed them', evidence: 'The spike in src/spike.ts', raised_by: 'engineer' };
 const onSection = (overrides: Partial<ChangeRequestInput> = {}): ChangeRequestInput => ({ ...asked, target_artifact: 'TECH-M1', target_section: 'risks', ...overrides });
 const onCriterion = (overrides: Partial<ChangeRequestInput> = {}): ChangeRequestInput => ({ ...asked, target_artifact: 'SPEC-M1', target_ac: 'AC-1', proposed_text: 'The first thing works twice', ...overrides });
+const onCommands = (overrides: Partial<ChangeRequestInput> = {}): ChangeRequestInput => ({ ...asked, target_artifact: 'TEST-PLAN-M1', target_ac: 'AC-1', proposed_text: 'npm test -- first\nnpm run lint', ...overrides });
+const COVERAGE = [
+  { ac: 'AC-1', commands: ['npm test -- old'], notes: 'The first check' },
+  { ac: 'AC-2', commands: ['npm test -- second'], notes: '' },
+];
 
 describe('Change Requests', () => {
   let e: TestEngine;
@@ -34,6 +40,8 @@ describe('Change Requests', () => {
     return row!;
   };
   const eventsOf = async (type: string) => (await e.log.list({ projectId: p.id })).filter((event) => event.type === type);
+  const testPlan = (coverage = COVERAGE) => document({ id: 'TEST-PLAN-M1', type: 'test_plan', ownerRole: 'qa_engineer', body: '# Plan\n\nRun the checks.\n', fields: { data: { coverage } } });
+  const coverageOf = async (pin = 'TEST-PLAN-M1') => ((await read(pin)).fields.data as { coverage: typeof COVERAGE }).coverage;
 
   describe('filing', () => {
     it('files a Change Request with target, proposed text, rationale and evidence', async () => {
@@ -120,10 +128,43 @@ describe('Change Requests', () => {
       await expect(fileChangeRequest(e, p, onSection({ target_section: 'nope' }))).rejects.toThrow(/nope/);
     });
 
-    it('refuses a request naming both a section and a criterion', async () => {
+    it('names the sections the document has when the one named is missing, so the worker can correct it', async () => {
+      await document();
+
+      await expect(fileChangeRequest(e, p, onSection({ target_section: 'nope' }))).rejects.toThrow(/approach, risks, notes/);
+    });
+
+    it('files a request that names its target by a pin against the document itself', async () => {
+      await document();
+
+      const row = await fileChangeRequest(e, p, onSection({ target_artifact: 'TECH-M1@1' }));
+
+      expect(row.derived_from).toEqual(['TECH-M1@1']);
+      expect((await read(row.artifact_id)).fields.data).toEqual(onSection());
+    });
+
+    it('takes the section from a pin when the request names none', async () => {
+      await document();
+
+      const row = await fileChangeRequest(e, p, { ...asked, target_artifact: 'TECH-M1@1#risks' });
+
+      expect((await read(row.artifact_id)).fields.data).toEqual(onSection());
+    });
+
+    it('takes the criterion when a request against a spec names a section as well', async () => {
       await lockSpec(e);
 
-      await expect(fileChangeRequest(e, p, onCriterion({ target_section: 'ac-1' }))).rejects.toThrow(/both/);
+      const row = await fileChangeRequest(e, p, onCriterion({ target_section: 'acceptance-criteria' }));
+
+      expect((await read(row.artifact_id)).fields.data).toEqual(onCriterion());
+    });
+
+    it('takes the section when a request against a document without criteria names a criterion as well', async () => {
+      await document();
+
+      const row = await fileChangeRequest(e, p, onSection({ target_ac: 'AC-1' }));
+
+      expect((await read(row.artifact_id)).fields.data).toEqual(onSection());
     });
 
     it('refuses a request naming neither a section nor a criterion', async () => {
@@ -144,10 +185,10 @@ describe('Change Requests', () => {
       await expect(fileChangeRequest(e, p, onCriterion({ target_ac: 'AC-9' }))).rejects.toThrow(/AC-9/);
     });
 
-    it('refuses a criterion named on anything but a spec', async () => {
+    it('refuses a criterion named on anything but a spec or a test plan', async () => {
       await document();
 
-      await expect(fileChangeRequest(e, p, onCriterion({ target_artifact: 'TECH-M1' }))).rejects.toThrow(/spec/);
+      await expect(fileChangeRequest(e, p, onCriterion({ target_artifact: 'TECH-M1' }))).rejects.toThrow(/holds criteria/);
     });
 
     it('says who owns the target and whether criteria text is touched', async () => {
@@ -155,11 +196,61 @@ describe('Change Requests', () => {
       await fileChangeRequest(e, p, onSection());
 
       expect(ownerOf(row)).toBe('tech_lead');
-      expect(touchesCriterionText(await read('CR-1'))).toBe(false);
+      expect(touchesCriterionText(await read('CR-1'), row)).toBe(false);
 
-      await lockSpec(e);
+      const spec = await lockSpec(e);
       const cr = await fileChangeRequest(e, p, onCriterion());
-      expect(touchesCriterionText(await read(cr.artifact_id))).toBe(true);
+      expect(touchesCriterionText(await read(cr.artifact_id), spec)).toBe(true);
+    });
+  });
+
+  describe('a Test Plan criterion', () => {
+    it('is a change to its commands, which the plan\'s owner decides', async () => {
+      const plan = await testPlan();
+
+      const row = await fileChangeRequest(e, p, onCommands());
+
+      expect(row).toMatchObject({ owner_role: 'qa_engineer', derived_from: ['TEST-PLAN-M1@1'] });
+      expect(touchesCriterionText(await read(row.artifact_id), plan)).toBe(false);
+      expect((await read(row.artifact_id)).body).toContain('the commands for AC-1');
+    });
+
+    it('takes the new commands one per line when applied, and leaves the rest of the plan alone', async () => {
+      await testPlan();
+      await fileChangeRequest(e, p, onCommands({ proposed_text: '  npm test -- first\n\nnpm run lint  \n' }));
+
+      await applyChangeRequest(e, p, 'CR-1');
+
+      expect(await coverageOf()).toEqual([
+        { ac: 'AC-1', commands: ['npm test -- first', 'npm run lint'], notes: 'The first check' },
+        { ac: 'AC-2', commands: ['npm test -- second'], notes: '' },
+      ]);
+      expect(await read('TEST-PLAN-M1')).toMatchObject({ version: 2, status: 'approved', body: '# Plan\n\nRun the checks.\n' });
+    });
+
+    it('refuses a criterion the plan does not cover', async () => {
+      await testPlan();
+
+      await expect(fileChangeRequest(e, p, onCommands({ target_ac: 'AC-9' }))).rejects.toThrow(/AC-9/);
+    });
+
+    it('applies over a newer plan whose commands for that criterion are the same', async () => {
+      await testPlan();
+      await fileChangeRequest(e, p, onCommands());
+      await testPlan([COVERAGE[0]!, { ac: 'AC-2', commands: ['npm test -- moved'], notes: '' }]);
+
+      await applyChangeRequest(e, p, 'CR-1');
+
+      expect((await coverageOf()).map(({ commands }) => commands)).toEqual([['npm test -- first', 'npm run lint'], ['npm test -- moved']]);
+    });
+
+    it('refuses to apply when that criterion\'s commands changed after the request was filed', async () => {
+      await testPlan();
+      await fileChangeRequest(e, p, onCommands());
+      await testPlan([{ ac: 'AC-1', commands: ['npm test -- someone-else'], notes: '' }, COVERAGE[1]!]);
+
+      await expect(applyChangeRequest(e, p, 'CR-1')).rejects.toThrow(ChangeRequestError);
+      expect((await coverageOf())[0]?.commands).toEqual(['npm test -- someone-else']);
     });
   });
 
@@ -479,19 +570,47 @@ describe('Change Requests', () => {
       }
     });
 
-    it('files what an authoring worker raises, naming its role, and drops the rest', async () => {
+    const discovery = async (change_requests: unknown[]) => {
       await document();
       await e.artifacts.commit(p, { message: 'brief', publish: [{ id: 'BRIEF', type: 'brief', status: 'approved', ownerRole: 'stakeholder', derivedFrom: [], body: '# Brief\n' }] });
-      const output = {
+      return {
         roadmap: { body: '# Roadmap\n', milestones: [{ n: 1, title: 'First', goal: 'Start' }] },
         team_proposal: { body: '# Team\n' },
         human_requirements: { body: '# Needs\n' },
         stakeholder_note: 'Note',
-        change_requests: [invalid, raised],
+        change_requests,
       };
+    };
+
+    it('files what an authoring worker raises, naming its role', async () => {
+      const output = await discovery([raised]);
 
       await publish(e, await apply(e, 'discovery', output, { inputs: ['BRIEF'], role: 'pm' }));
 
+      expect((await read('CR-1')).fields.data).toEqual(onSection({ raised_by: 'pm' }));
+    });
+
+    it('sends an authoring worker back with the reason when a request it raised cannot be filed', async () => {
+      const output = await discovery([invalid, raised]);
+
+      const evidence = evidenceOf(await apply(e, 'discovery', output, { inputs: ['BRIEF'], role: 'pm' }));
+
+      expect(evidence).toContain('NOPE');
+      expect(evidence).toMatch(/change_requests/);
+    });
+
+    it('keeps the work of a last attempt, and logs the request it could not file', async () => {
+      const output = await discovery([invalid, raised]);
+      const ctx = await ctxFor(e, 'discovery', output, { inputs: ['BRIEF'], role: 'pm' });
+      for (let i = 1; i < e.config.maxAttempts; i += 1) {
+        const earlier = await e.store.createAttempt({ task_id: ctx.task.id, adapter: 'claude', model: 'm', worktree_path: e.repoPath, branch: `b${i}` });
+        await e.store.setAttemptState(earlier.id, 'running');
+        await e.store.setAttemptState(earlier.id, 'invalid_output', { failure_kind: 'invalid_output', failure_evidence: 'A bad request' });
+      }
+
+      await publish(e, await applyOutput(ctx));
+
+      expect((await latest('ROADMAP'))?.status).toBe('proposed');
       expect((await read('CR-1')).fields.data).toEqual(onSection({ raised_by: 'pm' }));
       expect((await eventsOf('change_request.dropped')).map((event) => event.payload.reason)).toEqual([expect.stringContaining('NOPE')]);
     });

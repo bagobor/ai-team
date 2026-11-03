@@ -53,7 +53,7 @@ async function advanceRequest(deps: Deps, project: ProjectRow, cr: ArtifactVersi
   const { decision, rationale } = recommendationOf(attempt);
 
   // Changes to criteria text always go to the stakeholder. Everything else, the owner decides.
-  if (touchesCriterionText(doc)) {
+  if (touchesCriterionText(doc, target)) {
     await store.raiseInbox({
       project_id: project.id,
       ...(cr.milestone === null ? {} : { milestone: cr.milestone }),
