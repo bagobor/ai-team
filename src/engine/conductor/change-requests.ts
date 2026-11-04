@@ -1,7 +1,9 @@
-import { ownerOf, applyChangeRequest, ChangeRequestError, rejectChangeRequest, requestOf, touchesCriterionText } from '../change-requests.ts';
+import type { ArtifactDoc } from '../../artifacts/format.ts';
+import { ownerOf, applyChangeRequest, ChangeRequestError, criterionText, movedSince, rejectChangeRequest, requestOf, TargetMovedError, touchesCriterionText } from '../change-requests.ts';
 import { openTickets } from '../apply/design.ts';
 import { techId, testPlanId } from '../apply/ids.ts';
 import { recommendationOf } from '../apply/review.ts';
+import type { InboxRow } from '../inbox.ts';
 import type { EngineDeps, Runner } from '../runner.ts';
 import type { ArtifactVersionRow, ProjectRow, Store } from '../store.ts';
 import { ensureTask, isClosed, lastSucceeded, pinOf, recommendationTask, reviseInputs, reviseTask } from './tasks.ts';
@@ -22,16 +24,64 @@ export async function resetVerification(s: Store, project: ProjectRow, milestone
   await s.setMilestonePhase(project.id, m.n, 'build');
 }
 
+// The version of its target an Inbox item showed, which is the one the stakeholder decided on.
+const shownPin = (item: Pick<InboxRow, 'evidence'>, targetId: string): string | undefined =>
+  item.evidence.find(({ label, pin }) => label === targetId && pin?.startsWith(`${targetId}@`))?.pin;
+
 // A request that can no longer apply is closed with the reason, rather than failing again on every tick.
-export async function applyRequest(deps: Deps, project: ProjectRow, crId: string): Promise<void> {
+// One the stakeholder approved on words that have moved since stays open, and is asked again with the words it has now.
+export async function applyRequest(deps: Deps, project: ProjectRow, crId: string, approvedOn?: Pick<InboxRow, 'evidence'>): Promise<void> {
   const { target_artifact } = requestOf(await deps.artifacts.read(project, crId));
   const target = await deps.artifacts.latest(project.id, target_artifact);
+  const against = approvedOn && target ? shownPin(approvedOn, target.artifact_id) : undefined;
   try {
-    await applyChangeRequest(deps, project, crId, (s) => resetVerification(s, project, target?.milestone ?? null));
+    await applyChangeRequest(deps, project, crId, (s) => resetVerification(s, project, target?.milestone ?? null), against);
   } catch (error) {
     if (!(error instanceof ChangeRequestError)) throw error;
+    if (against !== undefined && error instanceof TargetMovedError) return;
     await rejectChangeRequest(deps, project, crId, error.message);
   }
+}
+
+// The stakeholder decides on the words a criterion has now. An item that showed other words is withdrawn and asked again.
+// Each ask after the first has a key of its own, because a key that was used once is never raised again.
+async function askStakeholder(deps: Deps, project: ProjectRow, cr: ArtifactVersionRow, doc: ArtifactDoc, target: ArtifactVersionRow, recommendation: string): Promise<void> {
+  const { store, artifacts } = deps;
+  const crId = cr.artifact_id;
+  const input = requestOf(doc);
+  const ac = input.target_ac as string;
+  const current = await artifacts.read(project, pinOf(target));
+  const asked = (await store.listInbox({ projectId: project.id })).filter(({ ref }) => ref.kind === 'cr' && ref.cr === crId);
+  const waiting = asked.find(({ state }) => state === 'pending');
+  if (waiting) {
+    const shown = shownPin(waiting, target.artifact_id);
+    if (shown === undefined || !(await movedSince(deps, project, input, shown, current))) return;
+    await store.withdrawInbox(waiting.id, `${ac} of ${target.artifact_id} has changed since this was asked`);
+  }
+
+  const filed = cr.derived_from[0] as string;
+  const moved = await movedSince(deps, project, input, filed, current);
+  await store.raiseInbox({
+    project_id: project.id,
+    ...(cr.milestone === null ? {} : { milestone: cr.milestone }),
+    type: 'approval',
+    dedupe_key: asked.length === 0 ? `cr:${crNumber(crId)}` : `cr:${crNumber(crId)}:${pinOf(target)}`,
+    ref: { kind: 'cr', cr: crId },
+    title: `Change an acceptance criterion: ${crId}`,
+    asked_by: ownerOf(target),
+    why: [
+      `${crId} changes the text of ${ac} in ${target.artifact_id}.`,
+      ...(moved ? [`${ac} has changed since ${crId} was filed against ${filed}, so approving it replaces the text it has now.`] : []),
+      'Criteria text changes only with your approval.',
+    ].join(' '),
+    blocks: [`Applying ${crId}`],
+    evidence: [
+      ...[cr, target].map((row) => ({ label: row.artifact_id, value: pinOf(row), pin: pinOf(row) })),
+      ...(moved ? [{ label: `${ac} now`, value: criterionText(current, ac) ?? '', pin: `${pinOf(target)}#${ac.toLowerCase()}` }] : []),
+    ],
+    recommendation,
+    options: [],
+  });
 }
 
 async function advanceRequest(deps: Deps, project: ProjectRow, cr: ArtifactVersionRow): Promise<void> {
@@ -54,20 +104,7 @@ async function advanceRequest(deps: Deps, project: ProjectRow, cr: ArtifactVersi
 
   // Changes to criteria text always go to the stakeholder. Everything else, the owner decides.
   if (touchesCriterionText(doc, target)) {
-    await store.raiseInbox({
-      project_id: project.id,
-      ...(cr.milestone === null ? {} : { milestone: cr.milestone }),
-      type: 'approval',
-      dedupe_key: `cr:${crNumber(crId)}`,
-      ref: { kind: 'cr', cr: crId },
-      title: `Change an acceptance criterion: ${crId}`,
-      asked_by: ownerOf(target),
-      why: `${crId} changes the text of ${requestOf(doc).target_ac} in ${target.artifact_id}. Criteria text changes only with your approval.`,
-      blocks: [`Applying ${crId}`],
-      evidence: [cr, target].map((row) => ({ label: row.artifact_id, value: pinOf(row), pin: pinOf(row) })),
-      recommendation: `${decision}: ${rationale}`,
-      options: [],
-    });
+    await askStakeholder(deps, project, cr, doc, target, `${decision}: ${rationale}`);
     return;
   }
   if (decision === 'approve') await applyRequest(deps, project, crId);

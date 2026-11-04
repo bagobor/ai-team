@@ -126,7 +126,7 @@ async function effectOf(deps: EngineDeps, runner: Runner, project: ProjectRow, i
     case 'cp4':
       return answerCp4(deps, runner, project, item, ref.milestone, choice, words);
     case 'cr':
-      if (choice === 'approve') await applyRequest(deps, project, ref.cr);
+      if (choice === 'approve') await applyRequest(deps, project, ref.cr, item);
       else await rejectChangeRequest(deps, project, ref.cr, words ?? 'The stakeholder rejected it');
       return {};
     case 'escalation':

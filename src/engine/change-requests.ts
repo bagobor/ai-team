@@ -24,6 +24,11 @@ export class ChangeRequestError extends Error {
   override name = 'ChangeRequestError';
 }
 
+// What the request replaces is not what it was decided against any more.
+export class TargetMovedError extends ChangeRequestError {
+  override name = 'TargetMovedError';
+}
+
 type Deps = Pick<EngineDeps, 'artifacts' | 'store'>;
 type Then = (s: Store, rows: ArtifactVersionRow[]) => Promise<void>;
 
@@ -275,23 +280,38 @@ async function requestRow(deps: Deps, project: ProjectRow, crId: string): Promis
   return cr;
 }
 
-// The request was written against one version. Another change to the same words since then would be silently undone.
-async function refuseIfMoved(deps: Deps, project: ProjectRow, cr: ArtifactVersionRow, input: ChangeRequestInput, doc: ArtifactDoc): Promise<void> {
-  const filedAgainst = cr.derived_from[0] as string;
-  if (filedAgainst === `${doc.id}@${doc.version}`) return;
-  const slug = input.target_ac?.toLowerCase() ?? (input.target_section as string);
-  const wordsOf = (version: ArtifactDoc): string | undefined => {
-    if (version.type === 'test_plan' && input.target_ac) {
-      const commands = coverageIn(version).find((row) => row.ac === input.target_ac)?.commands;
-      return commands === undefined ? undefined : JSON.stringify(commands);
-    }
-    return sectionsOf(version.body).find((section) => section.slug === slug)?.hash;
-  };
-  const was = wordsOf(await deps.artifacts.read(project, filedAgainst));
-  if (was === undefined || was !== wordsOf(doc)) throw new ChangeRequestError(`${slug} of ${doc.id} has changed since ${cr.artifact_id} was filed against ${filedAgainst}`);
+const slugOf = (input: ChangeRequestInput): string => input.target_ac?.toLowerCase() ?? (input.target_section as string);
+
+// What the request replaces, as one version of its target has it.
+function wordsOf(input: ChangeRequestInput, version: ArtifactDoc): string | undefined {
+  if (version.type === 'test_plan' && input.target_ac) {
+    const commands = coverageIn(version).find((row) => row.ac === input.target_ac)?.commands;
+    return commands === undefined ? undefined : JSON.stringify(commands);
+  }
+  return sectionsOf(version.body).find((section) => section.slug === slugOf(input))?.hash;
 }
 
-export async function applyChangeRequest(deps: Deps, project: ProjectRow, crId: string, then?: Then): Promise<void> {
+// Whether doc has other words where the request applies than the pinned version of it had.
+export async function movedSince(deps: Deps, project: ProjectRow, input: ChangeRequestInput, pin: string, doc: ArtifactDoc): Promise<boolean> {
+  if (pin === `${doc.id}@${doc.version}`) return false;
+  const was = wordsOf(input, await deps.artifacts.read(project, pin));
+  return was === undefined || was !== wordsOf(input, doc);
+}
+
+// A criterion as a version of its Spec words it, without the heading.
+export function criterionText(doc: ArtifactDoc, ac: string): string | undefined {
+  return sectionsOf(doc.body).find(({ slug }) => slug === ac.toLowerCase())?.text.split('\n').slice(1).join('\n').trim();
+}
+
+// The request was written, or approved, against one version. Another change to the same words since then would be silently undone.
+async function refuseIfMoved(deps: Deps, project: ProjectRow, cr: ArtifactVersionRow, input: ChangeRequestInput, doc: ArtifactDoc, against: string): Promise<void> {
+  if (!(await movedSince(deps, project, input, against, doc))) return;
+  const how = against === cr.derived_from[0] ? 'filed' : 'approved';
+  throw new TargetMovedError(`${slugOf(input)} of ${doc.id} has changed since ${cr.artifact_id} was ${how} against ${against}`);
+}
+
+// against is the version of the target the request was decided on, when that isn't the one it was filed against.
+export async function applyChangeRequest(deps: Deps, project: ProjectRow, crId: string, then?: Then, against?: string): Promise<void> {
   const cr = await requestRow(deps, project, crId);
   if (cr.status === 'approved') {
     await deps.artifacts.commit(project, { message: `${crId}: already applied` }, then);
@@ -302,7 +322,7 @@ export async function applyChangeRequest(deps: Deps, project: ProjectRow, crId: 
   const request = await deps.artifacts.read(project, `${crId}@${cr.version}`);
   const input = requestOf(request);
   const { target, doc } = await currentTarget(deps, project, input);
-  await refuseIfMoved(deps, project, cr, input, doc);
+  await refuseIfMoved(deps, project, cr, input, doc, against ?? (cr.derived_from[0] as string));
   const { body, fields, criterion } = await replacement(deps, project, target, doc, input);
 
   const stillStale = target.status === 'stale';

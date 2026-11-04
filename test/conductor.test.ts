@@ -1106,6 +1106,80 @@ describe('review focus: a change mid-flight', () => {
     expect(await decisionRecords(h)).toContainEqual(expect.objectContaining({ artifact_id: `DEC-${item.id}` }));
   });
 
+  it('applies a criterion change the stakeholder approved against the text they were shown, though it moved after the request was filed', async () => {
+    const h = await harness();
+    await toBuild(h);
+    const { artifact_id: first } = await fileChangeRequest(h, h.project, criterionChange);
+    const { artifact_id: second } = await fileChangeRequest(h, h.project, { ...criterionChange, proposed_text: 'The first thing works offline' });
+    await h.conductor.tick();
+    await finish(h, `${first}-REC`, { decision: 'approve', rationale: 'Yes' });
+    await h.conductor.tick();
+    await h.store.answerInbox((await pending(h, 'cr')).id, { action: 'approve' });
+    await h.conductor.tick();
+    expect((await h.artifacts.latest(h.project.id, 'SPEC-M1'))!.version).toBe(2);
+
+    await finish(h, `${second}-REC`, { decision: 'approve', rationale: 'Yes' });
+    await h.conductor.tick();
+    const item = await pending(h, 'cr');
+    expect(item.why).toContain(`AC-1 has changed since ${second} was filed against SPEC-M1@1`);
+    expect(item.evidence).toContainEqual({ label: 'AC-1 now', value: expect.stringMatching(/^The first thing works faster\n\nVerified by: /), pin: 'SPEC-M1@2#ac-1' });
+
+    await h.store.answerInbox(item.id, { action: 'approve' });
+    await h.conductor.tick();
+
+    expect(await statusOf(h, second)).toBe('approved');
+    expect((await h.artifacts.latest(h.project.id, 'SPEC-M1'))!.version).toBe(3);
+    expect((await h.store.listCriteria(h.project.id, 1))[0]).toMatchObject({ text: 'The first thing works offline', cr_id: second });
+  });
+
+  it('asks again with the current text when a criterion moves while its change waits for the stakeholder', async () => {
+    const h = await harness();
+    await toBuild(h);
+    const { artifact_id: first } = await fileChangeRequest(h, h.project, criterionChange);
+    const { artifact_id: second } = await fileChangeRequest(h, h.project, { ...criterionChange, proposed_text: 'The first thing works offline' });
+    await h.conductor.tick();
+    await finish(h, `${first}-REC`, { decision: 'approve', rationale: 'Yes' });
+    await finish(h, `${second}-REC`, { decision: 'approve', rationale: 'Yes' });
+    await h.conductor.tick();
+    const asked = await inboxOf(h, 'cr');
+    const [one, two] = [first, second].map((cr) => asked.find(({ ref }) => ref.kind === 'cr' && ref.cr === cr)!);
+
+    await h.store.answerInbox(one!.id, { action: 'approve' });
+    await h.conductor.tick();
+
+    expect((await h.store.getInbox(two!.id))!.state).toBe('withdrawn');
+    const again = await pending(h, 'cr');
+    expect(again.ref).toEqual({ kind: 'cr', cr: second });
+    expect(again.evidence).toContainEqual({ label: 'AC-1 now', value: expect.stringMatching(/^The first thing works faster\n/), pin: 'SPEC-M1@2#ac-1' });
+
+    await h.store.answerInbox(again.id, { action: 'approve' });
+    await h.conductor.tick();
+
+    expect(await statusOf(h, second)).toBe('approved');
+    expect((await h.store.listCriteria(h.project.id, 1))[0]!.text).toBe('The first thing works offline');
+  });
+
+  it('asks again rather than closing a criterion change approved in the same tick as another change to its criterion', async () => {
+    const h = await harness();
+    await toBuild(h);
+    const { artifact_id: first } = await fileChangeRequest(h, h.project, criterionChange);
+    const { artifact_id: second } = await fileChangeRequest(h, h.project, { ...criterionChange, proposed_text: 'The first thing works offline' });
+    await h.conductor.tick();
+    await finish(h, `${first}-REC`, { decision: 'approve', rationale: 'Yes' });
+    await finish(h, `${second}-REC`, { decision: 'approve', rationale: 'Yes' });
+    await h.conductor.tick();
+    for (const item of await inboxOf(h, 'cr')) await h.store.answerInbox(item.id, { action: 'approve' });
+
+    await h.conductor.tick();
+
+    expect(await statusOf(h, first)).toBe('approved');
+    expect(await statusOf(h, second)).toBe('proposed');
+    const again = await pending(h, 'cr');
+    expect(again.ref).toEqual({ kind: 'cr', cr: second });
+    expect(again.why).toContain(`AC-1 has changed since ${second} was filed against SPEC-M1@1`);
+    expect((await h.store.listCriteria(h.project.id, 1))[0]!.text).toBe('The first thing works faster');
+  });
+
   it('closes a Change Request and carries on when the stakeholder rejects it', async () => {
     const h = await harness();
     await toBuild(h);
