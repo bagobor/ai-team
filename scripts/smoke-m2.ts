@@ -52,7 +52,7 @@ type Details = { task: TaskRow; attempts: AttemptRow[] };
 type InboxItem = InboxRow & { project: string; ageS: number };
 type ProjectView = ProjectRow & { milestones: MilestoneRow[]; totals: { attempts: number; usdEst: number | null; seconds: number | null } };
 type Criterion = CriterionRow & { tickets: string[]; commands: string[] };
-type ArtifactDetails = ArtifactDoc & { versions: { version: number }[] };
+type ArtifactDetails = ArtifactDoc & { versions: { version: number; approved_by: string | null }[] };
 type Snapshot = { view: ProjectView; tasks: Task[]; inbox: InboxItem[] };
 
 const paths = resolvePaths();
@@ -76,6 +76,8 @@ let earlyTicket = '';
 let mainMovedEarly = '';
 let checkoutChangedEarly = '';
 const answeredRequests = new Set<number>();
+// What the script files as the stakeholder it decides itself, never by the PM's recommendation.
+const ownRequests = new Set<string>();
 
 function check(what: string, ok: boolean, detail = ''): boolean {
   console.log(`${ok ? 'PASS' : 'FAIL'}  ${what}${detail ? `: ${detail}` : ''}`);
@@ -397,28 +399,31 @@ async function changeRequest(): Promise<void> {
   const proposed = `${target.text.replace(/[.\s]+$/, '')}. Results are printed with at most two decimal places.`;
   note(`Change Request against ${target.ac_id}, with the milestone in ${phaseOf(await snapshot())}: ${proposed}`);
 
-  await post(`${projectApi()}/change-requests`, {
+  // The team may have raised requests of its own by now, and one of them may already have moved the Spec.
+  const before = (await artifact('SPEC-M1')).version;
+  const filed = await post<{ artifact_id: string }>(`${projectApi()}/change-requests`, {
     target_artifact: 'SPEC-M1',
     target_ac: target.ac_id,
     proposed_text: proposed,
     rationale: 'Plain floating point arithmetic prints noise that nobody wants to read.',
     evidence: '36.6 Celsius is 97.88 Fahrenheit, and plain arithmetic prints 97.88000000000001.',
   });
-  const item = await waitFor('the Change Request in the Inbox', pending('cr'));
+  const crId = filed.artifact_id;
+  ownRequests.add(crId);
+  const item = await waitFor(`${crId} in the Inbox`, ({ inbox }) => inbox.find(({ ref }) => ref.kind === 'cr' && ref.cr === crId));
   answeredRequests.add(item.id);
-  check('8. The Change Request reaches the Inbox with a PM recommendation', !blank(item.recommendation), cut(item.recommendation, 240));
+  check('8. The Change Request reaches the Inbox with a PM recommendation', !blank(item.recommendation), `${crId}: ${cut(item.recommendation, 240)}`);
 
   // The stakeholder filed it, so the stakeholder decides, whichever way the PM leans.
   await answer(item, { action: 'approve' });
-  const spec = await waitFor('SPEC-M1@2', async () => {
-    const latest = await artifact('SPEC-M1');
-    return latest.version >= 2 && latest;
-  });
-  check('8. Approving it publishes SPEC-M1@2', spec.version === 2 && spec.versions.length === 2, `${spec.id}@${spec.version}`);
+  const applied = await waitFor(`the SPEC-M1 that ${crId} publishes`, async () =>
+    (await artifact('SPEC-M1')).versions.find(({ approved_by }) => approved_by === `change_request:${crId}`),
+  );
+  check('8. Approving it publishes a new SPEC-M1', applied.version > before, `SPEC-M1@${before} to SPEC-M1@${applied.version}`);
 
   const changed = (await criteria()).find(({ ac_id }) => ac_id === target.ac_id);
   check('8. The criterion has the new text', changed?.text === proposed, cut(changed?.text, 160));
-  check('8. The criterion is reset', changed?.status === 'unverified' && changed?.spec_version === 2, `${changed?.status}, spec v${changed?.spec_version}`);
+  check('8. The criterion is reset', changed?.status === 'unverified' && changed?.spec_version === applied.version, `${changed?.status}, spec v${changed?.spec_version}`);
 
   const { nodes } = await get<LineageGraph>(`${projectApi()}/lineage`);
   const stale = nodes.filter(({ status, staleSections }) => status === 'stale' || staleSections.length > 0).map(({ id }) => id);
@@ -428,7 +433,7 @@ async function changeRequest(): Promise<void> {
 // A worker can raise one of its own while this waits. Nobody is there to read it, so the PM's recommendation stands.
 async function settleTeamRequests({ inbox }: Snapshot): Promise<void> {
   for (const item of inbox) {
-    if (item.ref.kind !== 'cr' || answeredRequests.has(item.id)) continue;
+    if (item.ref.kind !== 'cr' || answeredRequests.has(item.id) || ownRequests.has(item.ref.cr)) continue;
     answeredRequests.add(item.id);
     const approve = (item.recommendation ?? '').toLowerCase().startsWith('approve');
     note(`The team raised ${item.title}. Following the PM: ${approve ? 'approve' : 'reject'}. ${cut(item.recommendation, 240)}`);
