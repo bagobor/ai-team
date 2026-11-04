@@ -382,12 +382,20 @@ export class Store {
     });
   }
 
-  // New text is a new promise, so what QA proved about the old text no longer counts.
-  async reviseCriterion(projectId: number, milestone: number, acId: string, revision: { text: string; crId: string; specVersion: number }): Promise<void> {
+  // New text or a new command is a new promise, so what QA proved about the old one no longer counts.
+  async reviseCriterion(projectId: number, milestone: number, acId: string, revision: { text: string; verification?: Criterion['verification']; crId: string; specVersion: number }): Promise<void> {
     return this.inTrx(async (db, emit) => {
       const updated = await db
         .updateTable('acceptance_criteria')
-        .set({ text: revision.text, cr_id: revision.crId, spec_version: revision.specVersion, status: 'unverified', evidence_ref: null, updated_at: new Date().toISOString() })
+        .set({
+          text: revision.text,
+          ...(revision.verification === undefined ? {} : { verification: JSON.stringify(revision.verification) }),
+          cr_id: revision.crId,
+          spec_version: revision.specVersion,
+          status: 'unverified',
+          evidence_ref: null,
+          updated_at: new Date().toISOString(),
+        })
         .where('project_id', '=', projectId)
         .where('milestone', '=', milestone)
         .where('ac_id', '=', acId)

@@ -42,6 +42,12 @@ describe('Change Requests', () => {
   const eventsOf = async (type: string) => (await e.log.list({ projectId: p.id })).filter((event) => event.type === type);
   const testPlan = (coverage = COVERAGE) => document({ id: 'TEST-PLAN-M1', type: 'test_plan', ownerRole: 'qa_engineer', body: '# Plan\n\nRun the checks.\n', fields: { data: { coverage } } });
   const coverageOf = async (pin = 'TEST-PLAN-M1') => ((await read(pin)).fields.data as { coverage: typeof COVERAGE }).coverage;
+  // Written as the PM writes one: a verification line under each criterion, and the criteria in its data.
+  const specByPm = async () => {
+    const [spec] = await publish(e, await apply(e, 'milestone_spec', { body: '# Milestone one\n', criteria: CRITERIA, stakeholder_note: 'Note' }));
+    await e.artifacts.commit(p, { message: 'approve', status: [{ id: 'SPEC-M1', status: 'approved', approvedBy: 'stakeholder' }] });
+    await e.store.lockCriteria(p.id, 1, spec!.version, CRITERIA);
+  };
 
   describe('filing', () => {
     it('files a Change Request with target, proposed text, rationale and evidence', async () => {
@@ -204,6 +210,66 @@ describe('Change Requests', () => {
     });
   });
 
+  describe('a Spec criterion\'s command', () => {
+    const TAP = 'npm test -- first --reporter=tap';
+
+    it('is filed with the criterion and shown in the request', async () => {
+      await lockSpec(e);
+
+      const row = await fileChangeRequest(e, p, onCriterion({ proposed_verification: `  ${TAP} \n` }));
+
+      const doc = await read(row.artifact_id);
+      expect(doc.fields.data).toEqual(onCriterion({ proposed_verification: TAP }));
+      expect(doc.body).toContain(`## Proposed verification\n\n\`\`\`\n${TAP}\n\`\`\``);
+      expect(touchesCriterionText(doc, (await latest('SPEC-M1'))!)).toBe(true);
+    });
+
+    it('is left out when blank', async () => {
+      await lockSpec(e);
+
+      const row = await fileChangeRequest(e, p, onCriterion({ proposed_verification: ' \n' }));
+
+      expect((await read(row.artifact_id)).fields.data).toEqual(onCriterion());
+    });
+
+    it('is refused on a Test Plan, whose commands are the proposed text', async () => {
+      await testPlan();
+
+      await expect(fileChangeRequest(e, p, onCommands({ proposed_verification: TAP }))).rejects.toThrow(/proposed_verification/);
+    });
+
+    it('is refused on a section', async () => {
+      await document();
+
+      await expect(fileChangeRequest(e, p, onSection({ proposed_verification: TAP }))).rejects.toThrow(/proposed_verification/);
+    });
+
+    it('is refused when it is more than one line', async () => {
+      await lockSpec(e);
+
+      await expect(fileChangeRequest(e, p, onCriterion({ proposed_verification: `${TAP}\nnpm run lint` }))).rejects.toThrow(/one line/);
+    });
+
+    it('replaces the command in the Spec\'s verification line, its criteria and the registry when applied', async () => {
+      await specByPm();
+      await fileChangeRequest(e, p, onCriterion({ proposed_text: 'The first thing works', proposed_verification: TAP }));
+
+      await applyChangeRequest(e, p, 'CR-1');
+
+      const doc = await read('SPEC-M1');
+      expect(sectionText(doc.body, 'ac-1')).toBe(`### AC-1\n\nThe first thing works\n\nVerified by: ${TAP}\n\n`);
+      expect(doc.fields.data).toEqual({
+        criteria: [
+          { id: 'AC-1', text: 'The first thing works', verification: { method: 'automated', how: TAP } },
+          { id: 'AC-2', text: 'The second thing works', verification: CRITERIA[1]!.verification },
+        ],
+      });
+      const [first, second] = await e.store.listCriteria(p.id, 1);
+      expect(first).toMatchObject({ text: 'The first thing works', verification: { method: 'automated', how: TAP }, status: 'unverified', cr_id: 'CR-1', spec_version: 2 });
+      expect(second).toMatchObject({ verification: CRITERIA[1]!.verification, cr_id: null });
+    });
+  });
+
   describe('a Test Plan criterion', () => {
     it('is a change to its commands, which the plan\'s owner decides', async () => {
       const plan = await testPlan();
@@ -354,10 +420,7 @@ describe('Change Requests', () => {
     });
 
     it('keeps the verification line and the stored criteria of a spec the PM wrote', async () => {
-      const proposed = await apply(e, 'milestone_spec', { body: '# Milestone one\n', criteria: CRITERIA, stakeholder_note: 'Note' });
-      const [spec] = await publish(e, proposed);
-      await e.artifacts.commit(p, { message: 'approve', status: [{ id: 'SPEC-M1', status: 'approved', approvedBy: 'stakeholder' }] });
-      await e.store.lockCriteria(p.id, 1, spec!.version, CRITERIA);
+      await specByPm();
       await fileChangeRequest(e, p, onCriterion());
 
       await applyChangeRequest(e, p, 'CR-1');

@@ -11,6 +11,8 @@ export type ChangeRequestInput = {
   target_section?: string;
   target_ac?: string;
   proposed_text: string;
+  // On a Spec criterion, the command its Verified by line names. QA runs the Test Plan's commands, but every worker reads this one.
+  proposed_verification?: string;
   rationale: string;
   evidence: string;
   raised_by: string;
@@ -55,11 +57,13 @@ function normalized(raw: ChangeRequestInput): ChangeRequestInput {
   const ac = text(raw.target_ac).trim();
   const section = text(raw.target_section).trim() || (ac ? '' : (pin?.section ?? ''));
   const raisedIn = text(raw.raised_in).trim();
+  const verification = text(raw.proposed_verification).trim();
   return {
     target_artifact: pin?.id ?? named,
     ...(section ? { target_section: section } : {}),
     ...(ac ? { target_ac: ac } : {}),
     proposed_text: text(raw.proposed_text),
+    ...(verification ? { proposed_verification: verification } : {}),
     rationale: text(raw.rationale),
     evidence: text(raw.evidence),
     raised_by: text(raw.raised_by),
@@ -108,7 +112,7 @@ function replaced(doc: ArtifactDoc, slug: string, text: string): { body: string;
   return { body, before, after };
 }
 
-type Replacement = { body: string; fields: Record<string, unknown>; criterionText?: string };
+type Replacement = { body: string; fields: Record<string, unknown>; criterion?: Pick<Criterion, 'text' | 'verification'> };
 
 function sectionReplacement(target: ArtifactVersionRow, doc: ArtifactDoc, slug: string, proposed: string): Replacement {
   const sections = sectionsOf(doc.body);
@@ -136,7 +140,7 @@ function commandsReplacement(doc: ArtifactDoc, ac: string, proposed: string): Re
   return { body: doc.body, fields: { ...doc.fields, data: { ...data, coverage: coverage.map((row) => (row.ac === ac ? { ...row, commands } : row)) } } };
 }
 
-async function criterionReplacement(deps: Deps, project: ProjectRow, target: ArtifactVersionRow, doc: ArtifactDoc, ac: string, proposed: string): Promise<Replacement> {
+async function criterionReplacement(deps: Deps, project: ProjectRow, target: ArtifactVersionRow, doc: ArtifactDoc, ac: string, proposed: string, how?: string): Promise<Replacement> {
   if (target.type === 'test_plan') return commandsReplacement(doc, ac, proposed);
   if (target.type !== 'spec' || target.milestone === null) throw new ChangeRequestError(`${doc.id} is a ${target.type}, and only a Spec or a Test Plan holds criteria`);
   const criterion = (await deps.store.listCriteria(project.id, target.milestone)).find((row) => row.ac_id === ac);
@@ -145,20 +149,27 @@ async function criterionReplacement(deps: Deps, project: ProjectRow, target: Art
   if (!criterion || !section) throw new ChangeRequestError(`${ac} is not a locked criterion of ${doc.id}`);
 
   const text = withoutHeading(proposed, section);
-  const verified = section.text.includes('\nVerified by: ') ? `\n\nVerified by: ${criterion.verification.how}` : '';
+  const verification = how === undefined ? criterion.verification : { ...criterion.verification, how };
+  const verified = section.text.includes('\nVerified by: ') ? `\n\nVerified by: ${verification.how}` : '';
   const { body, before, after } = replaced(doc, slug, `${text}${verified}`);
   if (after.length !== before.length) throw new ChangeRequestError(`The proposed text for ${ac} has a heading in it`);
 
   const data = doc.fields.data as { criteria?: Criterion[] } | undefined;
   const fields = Array.isArray(data?.criteria)
-    ? { ...doc.fields, data: { ...data, criteria: data.criteria.map((other) => (other.id === ac ? { ...other, text } : other)) } }
+    ? { ...doc.fields, data: { ...data, criteria: data.criteria.map((other) => (other.id === ac ? { ...other, text, verification } : other)) } }
     : doc.fields;
-  return { body, fields, criterionText: text };
+  return { body, fields, criterion: { text, verification } };
 }
 
 function replacement(deps: Deps, project: ProjectRow, target: ArtifactVersionRow, doc: ArtifactDoc, input: ChangeRequestInput): Replacement | Promise<Replacement> {
+  const how = input.proposed_verification;
+  if (how !== undefined) {
+    // A Test Plan's commands are its criterion's text, so a second place for them would only be one to disagree with.
+    if (target.type !== 'spec' || !input.target_ac) throw new ChangeRequestError(`proposed_verification replaces the command of a criterion of a Spec, named with target_ac. ${target.artifact_id} is a ${target.type}${target.type === 'test_plan' ? ', whose commands are the proposed text' : ''}`);
+    if (/[\r\n]/.test(how)) throw new ChangeRequestError(`proposed_verification for ${input.target_ac} is one command on one line`);
+  }
   return input.target_ac
-    ? criterionReplacement(deps, project, target, doc, input.target_ac, input.proposed_text)
+    ? criterionReplacement(deps, project, target, doc, input.target_ac, input.proposed_text, how)
     : sectionReplacement(target, doc, input.target_section as string, input.proposed_text);
 }
 
@@ -196,6 +207,7 @@ function requestBody(id: string, input: ChangeRequestInput, target: ArtifactVers
     `Raised by ${oneLine(input.raised_by)}${input.raised_in ? ` in ${oneLine(input.raised_in)}` : ''} against ${oneLine(`${target.artifact_id}@${target.version}, ${where}`)}.`,
     '## Proposed text',
     fenced(input.proposed_text),
+    ...(input.proposed_verification === undefined ? [] : ['## Proposed verification', fenced(input.proposed_verification)]),
     '## Rationale',
     quoted(input.rationale),
     '## Evidence',
@@ -291,7 +303,7 @@ export async function applyChangeRequest(deps: Deps, project: ProjectRow, crId: 
   const input = requestOf(request);
   const { target, doc } = await currentTarget(deps, project, input);
   await refuseIfMoved(deps, project, cr, input, doc);
-  const { body, fields, criterionText } = await replacement(deps, project, target, doc, input);
+  const { body, fields, criterion } = await replacement(deps, project, target, doc, input);
 
   const stillStale = target.status === 'stale';
   await deps.artifacts.commit(
@@ -313,9 +325,9 @@ export async function applyChangeRequest(deps: Deps, project: ProjectRow, crId: 
       status: [{ id: crId, status: 'approved', approvedBy: touchesCriterionText(request, target) ? 'stakeholder' : `owner:${cr.owner_role}` }],
     },
     async (s, rows) => {
-      if (criterionText !== undefined) {
+      if (criterion !== undefined) {
         const spec = rows.find((row) => row.artifact_id === target.artifact_id) as ArtifactVersionRow;
-        await s.reviseCriterion(project.id, target.milestone as number, input.target_ac as string, { text: criterionText, crId, specVersion: spec.version });
+        await s.reviseCriterion(project.id, target.milestone as number, input.target_ac as string, { ...criterion, crId, specVersion: spec.version });
       }
       if (!stillStale) await then?.(s, rows);
     },

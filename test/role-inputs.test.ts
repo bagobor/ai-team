@@ -118,6 +118,21 @@ describe('what a role reads on a milestone of 10 tickets and 30 criteria', () =>
       expect(section).toContain('second-plan-command AC-7');
       expect(section).not.toContain('AC-8');
     });
+
+    it('puts the Test Plan\'s commands first, and says the Spec\'s other command runs only if the plan takes it up', async () => {
+      const project = await engineWith('M1-QA-1', QA_REFUSED);
+      const coverage = ids.map((ac) => ({ ac, commands: [`plan-command ${ac}`], notes: '' }));
+      await publish(e, await apply(e, 'test_plan', { ...largeTestPlan, coverage }, { inputs: ['SPEC-M1@1'], role: 'qa_engineer' }));
+
+      const { attempt } = await workOn(qaTask(project, 1, 1, QA_PINS));
+
+      const section = referenceOf(attempt).split('## AC-7\n')[1]!.split('## AC-8\n')[0]!;
+      expect(section).toBe(
+        `\nThe Test Plan runs:\n\n\`\`\`\nplan-command AC-7\n\`\`\`\n\n` +
+          `The Spec's \`Verified by:\` line names another command. QA verifies with the Test Plan's commands above, so this one runs only if the Test Plan takes it up:\n\n` +
+          `\`\`\`\n${command('AC-7')}\n\`\`\`\n\n`,
+      );
+    });
   });
 
   describe('Tech Design', () => {

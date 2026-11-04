@@ -701,6 +701,15 @@ describe('the API', () => {
       expect(doc.fields.data).toMatchObject({ raised_by: 'stakeholder', target_ac: 'AC-1' });
     });
 
+    it('carries a new verification command for the criterion', async () => {
+      await lockSpec(e);
+
+      expect((await post('/api/projects/p/change-requests', { ...request, proposed_verification: 'npm test -- first --reporter=tap' })).status).toBe(201);
+
+      const doc = await e.artifacts.read(await projectOf(e), 'CR-1');
+      expect(doc.fields.data).toMatchObject({ proposed_verification: 'npm test -- first --reporter=tap' });
+    });
+
     it('is 409 for a request the engine can’t file', async () => {
       await lockSpec(e);
 

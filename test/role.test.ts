@@ -141,7 +141,7 @@ describe('loadRole', () => {
       return schema.properties.change_requests.items.properties;
     });
     for (const request of requests) expect(request).toEqual(requests[0]);
-    for (const field of ['target_artifact', 'target_section', 'target_ac', 'proposed_text']) expect(requests[0]?.[field]?.description, field).toBeDefined();
+    for (const field of ['target_artifact', 'target_section', 'target_ac', 'proposed_text', 'proposed_verification']) expect(requests[0]?.[field]?.description, field).toBeDefined();
   });
 
   it('rejects an oversized charter', async () => {

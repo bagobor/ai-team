@@ -212,12 +212,13 @@ export function createApp(deps: EngineDeps & { runner: Runner }): Hono {
   app.post('/api/projects/:name/change-requests', async (c) => {
     const project = await projectOf(c);
     const body = await jsonBody(c);
-    const optional = (field: 'target_section' | 'target_ac') => (typeof body[field] === 'string' ? { [field]: body[field] } : {});
+    const optional = (field: 'target_section' | 'target_ac' | 'proposed_verification') => (typeof body[field] === 'string' ? { [field]: body[field] } : {});
     const input = {
       target_artifact: requireString(body, 'target_artifact'),
       ...optional('target_section'),
       ...optional('target_ac'),
       proposed_text: requireString(body, 'proposed_text'),
+      ...optional('proposed_verification'),
       rationale: requireString(body, 'rationale'),
       evidence: requireString(body, 'evidence'),
       raised_by: 'stakeholder',

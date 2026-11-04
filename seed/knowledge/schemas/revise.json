@@ -182,6 +182,10 @@
             "type": "string",
             "description": "The whole replacement for that section, criterion text or list of commands."
           },
+          "proposed_verification": {
+            "type": "string",
+            "description": "Only with target_ac on a Spec: the one shell command its Verified by line should name instead, when that command is what is wrong. proposed_text still holds the criterion's text, word for word if only the command is wrong. On a Test Plan the commands are proposed_text, so leave this out."
+          },
           "rationale": {
             "type": "string"
           },
