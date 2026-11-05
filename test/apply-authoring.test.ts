@@ -294,6 +294,19 @@ describe('appliers', () => {
       expect(repinned).toContainEqual({ id: 'M1-T-1', rationale: 'M1-T-1 still_valid' });
     });
 
+    // The work order froze the inputs, so a Spec approved while the worker decided is one it never read.
+    it.each([
+      ['unaffected', { unaffected: true, body: null }, 1],
+      ['revised', {}, 2],
+    ])('leaves the design stale when the spec moved again while the worker decided, %s', async (_name, output, version) => {
+      const moved = [{ ...CRITERIA[0]!, text: 'The first thing works best' }, CRITERIA[1]!];
+      await e.artifacts.commit(await projectOf(e), { message: 'the spec moves again', publish: [{ id: 'SPEC-M1', type: 'spec', status: 'approved', ownerRole: 'pm', derivedFrom: [], milestone: 1, body: specBody(moved) }] });
+
+      await publish(e, await revise({ ...output, ticket_decisions: [decide('M1-T-1'), decide('M1-T-2')] }));
+
+      expect(await latest('TECH-M1')).toMatchObject({ version, status: 'stale', derived_from: ['SPEC-M1@2'] });
+    });
+
     it('publishes a new version and leaves nothing it decided on stale', async () => {
       await publish(e, await revise({ ticket_decisions: [decide('M1-T-1'), decide('M1-T-2')] }));
 

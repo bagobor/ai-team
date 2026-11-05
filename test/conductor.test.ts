@@ -845,6 +845,24 @@ describe('flow', () => {
     expect(orderOf(await byTicket(h, 'M1-REVISE-TECH-M1-2')).inputs).toEqual(['SPEC-M1@3', 'ENV-PROFILE@1', 'TECH-M1@1']);
   });
 
+  it('revises again when the spec moves while a revision is running', async () => {
+    const h = await harness();
+    await toBuild(h);
+    await ownerApplies(h, scopeChange);
+    await ownerApplies(h, { ...scopeChange, proposed_text: 'Smaller still.' });
+    expect(await taskIds(h)).not.toContain('M1-REVISE-TECH-M1-2');
+
+    await finish(h, 'M1-REVISE-TECH-M1-1', revised([stillValid('M1-T-1')]));
+    await finish(h, 'M1-REVISE-TEST-PLAN-M1-1', revised());
+    await h.conductor.tick();
+
+    expect(await statusOf(h, 'TECH-M1')).toBe('stale');
+    expect(await statusOf(h, 'TEST-PLAN-M1')).toBe('stale');
+    expect(orderOf(await byTicket(h, 'M1-REVISE-TECH-M1-2')).inputs).toEqual(['SPEC-M1@3', 'ENV-PROFILE@1', 'TECH-M1@1']);
+    expect(orderOf(await byTicket(h, 'M1-REVISE-TEST-PLAN-M1-2')).inputs).toContain('SPEC-M1@3');
+    expect(await taskIds(h)).not.toContain('M1-QA-1');
+  });
+
   it('revises the owning document when only a ticket goes stale', async () => {
     const h = await harness();
     await toBuild(h);

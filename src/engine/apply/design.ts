@@ -1,4 +1,4 @@
-import { ArtifactError, parsePin, sectionText, formatPin } from '../../artifacts/format.ts';
+import { ArtifactError, parsePin, sectionText, formatPin, type ArtifactStatus } from '../../artifacts/format.ts';
 import type { NewVersion, StatusChange } from '../../artifacts/store.ts';
 import type { EngineDeps } from '../runner.ts';
 import type { ArtifactVersionRow, CriterionRow, ProjectRow, TaskRow } from '../store.ts';
@@ -42,10 +42,10 @@ function coverageProblems(acIds: string[], coverage: Coverage[]): string[] {
   return problems;
 }
 
-const designDoc = (ctx: ApplyCtx, body: string): NewVersion => ({
+const designDoc = (ctx: ApplyCtx, body: string, status: ArtifactStatus = 'approved'): NewVersion => ({
   id: techId(ctx.task.milestone),
   type: 'tech_design',
-  status: 'approved',
+  status,
   ownerRole: 'tech_lead',
   approvedBy: 'owner:tech_lead',
   milestone: ctx.task.milestone,
@@ -53,10 +53,10 @@ const designDoc = (ctx: ApplyCtx, body: string): NewVersion => ({
   body,
 });
 
-const testPlanDoc = (ctx: ApplyCtx, body: string, coverage: Coverage[]): NewVersion => ({
+const testPlanDoc = (ctx: ApplyCtx, body: string, coverage: Coverage[], status: ArtifactStatus = 'approved'): NewVersion => ({
   id: testPlanId(ctx.task.milestone),
   type: 'test_plan',
-  status: 'approved',
+  status,
   ownerRole: 'qa_engineer',
   approvedBy: 'owner:qa_engineer',
   milestone: ctx.task.milestone,
@@ -143,6 +143,18 @@ async function repinned(ctx: ApplyCtx, row: ArtifactVersionRow, docId: string, n
 
 const CANCEL_IF = ['queued', 'ready', 'blocked', 'escalated', 'review', 'qa'];
 
+// The work order froze what the worker read, so a source approved again since then is one it never saw. The document
+// then stays stale, and the next round reads the newer version.
+async function inputsMoved(ctx: ApplyCtx, docId: string): Promise<boolean> {
+  for (const text of ctx.order.inputs) {
+    const { id, version } = parsePin(text);
+    if (id === docId || version === undefined) continue;
+    const latest = await ctx.deps.artifacts.latest(ctx.project.id, id);
+    if (latest && latest.version > version && (latest.status === 'approved' || latest.status === 'stale')) return true;
+  }
+  return false;
+}
+
 const applyRevise =
   (prefix: Prefix): Applier =>
   async (ctx) => {
@@ -187,8 +199,9 @@ const applyRevise =
     if (problems.length > 0) return { ok: false, evidence: problems.join('\n') };
 
     const decisions = new Map(current.map((decision) => [decision.ticket, decision]));
+    const settled = (await inputsMoved(ctx, docId)) ? 'stale' : 'approved';
     const status: StatusChange[] = [];
-    if (body === null) status.push({ id: docId, status: 'approved', derivedFrom: ctx.order.inputs.filter((pin) => parsePin(pin).id !== docId), rationale: output.rationale });
+    if (body === null) status.push({ id: docId, status: settled, derivedFrom: ctx.order.inputs.filter((pin) => parsePin(pin).id !== docId), rationale: output.rationale });
 
     for (const ticket of tickets) {
       if (!ticket.row) continue; // Added by hand, so it has no artifact to change.
@@ -197,7 +210,7 @@ const applyRevise =
       else status.push({ id: ticket.id, status: 'approved', approvedBy: 'owner:tech_lead', derivedFrom: await repinned(ctx, ticket.row, docId, body), rationale: decision?.rationale ?? `Closed before this revision of ${docId}` });
     }
 
-    const publish = [...(body === null ? [] : [prefix === 'T' ? designDoc(ctx, body) : testPlanDoc(ctx, body, output.coverage!)]), ...newDocs];
+    const publish = [...(body === null ? [] : [prefix === 'T' ? designDoc(ctx, body, settled) : testPlanDoc(ctx, body, output.coverage!, settled)]), ...newDocs];
     return withRaised(ctx, { message: `milestone ${milestone}: revise ${docId}`, publish, status }, async (s) => {
       for (const id of superseded) {
         const task = await s.getTaskByTicket(ctx.project.id, id);
