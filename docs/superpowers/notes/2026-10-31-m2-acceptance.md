@@ -16,7 +16,7 @@ The brief asked for a small dependency-free tool that converts temperatures from
 
 **Run 8, on `m2-spec-view-and-harness` at `a5572c4` on 2026-11-04: `M2 ACCEPTANCE PASS`, 81 checks, 0 failed, about $1.91.** It was meant to prove the fixes for run 7. The script's Change Request drill now answers its own request, and it passed. No criterion went round: the Tech Lead raised no requests, and TECH-M1 and TEST-PLAN-M1 were revised once each, after the script's request. The PM used `proposed_verification` for the first time, in CR-2, but CR-2 never applied. By the time the stakeholder was asked about it, the script's CR-1 had changed the same criterion, so approving CR-2 superseded it instead. Neither the held-ticket path nor the reference file's new wording ran, because no ticket failed its checks and the Test Plan took the Spec's commands word for word. Details are under "What the runs found".
 
-**Run 9, on `m2-spec-view-and-harness` at `6f253fe` on 2026-11-04: `M2 ACCEPTANCE PASS`, 77 checks, 0 failed, about $2.30.** It was meant to prove the fix for run 8's approved request that changed nothing. It had 9 criteria to run 8's 10, so four fewer checks. The PM again raised a criterion request while recommending on the script's CR-1. This was CR-2, against AC-4 this time, and approving it worked: SPEC-M1@3 adds a `36.6 C` case to AC-4's command. But AC-4 never moved, so the code before the fix would have applied CR-2 too, and the fix's handling of a moved criterion never ran. The run found two new problems. The revisions re-approved TECH-M1 and TEST-PLAN-M1 against SPEC-M1@2 after @3 was out, so QA ran AC-4 without the new case. And a request raised in the Milestone Review was left open when the milestone merged. Details are under "What the runs found".
+**Run 9, on `m2-spec-view-and-harness` at `6f253fe` on 2026-11-04: `M2 ACCEPTANCE PASS`, 77 checks, 0 failed, about $2.30.** It was meant to prove the fix for run 8's approved request that changed nothing. It had 9 criteria to run 8's 10, so four fewer checks. The PM again raised a criterion request while recommending on the script's CR-1. This was CR-2, against AC-4 this time, and approving it worked: SPEC-M1@3 adds a `36.6 C` case to AC-4's command. But AC-4 never moved, so the code before the fix would have applied CR-2 too, and the fix's handling of a moved criterion never ran. The run found two new problems. The revisions re-approved TECH-M1 and TEST-PLAN-M1 against SPEC-M1@2 after @3 was out, so QA ran AC-4 without the new case. And a request raised in the Milestone Review was left open when the milestone merged. Details are under "What the runs found". Both are fixed after run 9, in `38f5f79` and `4e2d97c` (suite 1386/1386), and neither fix has run for real yet.
 
 ## Runs and spend
 
@@ -288,7 +288,7 @@ The largest of 22 manifests was M1-SPEC-a2 at 4,797 tokens. The Test Plan filed 
 - This proves less about `6f253fe` than it seems. CR-1 changed only AC-1, so AC-4 was the same at @1 and @2, and the code before the fix would have applied CR-2 as well.
 - Three parts of the fix never ran: withdrawing a pending item and asking again, the "AC-n now" evidence, and the `cr:N:<pin>` keys. Only the suite proves them.
 
-**Run 9: a revision cleared staleness that a later Spec had set (not fixed).**
+**Run 9: a revision cleared staleness that a later Spec had set (fixed after run 9).**
 
 - CR-1's approval made TECH-M1 and TEST-PLAN-M1 stale. The engine created M1-REVISE-TECH-M1-1 and M1-REVISE-TEST-PLAN-M1-1 at once, with SPEC-M1@2 in their work orders.
 - CR-2's approval published SPEC-M1@3 about 12 seconds later, while both revisions were running. It marked M1-T-1 and M1-T-2 stale.
@@ -296,13 +296,16 @@ The largest of 22 manifests was M1-SPEC-a2 at 4,797 tokens. The Test Plan filed 
 - With nothing stale, the milestone went to verify with a Test Plan that never saw @3. QA ran the Spec's AC-4 command itself, with the new case, and its report says the Test Plan's command leaves that case out. The engine's own run decides the criterion, and it used the Test Plan's command, which lacks the `36.6 C` case the stakeholder had just approved.
 - The merged main prints `97.88 F` for `36.6 C`, so nothing shipped broken. But the engine never ran the check the stakeholder approved.
 - QA's report also says the worker sandbox blocked `mktemp -d`, so QA ran the commands with a wrapper on `PATH`. The engine's checks passed as written. Run 6's workers met the same thing with `/tmp`.
+- Fixed in `38f5f79`. When an input the work order pinned has a newer approved or stale version, `applyRevise` publishes the document, or keeps it, as stale, so the next revision reads the newer version. The tickets are still re-approved, and the next round decides the open ones again. Tests: "leaves the design stale when the spec moved again while the worker decided" (`test/apply-authoring.test.ts`) and "revises again when the spec moves while a revision is running" (`test/conductor.test.ts`). Not yet run for real.
+- Still open: the first Tech Design and Test Plan freeze their inputs the same way, so a Spec request approved while they are written has the same gap.
 
-**Run 9: a request raised in the Milestone Review was left open at the merge (not fixed).**
+**Run 9: a request raised in the Milestone Review was left open at the merge (fixed after run 9).**
 
 - In M1-REVIEW-1 the PM saw the same gap. It raised CR-3 against TEST-PLAN-M1's AC-4 to add the missing case.
 - The engine published CR-3 with the review and raised CP4 115 ms later. CP4's evidence named only MILESTONE-REVIEW-M1@1, SPEC-M1@3 and QA-REPORT-M1-1@1, and nothing about CR-3.
 - The script approved CP4, the milestone merged and the project closed. CR-3-REC, QA's recommendation as the plan's owner, was cancelled after 3 seconds.
 - CR-3 is still `proposed` in a closed project. The check "The Inbox has nothing pending" passed, because CR-3 never reached the Inbox. A stakeholder would merge without knowing the team had asked for a change.
+- Fixed in `4e2d97c`. CP4 is raised only once no change request is proposed. The merge waits the same way, for a request the stakeholder files while CP4 is pending. A request approved while the merge waits sends the milestone back to build, so `merging → build` is now allowed. The script now checks "No change request is left open" after the merge. Tests: "asks for CP4 only once a request raised in the Milestone Review is decided" and "merges only once a request filed while CP4 waited is decided", each for reject and approve (`test/conductor.test.ts`). Not yet run for real.
 
 ## What it leaves behind
 
