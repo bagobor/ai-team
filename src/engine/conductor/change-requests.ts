@@ -10,7 +10,8 @@ import { ensureTask, isClosed, lastSucceeded, pinOf, recommendationTask, reviseI
 
 type Deps = Pick<EngineDeps, 'store' | 'artifacts'>;
 
-const RESET_FROM: readonly string[] = ['verify', 'milestone_review', 'cp4'];
+// Merging waits for an open request, so one approved there sends the milestone back to be verified too.
+const RESET_FROM: readonly string[] = ['verify', 'milestone_review', 'cp4', 'merging'];
 const crNumber = (id: string) => Number(id.slice('CR-'.length));
 
 // A change to a project-level document lands on whichever milestone is being worked on. One to a merged milestone changes nothing that's still moving.

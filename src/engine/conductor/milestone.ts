@@ -15,6 +15,10 @@ const STALE_BLOCKS: readonly string[] = ['tech_design', 'test_plan', 'ticket'];
 
 const byId = (tasks: TaskRow[], id: string) => tasks.find(({ ticket_id }) => ticket_id === id);
 
+// An open request could still change what the stakeholder approves, so CP4 and the merge wait until it is decided.
+const requestOpen = async (deps: EngineDeps, project: ProjectRow) =>
+  (await deps.artifacts.list(project.id)).some(({ type, status }) => type === 'change_request' && status === 'proposed');
+
 function hold(s: Store, project: ProjectRow, n: number, kind: HoldKind, title: string, why: string, recommendation: string) {
   return raiseHold(s, project, `${kind}:M${n}`, {
     milestone: n,
@@ -213,6 +217,7 @@ async function afterMilestoneReview(deps: EngineDeps, project: ProjectRow, m: Mi
     return;
   }
   if (task?.state !== 'done') return;
+  if (await requestOpen(deps, project)) return;
 
   const synced = await syncBaseIntoIntegration(project.repo_path, n, project.base_branch);
   if (!synced.ok) {
@@ -244,6 +249,7 @@ async function afterMilestoneReview(deps: EngineDeps, project: ProjectRow, m: Mi
 
 async function merging(deps: EngineDeps, project: ProjectRow, { n }: MilestoneRow): Promise<void> {
   const { store, paths } = deps;
+  if (await requestOpen(deps, project)) return;
   const synced = await syncBaseIntoIntegration(project.repo_path, n, project.base_branch);
   if (!synced.ok) {
     await holdBaseConflict(store, project, n, synced.conflicts);

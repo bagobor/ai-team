@@ -1344,6 +1344,45 @@ describe('review focus: a change mid-flight', () => {
     await h.conductor.tick();
     expect(await milestonePhase(h)).toBe('build');
   });
+
+  // The review's own request is published with it, so CP4 would otherwise go out before anyone decided it.
+  it.each([
+    ['reject', 'cp4'],
+    ['approve', 'build'],
+  ])('asks for CP4 only once a request raised in the Milestone Review is decided, %s', async (decision, phase) => {
+    const h = await harness();
+    await toVerify(h);
+    await finish(h, 'M1-QA-1', PASS);
+    await h.conductor.tick();
+    await finish(h, 'M1-REVIEW-1', { ...REVIEW, change_requests: [{ ...scopeChange, raised_in: 'M1-REVIEW-1' }] });
+    await h.conductor.tick();
+    expect(await inboxOf(h, 'cp4')).toEqual([]);
+    expect(await milestonePhase(h)).toBe('milestone_review');
+
+    await finish(h, 'CR-1-REC', { decision, rationale: 'Decided' });
+    await h.conductor.tick();
+    expect(await statusOf(h, 'CR-1')).not.toBe('proposed');
+    expect(await milestonePhase(h)).toBe(phase);
+    expect((await inboxOf(h, 'cp4')).filter(({ state }) => state === 'pending')).toHaveLength(phase === 'cp4' ? 1 : 0);
+  });
+
+  it.each([
+    ['reject', 'merged'],
+    ['approve', 'build'],
+  ])('merges only once a request filed while CP4 waited is decided, %s', async (decision, phase) => {
+    const h = await harness();
+    const cp4 = await toCp4(h);
+    await fileChangeRequest(h, h.project, scopeChange);
+    await h.store.answerInbox(cp4.id, { action: 'approve' });
+    await h.conductor.tick();
+    expect(await milestonePhase(h)).toBe('merging');
+
+    await finish(h, 'CR-1-REC', { decision, rationale: 'Decided' });
+    await h.conductor.tick();
+    expect(await inboxOf(h, 'engine_error')).toEqual([]);
+    expect(await statusOf(h, 'CR-1')).not.toBe('proposed');
+    expect(await milestonePhase(h)).toBe(phase);
+  });
 });
 
 describe('a ticket held on a Change Request it raised', () => {

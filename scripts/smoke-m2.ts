@@ -11,7 +11,7 @@ import type { LineageGraph } from '../src/artifacts/lineage.ts';
 import { loadConfig } from '../src/config.ts';
 import { openDb } from '../src/db/open.ts';
 import type { InboxAnswer, InboxRef, InboxRow } from '../src/engine/inbox.ts';
-import type { AttemptRow, CriterionRow, MilestoneRow, ProjectRow, TaskRow } from '../src/engine/store.ts';
+import type { ArtifactVersionRow, AttemptRow, CriterionRow, MilestoneRow, ProjectRow, TaskRow } from '../src/engine/store.ts';
 import type { EventRow } from '../src/events.ts';
 import type { TaskManifest } from '../src/manifest/build.ts';
 import { resolvePaths } from '../src/paths.ts';
@@ -466,6 +466,9 @@ async function checkMainHeldUntilCp4(): Promise<void> {
 async function checkAfterMerge(killedTask: number | undefined): Promise<void> {
   const { tasks, inbox, view } = await snapshot();
   check('The Inbox has nothing pending', inbox.length === 0, inbox.map(({ title }) => title).join('; '));
+  // Run 9 merged with one still proposed, because it never reached the Inbox.
+  const open = (await get<ArtifactVersionRow[]>(`${projectApi()}/artifacts`)).filter(({ type, status }) => type === 'change_request' && status === 'proposed');
+  check('No change request is left open', open.length === 0, open.map(({ artifact_id }) => artifact_id).join(', '));
 
   const tickets = tasks.filter(({ kind }) => kind === 'ticket');
   await guarded('5. Tickets and manifests', async () => {

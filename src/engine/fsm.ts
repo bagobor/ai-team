@@ -80,7 +80,7 @@ export const MILESTONE_TRANSITIONS: Record<MilestonePhase, readonly MilestonePha
   verify: ['build', 'milestone_review', 'halted'],
   milestone_review: ['cp4', 'build', 'halted'],
   cp4: ['build', 'merging', 'halted'],
-  merging: ['merged', 'halted'],
+  merging: ['merged', 'build', 'halted'],
   merged: [],
   halted: [],
 };

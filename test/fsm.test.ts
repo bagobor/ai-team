@@ -80,6 +80,7 @@ describe('milestone transitions', () => {
     ['verify', 'build'],
     ['cp4', 'build'],
     ['merging', 'merged'],
+    ['merging', 'build'],
     ['milestone_review', 'build'],
     ['build', 'halted'],
   ])('allows %s → %s', (a, b) => {
@@ -90,7 +91,7 @@ describe('milestone transitions', () => {
     ['build', 'merged'],
     ['spec', 'build'],
     ['merged', 'build'],
-    ['merging', 'build'],
+    ['merging', 'cp4'],
     ['halted', 'spec'],
   ])('refuses %s → %s', (a, b) => {
     expect(() => assertMilestoneTransition(a, b)).toThrow(IllegalTransition);
