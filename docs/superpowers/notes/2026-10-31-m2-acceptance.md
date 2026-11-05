@@ -16,6 +16,8 @@ The brief asked for a small dependency-free tool that converts temperatures from
 
 **Run 8, on `m2-spec-view-and-harness` at `a5572c4` on 2026-11-04: `M2 ACCEPTANCE PASS`, 81 checks, 0 failed, about $1.91.** It was meant to prove the fixes for run 7. The script's Change Request drill now answers its own request, and it passed. No criterion went round: the Tech Lead raised no requests, and TECH-M1 and TEST-PLAN-M1 were revised once each, after the script's request. The PM used `proposed_verification` for the first time, in CR-2, but CR-2 never applied. By the time the stakeholder was asked about it, the script's CR-1 had changed the same criterion, so approving CR-2 superseded it instead. Neither the held-ticket path nor the reference file's new wording ran, because no ticket failed its checks and the Test Plan took the Spec's commands word for word. Details are under "What the runs found".
 
+**Run 9, on `m2-spec-view-and-harness` at `6f253fe` on 2026-11-04: `M2 ACCEPTANCE PASS`, 77 checks, 0 failed, about $2.30.** It was meant to prove the fix for run 8's approved request that changed nothing. It had 9 criteria to run 8's 10, so four fewer checks. The PM again raised a criterion request while recommending on the script's CR-1. This was CR-2, against AC-4 this time, and approving it worked: SPEC-M1@3 adds a `36.6 C` case to AC-4's command. But AC-4 never moved, so the code before the fix would have applied CR-2 too, and the fix's handling of a moved criterion never ran. The run found two new problems. The revisions re-approved TECH-M1 and TEST-PLAN-M1 against SPEC-M1@2 after @3 was out, so QA ran AC-4 without the new case. And a request raised in the Milestone Review was left open when the milestone merged. Details are under "What the runs found".
+
 ## Runs and spend
 
 Spend is the CLI's own estimate, taken from each attempt's final `result`. An interrupted attempt never reports a cost, so the crash drill's attempt is not in these figures.
@@ -30,8 +32,9 @@ Spend is the CLI's own estimate, taken from each attempt's final `result`. An in
 | 6 | `smoke-m2-6` | Failed at build: `M1-T-2 needs you. node:test suite under test/: attempts_exhausted` | 17 | 393s | $1.75 |
 | 7 | `smoke-m2-7` | Merged, but the script's CR drill checks failed: it answered another request | 62 | 1232s | $5.74 |
 | 8 | `smoke-m2-8` | Passed, with one approved request that changed nothing | 19 | 423s | $1.91 |
+| 9 | `smoke-m2-9` | Passed, with an approved check QA never ran and a request left open at the merge | 17 | 479s | $2.30 |
 
-The script's cap is $25. Isolation probes added about $0.04, so the total counted is about $8.24 for runs 1 to 3, about $11.82 with run 4, about $14.30 with run 5, about $16.05 with run 6, about $21.79 with run 7 and about $23.70 with run 8.
+The script's cap is $25. Isolation probes added about $0.04, so the total counted is about $8.24 for runs 1 to 3, about $11.82 with run 4, about $14.30 with run 5, about $16.05 with run 6, about $21.79 with run 7, about $23.70 with run 8 and about $26.00 with run 9.
 
 Run 3, task by task:
 
@@ -275,9 +278,35 @@ The largest of 22 manifests was M1-SPEC-a2 at 4,797 tokens. The Test Plan filed 
 
 - The engine knew the criterion had moved before it spent the recommendation and asked. It could close such a request with the reason at that point. Or it could show the stakeholder the criterion's current text and check the request against the Spec version the Inbox showed, rather than the one the request was filed against.
 
+**Run 9: what it proved.** The script's CR drill waited for its own CR-1 and approved it against the PM's advice. It then saw SPEC-M1@2 published with the new text, AC-1 reset, and M1-T-1, TECH-M1 and TEST-PLAN-M1 stale. The crash drill held: the worker killed on M1-T-1 outlived the daemon, the daemon was healthy 6.8s after the SIGKILL, and a2 finished in a new worktree. No attempt failed, and each design document was revised once. The largest manifest was M1-T-1-a1 at 5,733 tokens. Time to each stop: CP1 42.4s, CP2 86.8s, first ticket running 64.6s, and CP4 101.3s after the CR drill. `node --test` passes 5 tests on the merged main.
+
+**Run 9: the fix for run 8, as far as it ran.**
+
+- In CR-1-REC the PM again recommended rejecting CR-1. It also raised CR-2, against AC-4 this time, with a `proposed_verification` that adds `chk 36.6 C "97.88 F"` to AC-4's command.
+- CR-2 was filed against SPEC-M1@1, and one second later CR-1's approval published SPEC-M1@2.
+- The Inbox item for CR-2 showed SPEC-M1@2. The script approved it, following the PM, and the approval published SPEC-M1@3 with the new case in AC-4's text and command. This is the first time `proposed_verification` changed a command for real.
+- This proves less about `6f253fe` than it seems. CR-1 changed only AC-1, so AC-4 was the same at @1 and @2, and the code before the fix would have applied CR-2 as well.
+- Three parts of the fix never ran: withdrawing a pending item and asking again, the "AC-n now" evidence, and the `cr:N:<pin>` keys. Only the suite proves them.
+
+**Run 9: a revision cleared staleness that a later Spec had set (not fixed).**
+
+- CR-1's approval made TECH-M1 and TEST-PLAN-M1 stale. The engine created M1-REVISE-TECH-M1-1 and M1-REVISE-TEST-PLAN-M1-1 at once, with SPEC-M1@2 in their work orders.
+- CR-2's approval published SPEC-M1@3 about 12 seconds later, while both revisions were running. It marked M1-T-1 and M1-T-2 stale.
+- Both revisions answered "unaffected" about SPEC-M1@2, which was true. The applier re-approved TECH-M1@1 and TEST-PLAN-M1@1 as derived from SPEC-M1@2, because `applyRevise` takes `derivedFrom` from the work order's frozen inputs (`src/engine/apply/design.ts`). The Tech Design's revision also re-approved both tickets as "Closed before this revision of TECH-M1".
+- With nothing stale, the milestone went to verify with a Test Plan that never saw @3. QA ran the Spec's AC-4 command itself, with the new case, and its report says the Test Plan's command leaves that case out. The engine's own run decides the criterion, and it used the Test Plan's command, which lacks the `36.6 C` case the stakeholder had just approved.
+- The merged main prints `97.88 F` for `36.6 C`, so nothing shipped broken. But the engine never ran the check the stakeholder approved.
+- QA's report also says the worker sandbox blocked `mktemp -d`, so QA ran the commands with a wrapper on `PATH`. The engine's checks passed as written. Run 6's workers met the same thing with `/tmp`.
+
+**Run 9: a request raised in the Milestone Review was left open at the merge (not fixed).**
+
+- In M1-REVIEW-1 the PM saw the same gap. It raised CR-3 against TEST-PLAN-M1's AC-4 to add the missing case.
+- The engine published CR-3 with the review and raised CP4 115 ms later. CP4's evidence named only MILESTONE-REVIEW-M1@1, SPEC-M1@3 and QA-REPORT-M1-1@1, and nothing about CR-3.
+- The script approved CP4, the milestone merged and the project closed. CR-3-REC, QA's recommendation as the plan's owner, was cancelled after 3 seconds.
+- CR-3 is still `proposed` in a closed project. The check "The Inbox has nothing pending" passed, because CR-3 never reached the Inbox. A stakeholder would merge without knowing the team had asked for a change.
+
 ## What it leaves behind
 
-- The projects `smoke-m2` to `smoke-m2-8` stay in the real `~/.aiteam`, because M2 has no project delete. `smoke-m2-3` and `smoke-m2-4` are closed, and the others are halted. Run 5's escalation and its attempt worktrees under `~/.aiteam/worktrees/smoke-m2-5` were left as they stopped, for inspection, and so were run 6's under `~/.aiteam/worktrees/smoke-m2-6`. Run 7's `smoke-m2-7` is closed, and its worktrees are under `~/.aiteam/worktrees/smoke-m2-7`. Run 8's `smoke-m2-8` is closed, and its two interrupted worktrees are under `~/.aiteam/worktrees/smoke-m2-8`. `smoke` and `smoke-2` from M1 were halted, because M2 would otherwise have started paid reviews for them.
+- The projects `smoke-m2` to `smoke-m2-9` stay in the real `~/.aiteam`, because M2 has no project delete. `smoke-m2-3` and `smoke-m2-4` are closed, and the others are halted. Run 5's escalation and its attempt worktrees under `~/.aiteam/worktrees/smoke-m2-5` were left as they stopped, for inspection, and so were run 6's under `~/.aiteam/worktrees/smoke-m2-6`. Run 7's `smoke-m2-7` is closed, and its worktrees are under `~/.aiteam/worktrees/smoke-m2-7`. Run 8's `smoke-m2-8` is closed, and its two interrupted worktrees are under `~/.aiteam/worktrees/smoke-m2-8`. Run 9's `smoke-m2-9` is closed with CR-3 still proposed, and its interrupted worktree is under `~/.aiteam/worktrees/smoke-m2-9`. `smoke` and `smoke-2` from M1 were halted, because M2 would otherwise have started paid reviews for them.
 - Their temp repos stay in the system temp folder as `aiteam-smoke-m2-*`.
 - `aiteam.m1-backup.db` holds the database as it was before the M2 migration.
 - `~/.aiteam/knowledge` has hand commits bringing existing files up to the seed, because `syncSeed` never overwrites a file that exists.
