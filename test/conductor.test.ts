@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { existsSync, lstatSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { basename, dirname, join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { sectionText } from '../src/artifacts/format.ts';
 import { ArtifactStore } from '../src/artifacts/store.ts';
@@ -11,7 +11,7 @@ import { applyOutput } from '../src/engine/apply/index.ts';
 import { fileChangeRequest } from '../src/engine/change-requests.ts';
 import { applyAnswers } from '../src/engine/conductor/answers.ts';
 import { Conductor, haltProject } from '../src/engine/conductor/index.ts';
-import { ensureTryWorktree, removeTryWorktree, tryWorktree } from '../src/engine/conductor/try.ts';
+import { ensureTryWorktree, offerTry, removeTryWorktree, tryWorktree } from '../src/engine/conductor/try.ts';
 import { addProject } from '../src/engine/intake.ts';
 import { AlreadyAnswered, type InboxRef, type InboxRow } from '../src/engine/inbox.ts';
 import { Runner } from '../src/engine/runner.ts';
@@ -734,7 +734,7 @@ describe('flow', () => {
     await removeTryWorktree(h, h.project, 1);
   });
 
-  // Git trusts a checkout's own .git file, and whatever builds in the try checkout can rewrite it, so a git run from inside it could be made to run a command of the build's choosing.
+  // Git trusts a checkout's own .git file, and whatever the stakeholder runs in the try checkout can rewrite it, so a git run from inside it could be made to run a command of that code's choosing.
   it('never runs git from inside the try checkout, whatever its .git says', async () => {
     const h = await harness();
     const { headSha } = await ensureIntegrationBranch(h.repoPath, 1, 'main');
@@ -1451,12 +1451,13 @@ describe('the play gate', () => {
   describe('trying the build at CP4', () => {
     // Each build leaves a line in built.log, so a test can count the builds in a checkout.
     const BUILT = { ...PLAY_PROFILE, commands: { ...PLAY_PROFILE.commands, build: 'mkdir -p dist && cp index.html dist/ && echo built >> built.log' }, play: { ...PLAY, root: 'dist' } };
-    // Only the try checkout is named M1-try-a1, so the play gate's build passes and CP4's fails.
-    const onlyInTry = (command: string) => ({ ...PLAY_PROFILE, commands: { ...PLAY_PROFILE.commands, build: `case "$(pwd -P)" in */M1-try-a1) ${command};; esac` } });
+    // The play gate builds in M1-play-a1, so its build passes and CP4's fails.
+    const onlyAtCp4 = (command: string) => ({ ...PLAY_PROFILE, commands: { ...PLAY_PROFILE.commands, build: `case "$(pwd -P)" in */M1-play-a1) ;; *) ${command};; esac` } });
 
     const tryIt = (cp4: InboxRow) => cp4.evidence.find(({ label }) => label === 'Try it')!.value;
     const linkOf = (h: Harness) => `${h.tryServer.url}${h.project.name}/m1/index.html`;
     const tryPathOf = (h: Harness) => worktreePath(h.paths, 'p', 'M1-try', 1);
+    const buildPathOf = (h: Harness) => worktreePath(h.paths, 'p', 'M1-trybuild', 1);
     const buildsIn = (dir: string) => (existsSync(join(dir, 'built.log')) ? readFileSync(join(dir, 'built.log'), 'utf8').split('\n').filter(Boolean).length : 0);
     const fetched = async (url: string) => {
       const res = await fetch(url);
@@ -1506,12 +1507,15 @@ describe('the play gate', () => {
       // What a restart leaves: a try server with nothing mounted.
       h.tryServer.unmount(h.project.name, 1);
       expect((await fetched(tryIt(cp4))).status).toBe(404);
+      // The stakeholder's checkout is theirs to build in, and is not what CP4 offered.
+      mkdirSync(join(tryPathOf(h), 'dist'), { recursive: true });
+      writeFileSync(join(tryPathOf(h), 'dist', 'index.html'), 'the stakeholder built this\n');
 
       await h.conductor.tick();
 
       expect(await milestonePhase(h)).toBe('cp4');
       expect(await fetched(tryIt(cp4))).toEqual({ status: 200, body: PAGE });
-      expect(buildsIn(tryPathOf(h))).toBe(1);
+      expect(buildsIn(buildPathOf(h))).toBe(1);
     });
 
     it('serves nothing, and builds nothing, when the try root fails its check after a restart', async () => {
@@ -1520,15 +1524,15 @@ describe('the play gate', () => {
       h.tryServer.unmount(h.project.name, 1);
       const outside = tempDir('aiteam-outside-');
       writeFileSync(join(outside, 'secret.txt'), 'outside-secret');
-      rmSync(join(tryPathOf(h), 'dist'), { recursive: true });
-      symlinkSync(outside, join(tryPathOf(h), 'dist'));
+      rmSync(join(buildPathOf(h), 'dist'), { recursive: true });
+      symlinkSync(outside, join(buildPathOf(h), 'dist'));
 
       await h.conductor.tick();
       await h.conductor.tick();
 
       expect(h.tryServer.mounted(h.project.name, 1)).toBe(false);
       expect((await fetched(tryIt(cp4).replace('index.html', 'secret.txt'))).status).toBe(404);
-      expect(buildsIn(tryPathOf(h))).toBe(1);
+      expect(buildsIn(buildPathOf(h))).toBe(1);
       expect(await inboxOf(h, 'engine_error')).toEqual([]);
       expect(await milestonePhase(h)).toBe('cp4');
       rmSync(outside, { recursive: true, force: true });
@@ -1557,7 +1561,7 @@ describe('the play gate', () => {
 
     it('still asks at CP4 when the build fails there, and offers the checkout instead', async () => {
       const h = await harness();
-      const cp4 = await toPlayableCp4(h, onlyInTry('echo try-broke; exit 5'));
+      const cp4 = await toPlayableCp4(h, onlyAtCp4('echo try-broke; exit 5'));
 
       expect(tryIt(cp4)).toMatch(/^The build failed here: The build command failed, so there was nothing to play\.\n/);
       expect(tryIt(cp4)).toContain('try-broke');
@@ -1573,7 +1577,7 @@ describe('the play gate', () => {
 
     it('ends the failed build with one full stop when its output ends a sentence', async () => {
       const h = await harness();
-      const cp4 = await toPlayableCp4(h, onlyInTry('echo "The bundler gave up."; exit 5'));
+      const cp4 = await toPlayableCp4(h, onlyAtCp4('echo "The bundler gave up."; exit 5'));
 
       expect(tryIt(cp4).endsWith(`\nThe bundler gave up. The checkout is at ${tryPathOf(h)}.`)).toBe(true);
       expect(tryIt(cp4)).not.toContain('..');
@@ -1602,7 +1606,7 @@ describe('the play gate', () => {
 
     it('stops serving the last build when the next CP4 fails to build', async () => {
       const h = await harness();
-      const first = await toPlayableCp4(h, onlyInTry('! grep -q fixed index.html'));
+      const first = await toPlayableCp4(h, onlyAtCp4('! grep -q fixed index.html'));
       expect(await fetched(tryIt(first))).toEqual({ status: 200, body: PAGE });
 
       const second = await toNextCp4(h, first, FIXED);
@@ -1621,6 +1625,58 @@ describe('the play gate', () => {
       expect(cp4.why.endsWith(` ${DISPOSABLE}`)).toBe(true);
       await h.conductor.tick();
       expect(await inboxOf(h, 'engine_error')).toEqual([]);
+    });
+
+    // A build can rewrite anything in the checkout it runs in, .git included, and git run there by the stakeholder would trust it.
+    it('names only a checkout nothing ran in when the build fails', async () => {
+      const h = await harness();
+      const cp4 = await toPlayableCp4(h, onlyAtCp4('echo planted > planted.txt; rm .git; mkdir .git; echo "[core]" > .git/config; exit 5'));
+      const named = /The checkout is at (.+)\.$/.exec(tryIt(cp4))![1]!;
+
+      expect(named).toBe(tryPathOf(h));
+      expect(named).not.toBe(buildPathOf(h));
+      expect(existsSync(join(named, 'planted.txt'))).toBe(false);
+      expect(lstatSync(join(named, '.git')).isFile()).toBe(true);
+      expect(readFileSync(join(named, '.git'), 'utf8')).toMatch(/^gitdir: /);
+    });
+
+    it('serves the link from a checkout of its own, and names it nowhere', async () => {
+      const h = await harness();
+      const cp4 = await toPlayableCp4(h, BUILT);
+      // The server reads files as they are when asked, so a change here shows which checkout it serves.
+      writeFileSync(join(buildPathOf(h), 'dist', 'index.html'), 'built for CP4\n');
+
+      expect(await fetched(tryIt(cp4))).toEqual({ status: 200, body: 'built for CP4\n' });
+      expect(buildsIn(tryPathOf(h))).toBe(0);
+      expect(JSON.stringify(await h.store.listInbox({ projectId: h.project.id }))).not.toContain(basename(buildPathOf(h)));
+    });
+
+    it('builds each CP4 in a fresh checkout, even for the same head', async () => {
+      const h = await harness();
+      // Fails where an earlier build ran, so a kept checkout fails the second build.
+      const firstBuildOnly = { ...BUILT, commands: { ...BUILT.commands, build: `test ! -e built.log && ${BUILT.commands.build}` } };
+      const first = await toPlayableCp4(h, firstBuildOnly);
+      expect(tryIt(first)).toBe(linkOf(h));
+
+      const again = await offerTry(h, h.project, 1, await revParse(h.repoPath, 'refs/heads/aiteam/m1'));
+
+      expect(again).toEqual({ value: linkOf(h), link: true });
+      expect(buildsIn(buildPathOf(h))).toBe(1);
+    });
+
+    it('removes both checkouts and their branches once the milestone merges', async () => {
+      const h = await harness();
+      const cp4 = await toPlayableCp4(h, BUILT);
+      expect(existsSync(tryPathOf(h))).toBe(true);
+      expect(existsSync(buildPathOf(h))).toBe(true);
+
+      await h.store.answerInbox(cp4.id, { action: 'approve' });
+      await h.conductor.tick();
+
+      expect(await milestonePhase(h)).toBe('merged');
+      expect(existsSync(tryPathOf(h))).toBe(false);
+      expect(existsSync(buildPathOf(h))).toBe(false);
+      expect(run(h.repoPath, 'branch', '--list', 'aiteam/try/*')).toBe('');
     });
   });
 });
