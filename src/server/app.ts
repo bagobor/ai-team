@@ -11,7 +11,7 @@ import { ChangeRequestError, fileChangeRequest } from '../engine/change-requests
 import { haltProject } from '../engine/conductor/index.ts';
 import { isTerminal } from '../engine/conductor/tasks.ts';
 import { IllegalTransition } from '../engine/fsm.ts';
-import { AlreadyAnswered, InvalidAnswer, type InboxAnswer } from '../engine/inbox.ts';
+import { AlreadyAnswered, InvalidAnswer, type CheckMark, type InboxAnswer } from '../engine/inbox.ts';
 import { addBrief, addProject, addTicket, DuplicateError, ProjectError } from '../engine/intake.ts';
 import type { EngineDeps, Runner } from '../engine/runner.ts';
 import type { MilestoneRow, ProjectRow, TaskRow } from '../engine/store.ts';
@@ -70,11 +70,18 @@ const resumeFrom = (c: Context) => parseId(c.req.header('last-event-id')) ?? par
 
 const currentMilestone = (milestones: MilestoneRow[]) => milestones.find(({ phase }) => phase !== 'merged' && phase !== 'halted') ?? milestones.at(-1);
 
+// Whatever a mark carries is made text here, so the answer's own rules refuse what isn't a verdict. A missing note is no note, not the word "undefined", or a failing mark could pass the rule that it needs one.
+function markFrom(entry: unknown): CheckMark {
+  const { ac, status, note } = (entry ?? {}) as Record<string, unknown>;
+  return { ac: String(ac), status: String(status) as CheckMark['status'], note: note === undefined || note === null ? '' : String(note) };
+}
+
 // Only the fields of an answer reach the durable record, whatever else the request carried.
 function answerFrom(body: Record<string, unknown>): InboxAnswer {
-  const { action, comment, option, text } = body;
-  if (action === 'approve' || action === 'reject') return { action };
-  if (action === 'request_changes') return { action, comment: typeof comment === 'string' ? comment : '' };
+  const { action, comment, option, text, checks } = body;
+  const marks = Array.isArray(checks) ? { checks: checks.map(markFrom) } : {};
+  if (action === 'approve' || action === 'reject') return { action, ...marks };
+  if (action === 'request_changes') return { action, comment: typeof comment === 'string' ? comment : '', ...marks };
   if (typeof option === 'string') return { option };
   if (typeof text === 'string') return { text };
   throw new BadRequest('An answer is an action, an option or written words');

@@ -39,6 +39,17 @@ describe('migration 002', () => {
     await db.destroy();
   });
 
+  it('adds inbox checks with an empty default', async () => {
+    const db = await openDb(path);
+    await sql`INSERT INTO inbox_items (project_id, type, dedupe_key, ref, title, asked_by, why, blocks, evidence, recommendation, options, created_at)
+      VALUES (1, 'approval', 'cp2:1', '{"kind":"cp2","milestone":1}', 't', 'pm', 'w', '[]', '[]', 'r', '[]', '2026-11-01T00:00:00Z')`.execute(db);
+
+    const { rows } = await sql<{ checks: string }>`SELECT checks FROM inbox_items`.execute(db);
+
+    expect(rows).toEqual([{ checks: '[]' }]);
+    await db.destroy();
+  });
+
   it('still starts a project made after the upgrade at intake', async () => {
     const db = await openDb(path);
     await sql`INSERT INTO projects (name, repo_path, base_branch, created_at)

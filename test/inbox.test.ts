@@ -2,7 +2,7 @@ import { join } from 'node:path';
 import type { Kysely } from 'kysely';
 import { openDb } from '../src/db/open.ts';
 import type { DB } from '../src/db/schema.ts';
-import { AlreadyAnswered, InvalidAnswer, type InboxAnswer, type NewInboxItem } from '../src/engine/inbox.ts';
+import { AlreadyAnswered, assertValidAnswer, InvalidAnswer, type InboxAnswer, type InboxCheck, type NewInboxItem } from '../src/engine/inbox.ts';
 import { Store } from '../src/engine/store.ts';
 import { EventLog } from '../src/events.ts';
 import { tempDir } from './helpers/repo.ts';
@@ -108,6 +108,21 @@ describe('Inbox', () => {
       expect((await eventsOf('inbox.raised'))[0]?.payload).toEqual({ title: 'Approve the spec for milestone 1' });
     });
 
+    it("keeps an inbox item's checks", async () => {
+      const checks: InboxCheck[] = [
+        { ac: 'AC-2', text: 'Dodging feels fair', how: 'Play two minutes' },
+        { ac: 'AC-5', text: 'The menu reads well', how: 'Open it on a phone' },
+      ];
+      const raised = await s.raiseInbox(approval({ checks }));
+
+      expect(raised.checks).toEqual(checks);
+      expect((await s.listInbox({ projectId }))[0]?.checks).toEqual(checks);
+    });
+
+    it('gives an item raised without checks an empty list', async () => {
+      expect((await s.raiseInbox(approval())).checks).toEqual([]);
+    });
+
     it('takes an item with no milestone', async () => {
       const { milestone: _milestone, ...withoutMilestone } = approval({ dedupe_key: 'engine_error', ref: { kind: 'engine_error' } });
       expect((await s.raiseInbox(withoutMilestone)).milestone).toBeNull();
@@ -187,6 +202,58 @@ describe('Inbox', () => {
 
     it('refuses to answer an item that does not exist', async () => {
       await expect(s.answerInbox(999, { action: 'approve' })).rejects.toBeInstanceOf(AlreadyAnswered);
+    });
+  });
+
+  describe('marking checks', () => {
+    const item = { id: 7, type: 'approval' as const, options: [], checks: [{ ac: 'AC-2', text: 't', how: 'h' }] };
+    const passing = { ac: 'AC-2', status: 'passing' as const, note: '' };
+    const failing = (note: string) => ({ ac: 'AC-2', status: 'failing' as const, note });
+
+    it.each<[string, InboxAnswer, RegExp]>([
+      ['an approve that leaves a check unmarked', { action: 'approve' }, /AC-2 is not marked/],
+      ['an approve that marks a check failing', { action: 'approve', checks: [failing('too fast')] }, /AC-2 is failing/],
+      ['a failing mark with a blank note', { action: 'request_changes', comment: 'x', checks: [failing(' ')] }, /needs a note/],
+      ['a failing mark with a blank note on an approve', { action: 'approve', checks: [failing('')] }, /needs a note/],
+      ['a mark for a check the item does not have', { action: 'approve', checks: [passing, { ...passing, ac: 'AC-9' }] }, /AC-9 is not one of this item's checks/],
+      ['two marks for one check', { action: 'request_changes', comment: 'x', checks: [passing, passing] }, /more than once/],
+      ['a status that is neither passing nor failing', { action: 'approve', checks: [{ ...passing, status: 'waived' as 'passing' }] }, /AC-2 is marked "waived": a check is passing or failing/],
+    ])('refuses %s', (_name, answer, problem) => {
+      expect(() => assertValidAnswer(item, answer)).toThrow(InvalidAnswer);
+      expect(() => assertValidAnswer(item, answer)).toThrow(problem);
+    });
+
+    it.each<[string, InboxAnswer]>([
+      ['an approve with every check passing', { action: 'approve', checks: [passing] }],
+      ['a reject', { action: 'reject' }],
+      ['a reject whose marks would not pass', { action: 'reject', checks: [failing(''), { ...passing, ac: 'AC-9' }] }],
+      ['a request for changes with no marks', { action: 'request_changes', comment: 'x' }],
+      ['a request for changes that marks one failing', { action: 'request_changes', comment: 'x', checks: [failing('too fast')] }],
+    ])('accepts %s', (_name, answer) => {
+      expect(() => assertValidAnswer(item, answer)).not.toThrow();
+    });
+
+    it('accepts an approve of an item with no checks, and refuses a mark on it', () => {
+      const plain = { ...item, checks: [] };
+
+      expect(() => assertValidAnswer(plain, { action: 'approve' })).not.toThrow();
+      expect(() => assertValidAnswer(plain, { action: 'approve', checks: [passing] })).toThrow(/AC-2 is not one of this item's checks/);
+    });
+
+    it('refuses an unmarked approve through the store, leaving the item pending', async () => {
+      const raised = await s.raiseInbox(approval({ checks: [{ ac: 'AC-2', text: 't', how: 'h' }] }));
+
+      await expect(s.answerInbox(raised.id, { action: 'approve' })).rejects.toBeInstanceOf(InvalidAnswer);
+
+      expect((await s.getInbox(raised.id))?.state).toBe('pending');
+    });
+
+    it('records the marks with the answer', async () => {
+      const raised = await s.raiseInbox(approval({ checks: [{ ac: 'AC-2', text: 't', how: 'h' }] }));
+
+      const answered = await s.answerInbox(raised.id, { action: 'approve', checks: [passing] });
+
+      expect(answered.answer).toEqual({ action: 'approve', checks: [passing] });
     });
   });
 

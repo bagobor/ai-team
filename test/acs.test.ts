@@ -107,6 +107,92 @@ describe('acceptance-criteria registry', () => {
     expect((await s.listCriteria(p.id, 1)).map((c) => c.status)).toEqual(['unverified', 'unverified']);
   });
 
+  describe('a stakeholder verification', () => {
+    const human: Criterion = { id: 'AC-2', text: 'Dodging feels fair', verification: { method: 'human', how: 'Play two minutes' } };
+    const cp4 = (milestone: number, projectId = p.id) =>
+      s.raiseInbox({
+        project_id: projectId,
+        milestone,
+        type: 'approval',
+        dedupe_key: `cp4:M${milestone}`,
+        ref: { kind: 'cp4', milestone },
+        title: `Approve milestone ${milestone}`,
+        asked_by: 'pm',
+        why: 'The milestone is built',
+        blocks: [],
+        evidence: [],
+        recommendation: 'Approve it',
+        options: [],
+        checks: [{ ac: 'AC-2', text: human.text, how: human.verification.how }],
+      });
+    const byStakeholder = (inboxId: number, status: 'passing' | 'failing' = 'passing') => ({ status, evidenceRef: 'DEC-1@1#ac-2', verifiedBy: { kind: 'stakeholder' as const, inboxId } });
+
+    beforeEach(async () => {
+      await s.lockCriteria(p.id, 1, 1, [criterion(1), human]);
+    });
+
+    it("takes a stakeholder verification from this milestone's CP4", async () => {
+      const { id } = await cp4(1);
+
+      await s.recordVerification(p.id, 1, 'AC-2', byStakeholder(id));
+
+      expect((await s.listCriteria(p.id, 1))[1]).toMatchObject({ ac_id: 'AC-2', status: 'passing', evidence_ref: 'DEC-1@1#ac-2' });
+    });
+
+    it('records a failing verdict the same way', async () => {
+      const { id } = await cp4(1);
+
+      await s.recordVerification(p.id, 1, 'AC-2', byStakeholder(id, 'failing'));
+
+      expect((await s.listCriteria(p.id, 1))[1]).toMatchObject({ status: 'failing', evidence_ref: 'DEC-1@1#ac-2' });
+    });
+
+    it('refuses a stakeholder verification from another item', async () => {
+      const escalation = await s.raiseInbox({
+        project_id: p.id,
+        milestone: 1,
+        type: 'question',
+        dedupe_key: 'escalation:7',
+        ref: { kind: 'escalation', taskId: 7 },
+        title: 'T-1 is stuck',
+        asked_by: 'engineer',
+        why: 'It failed',
+        blocks: [],
+        evidence: [],
+        recommendation: 'Retry',
+        options: [{ id: 'retry', label: 'Retry' }],
+      });
+      const otherMilestone = await cp4(2);
+      const other = await s.createProject({ name: 'other', repo_path: '/o', base_branch: 'main' });
+      const otherProject = await cp4(1, other.id);
+
+      for (const { id } of [escalation, otherMilestone, otherProject, { id: 999 }]) {
+        await expect(s.recordVerification(p.id, 1, 'AC-2', byStakeholder(id))).rejects.toThrow(/Only this milestone's CP4/);
+      }
+      expect((await s.listCriteria(p.id, 1)).map((c) => c.status)).toEqual(['unverified', 'unverified']);
+    });
+
+    it('refuses a stakeholder verification of an automated criterion', async () => {
+      const { id } = await cp4(1);
+
+      await expect(s.recordVerification(p.id, 1, 'AC-1', byStakeholder(id))).rejects.toThrow(/QA verifies/);
+
+      expect((await s.listCriteria(p.id, 1))[0]?.status).toBe('unverified');
+    });
+
+    it('refuses a stakeholder verification of a criterion that was never locked', async () => {
+      const { id } = await cp4(1);
+
+      await expect(s.recordVerification(p.id, 1, 'AC-9', byStakeholder(id))).rejects.toThrow(/AC-9/);
+    });
+
+    it('still wants an evidence reference', async () => {
+      const { id } = await cp4(1);
+
+      await expect(s.recordVerification(p.id, 1, 'AC-2', { ...byStakeholder(id), evidenceRef: ' ' })).rejects.toThrow(/evidence/);
+    });
+  });
+
   it('takes no verification from a qa_verify task in another project', async () => {
     const other = await s.createProject({ name: 'other', repo_path: '/o', base_branch: 'main' });
     const foreign = await s.createTask({ ...task('QA-9', 'qa_verify'), project_id: other.id });

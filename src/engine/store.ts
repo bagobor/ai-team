@@ -14,7 +14,7 @@ import {
   type ProjectPhase,
   type TaskState,
 } from './fsm.ts';
-import { AlreadyAnswered, assertValidAnswer, type InboxAnswer, type InboxEvidence, type InboxOption, type InboxRef, type InboxRow, type InboxState, type InboxType, type NewInboxItem } from './inbox.ts';
+import { AlreadyAnswered, assertValidAnswer, type InboxAnswer, type InboxCheck, type InboxEvidence, type InboxOption, type InboxRef, type InboxRow, type InboxState, type InboxType, type NewInboxItem } from './inbox.ts';
 import type { WorkOrder } from './workorder.ts';
 
 export type ProjectRow = Omit<Selectable<ProjectsTable>, 'phase'> & { phase: ProjectPhase };
@@ -122,6 +122,7 @@ function toInboxRow(row: Selectable<InboxItemsTable>): InboxRow {
     blocks: JSON.parse(row.blocks) as string[],
     evidence: JSON.parse(row.evidence) as InboxEvidence[],
     options: JSON.parse(row.options) as InboxOption[],
+    checks: JSON.parse(row.checks) as InboxCheck[],
     answer: row.answer === null ? null : (JSON.parse(row.answer) as InboxAnswer),
   };
 }
@@ -362,19 +363,28 @@ export class Store {
     return rows.map(toCriterionRow);
   }
 
-  // Only QA moves a criterion, and only by pointing at its evidence (§7.5).
+  // Only QA moves a criterion, or the stakeholder through the CP4 they answered, and either only by pointing at its evidence (§7.5).
   async recordVerification(projectId: number, milestone: number, acId: string, verification: Verification): Promise<void> {
     if (verification.evidenceRef.trim() === '') throw new Error(`A verification of ${acId} needs an evidence reference`);
 
     return this.inTrx(async (db, emit) => {
       const { verifiedBy } = verification;
-      // A stakeholder's verdict has no task to look up, and this method only takes QA's.
-      const task = verifiedBy.kind === 'qa_verify' ? await db.selectFrom('tasks').select(['kind', 'project_id']).where('id', '=', verifiedBy.taskId).executeTakeFirst() : undefined;
-      if (task?.kind !== 'qa_verify' || task.project_id !== projectId) throw new Error(`Only a QA verification task of this project can verify ${acId}`);
-
-      // QA never runs a human check, so a verdict of its own on one would claim a proof nobody made. A criterion that isn't locked falls through to the update's own error.
+      // A criterion that isn't locked falls through to the update's own error.
       const locked = await db.selectFrom('acceptance_criteria').select('verification').where('project_id', '=', projectId).where('milestone', '=', milestone).where('ac_id', '=', acId).executeTakeFirst();
-      if (locked && isHumanCheck({ verification: JSON.parse(locked.verification) as Criterion['verification'] })) throw new Error(`${acId} is checked by the stakeholder, so QA can't verify it`);
+      const human = locked !== undefined && isHumanCheck({ verification: JSON.parse(locked.verification) as Criterion['verification'] });
+
+      if (verifiedBy.kind === 'qa_verify') {
+        const task = await db.selectFrom('tasks').select(['kind', 'project_id']).where('id', '=', verifiedBy.taskId).executeTakeFirst();
+        if (task?.kind !== 'qa_verify' || task.project_id !== projectId) throw new Error(`Only a QA verification task of this project can verify ${acId}`);
+        // QA never runs a human check, so a verdict of its own on one would claim a proof nobody made.
+        if (human) throw new Error(`${acId} is checked by the stakeholder, so QA can't verify it`);
+      } else {
+        // The stakeholder speaks only through the milestone's own approval, so an answer to any other item can't vouch for this criterion.
+        const item = await db.selectFrom('inbox_items').select(['project_id', 'ref']).where('id', '=', verifiedBy.inboxId).executeTakeFirst();
+        const ref = item && (JSON.parse(item.ref) as InboxRef);
+        if (item?.project_id !== projectId || ref?.kind !== 'cp4' || ref.milestone !== milestone) throw new Error(`Only this milestone's CP4 can record the stakeholder's check of ${acId}`);
+        if (locked && !human) throw new Error(`${acId} is automated: QA verifies it`);
+      }
 
       const updated = await db
         .updateTable('acceptance_criteria')
@@ -609,6 +619,7 @@ export class Store {
           blocks: JSON.stringify(item.blocks),
           evidence: JSON.stringify(item.evidence),
           options: JSON.stringify(item.options),
+          checks: JSON.stringify(item.checks ?? []),
           created_at: new Date().toISOString(),
         })
         .onConflict((conflict) => conflict.columns(['project_id', 'dedupe_key']).doNothing())

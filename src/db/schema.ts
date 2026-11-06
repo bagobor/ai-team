@@ -141,6 +141,7 @@ export type InboxItemsTable = {
   evidence: string;
   recommendation: string;
   options: string;
+  checks: Generated<string>;
   state: Generated<string>;
   answer: string | null;
   answered_at: string | null;

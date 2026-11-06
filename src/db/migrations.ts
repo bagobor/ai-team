@@ -190,4 +190,10 @@ export const migrations: Record<string, Migration> = {
         )`.execute(db);
     },
   },
+  '002_inbox_checks': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      // An item raised before this has nothing for the stakeholder to mark, which is what an empty list says.
+      await sql`ALTER TABLE inbox_items ADD COLUMN checks TEXT NOT NULL DEFAULT '[]'`.execute(db);
+    },
+  },
 };

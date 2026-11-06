@@ -499,6 +499,58 @@ describe('the API', () => {
       expect((await e.store.getInbox(id))!.answer).toEqual({ action: 'request_changes', comment: 'Tighten it' });
     });
 
+    describe('with checks to mark', () => {
+      const checks = [{ ac: 'AC-2', text: 'Dodging feels fair', how: 'Play two minutes' }];
+      const passing = { ac: 'AC-2', status: 'passing', note: '' };
+
+      it('passes check marks through to the answer', async () => {
+        const { id } = await approval({ checks });
+
+        const res = await answer(id, { action: 'approve', checks: [{ ...passing, extra: 1 }] });
+
+        expect(res.status).toBe(200);
+        expect((await e.store.getInbox(id))!.answer).toEqual({ action: 'approve', checks: [passing] });
+      });
+
+      it('shows the checks an item carries', async () => {
+        await approval({ checks });
+
+        const { items } = (await (await req('/api/inbox')).json()) as { items: { checks: unknown }[] };
+
+        expect(items[0]!.checks).toEqual(checks);
+      });
+
+      it.each([
+        ['an approve with no marks', { action: 'approve' }],
+        ['a mark with no status', { action: 'approve', checks: [{ ac: 'AC-2', note: '' }] }],
+        ['a status that is not passing or failing', { action: 'approve', checks: [{ ...passing, status: 'waived' }] }],
+        ['a failing mark with no note', { action: 'request_changes', comment: 'x', checks: [{ ac: 'AC-2', status: 'failing' }] }],
+        ['a failing mark with a blank note', { action: 'request_changes', comment: 'x', checks: [{ ac: 'AC-2', status: 'failing', note: '  ' }] }],
+        ['a mark for a check the item lacks', { action: 'approve', checks: [{ ...passing, ac: 'AC-9' }] }],
+        ['a mark that is not an object', { action: 'approve', checks: [null] }],
+      ])('returns 400 to %s', async (_name, body) => {
+        const { id } = await approval({ checks });
+
+        expect((await answer(id, body)).status, JSON.stringify(body)).toBe(400);
+        expect((await e.store.getInbox(id))!.state).toBe('pending');
+      });
+
+      it('does not judge the marks on a reject', async () => {
+        const { id } = await approval({ checks });
+        const marks = [{ ac: 'AC-2', status: 'failing', note: '' }];
+
+        expect((await answer(id, { action: 'reject', checks: marks })).status).toBe(200);
+      });
+
+      it('reads a checks field that is not a list as no marks', async () => {
+        const { id } = await approval({ checks });
+
+        expect((await answer(id, { action: 'approve', checks: 'AC-2' })).status).toBe(400);
+        expect((await answer(id, { action: 'reject', checks: 'AC-2' })).status).toBe(200);
+        expect((await e.store.getInbox(id))!.answer).toEqual({ action: 'reject' });
+      });
+    });
+
     it('takes an option or written words for a question', async () => {
       const a = await question();
       const b = await question({ dedupe_key: 'q2' });
