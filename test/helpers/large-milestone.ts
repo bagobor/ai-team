@@ -17,7 +17,8 @@ export const planNoteOf = (ac: string) => `plan-note-${ac}-marker ${words(130)}`
 // A row of the table a real PM wrote under its own Acceptance criteria heading, ahead of the engine's.
 export const pmRowOf = (ac: string) => `| ${ac} | pm-row-${ac}-marker ${words(80)} |`;
 
-export const largeCoverage = ids.map((ac) => ({ ac, commands: [command(ac)], notes: planNoteOf(ac) }));
+// Every command begins with `true`, which passes on any commit, so each entry is a regression guard.
+export const largeCoverage = ids.map((ac) => ({ ac, commands: [command(ac)], notes: planNoteOf(ac), regression: true }));
 export const largeTickets = Array.from({ length: TICKET_COUNT }, (_, t) => ({
   key: `T-${t + 1}`,
   title: `Ticket ${t + 1}`,

@@ -9,7 +9,7 @@ import type { Applier, ApplyCtx } from './index.ts';
 import { withRaised } from './raised.ts';
 import { validateTickets, type TicketDraft } from './tickets.ts';
 
-export type Coverage = { ac: string; commands: string[]; notes: string };
+export type Coverage = { ac: string; commands: string[]; notes: string; regression?: boolean };
 type DesignOutput = { body: string; tickets: TicketDraft[] };
 type TestPlanOutput = { body: string; coverage: Coverage[]; protected: string[]; harness_tickets: TicketDraft[] };
 type Decision = { ticket: string; decision: 'still_valid' | 'superseded'; rationale: string };

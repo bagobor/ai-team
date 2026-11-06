@@ -1,6 +1,7 @@
 import { existsSync } from 'node:fs';
 import { mkdir, readdir, readFile, realpath, rm, stat } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
+import picomatch from 'picomatch';
 import { isWithin } from '../paths.ts';
 import { commitStaged, ENGINE_CONFIG, engineGit, git, gitOk } from './git.ts';
 
@@ -113,6 +114,26 @@ export async function changedPaths(repoPath: string, wtPath: string, baseSha: st
   const location = await linkedLocation(repoPath, wtPath);
   const out = await gitOk(wtPath, [...location, 'diff', '--no-ext-diff', '--no-renames', '--name-only', '-z', baseSha, 'HEAD']);
   return out.split('\0').filter(Boolean);
+}
+
+// Where a branch left the base: the commit its work is measured from, wherever the base has moved since.
+export async function mergeBase(repoPath: string, a: string, b: string): Promise<string> {
+  return gitOk(repoPath, ['merge-base', a, b]);
+}
+
+// A protected folder can hold thousands of files, and one git command takes only so long an argument list.
+const OVERLAY_BATCH = 200;
+
+// Runs git in a worktree nothing has run in yet, so its .git is still the one the engine made (see linkedLocation).
+// Protected paths are matched as run-checks matches them, because this filesystem folds case.
+export async function overlayPaths(worktree: string, fromSha: string, globs: string[]): Promise<string[]> {
+  if (globs.length === 0) return [];
+  const matches = picomatch(globs, { dot: true, nocase: true });
+  const listed = await gitOk(worktree, ['ls-tree', '-r', '-z', '--name-only', fromSha]);
+  const files = listed.split('\0').filter((path) => path !== '' && matches(path));
+  // A name with a bracket or a star in it is a file here, not a pathspec.
+  for (let i = 0; i < files.length; i += OVERLAY_BATCH) await engineGit(worktree, ['--literal-pathspecs', 'checkout', fromSha, '--', ...files.slice(i, i + OVERLAY_BATCH)]);
+  return files;
 }
 
 export async function removeAttemptWorktree(repoPath: string, wtPath: string, branch: string): Promise<void> {

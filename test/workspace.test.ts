@@ -4,12 +4,14 @@ import {
   addAttemptWorktree,
   changedPaths,
   ensureIntegrationBranch,
+  mergeBase,
+  overlayPaths,
   prepareRepo,
   pruneGitWorktrees,
   removeAttemptWorktree,
   snapshotAttempt,
 } from '../src/git/workspace.ts';
-import { commitAll, initRepo, makeRepo, porcelain, revParse, run, symbolicHead, tempDir } from './helpers/repo.ts';
+import { commitAll, commitOnBranch, initRepo, makeRepo, porcelain, revParse, run, symbolicHead, tempDir } from './helpers/repo.ts';
 
 const BRANCH = 'aiteam/attempt/T-1-a1';
 
@@ -183,6 +185,52 @@ describe('attempt worktrees', () => {
     await snapshotAttempt(repo, wt, 'names');
 
     expect(await changedPaths(repo, wt, base)).toEqual(['with space/naïve "quoted".txt']);
+  });
+
+  it('finds the merge-base of a branch and the base', async () => {
+    const head = await commitOnBranch(repo, 'feature', { 'feature.txt': 'x\n' });
+    writeFileSync(join(repo, 'later.txt'), 'later\n');
+    const advanced = commitAll(repo, 'main moves on');
+
+    expect(await mergeBase(repo, head, 'main')).toBe(base);
+    expect(await mergeBase(repo, 'main', 'main')).toBe(advanced);
+  });
+
+  describe('laying files from another commit over a worktree', () => {
+    const FILES = { 'acceptance/a.sh': 'from head a\n', 'acceptance/deep/b.sh': 'from head b\n', '.hidden/c.sh': 'from head c\n', 'src/x.js': 'x\n', 'README.md': '# changed on head\n' };
+
+    it('lays the files the globs name, dotfiles and nested folders included, and returns them', async () => {
+      const head = await commitOnBranch(repo, 'feature', FILES);
+      await addAttemptWorktree(repo, wt, BRANCH, base);
+      mkdirSync(join(wt, 'acceptance'));
+      writeFileSync(join(wt, 'acceptance', 'a.sh'), 'stale\n');
+
+      const laid = await overlayPaths(wt, head, ['acceptance/**', '.hidden/**']);
+
+      expect([...laid].sort()).toEqual(['.hidden/c.sh', 'acceptance/a.sh', 'acceptance/deep/b.sh']);
+      expect(readFileSync(join(wt, 'acceptance', 'a.sh'), 'utf8')).toBe('from head a\n');
+      expect(readFileSync(join(wt, 'acceptance', 'deep', 'b.sh'), 'utf8')).toBe('from head b\n');
+      expect(readFileSync(join(wt, '.hidden', 'c.sh'), 'utf8')).toBe('from head c\n');
+      expect(existsSync(join(wt, 'src', 'x.js'))).toBe(false);
+      expect(readFileSync(join(wt, 'README.md'), 'utf8')).toBe('# test repo\n');
+    });
+
+    it('returns [] and lays nothing when no file matches', async () => {
+      const head = await commitOnBranch(repo, 'feature', FILES);
+      await addAttemptWorktree(repo, wt, BRANCH, base);
+
+      expect(await overlayPaths(wt, head, ['nothing/**'])).toEqual([]);
+      expect(await overlayPaths(wt, head, [])).toEqual([]);
+      expect(existsSync(join(wt, 'acceptance'))).toBe(false);
+    });
+
+    it('takes a name that looks like a pathspec as the file it is', async () => {
+      const head = await commitOnBranch(repo, 'feature', { 'acceptance/odd [1] "q".sh': 'odd\n', 'acceptance/other.sh': 'other\n' });
+      await addAttemptWorktree(repo, wt, BRANCH, base);
+
+      expect(await overlayPaths(wt, head, ['acceptance/**'])).toEqual(['acceptance/odd [1] "q".sh', 'acceptance/other.sh']);
+      expect(readFileSync(join(wt, 'acceptance', 'odd [1] "q".sh'), 'utf8')).toBe('odd\n');
+    });
   });
 
   describe('a worker that rewrites .git in its worktree', () => {

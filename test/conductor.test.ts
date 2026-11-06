@@ -36,7 +36,8 @@ const HUMAN = { id: 'AC-2', text: 'Dodging feels fair', verification: { method: 
 const draft = (key: string, ac_refs: string[]) => ({ key, title: key, specialty: 'engineer', ac_refs, touches: ['src/**'], depends_on: [], definition_of_done: ['true'], inputs: [], size: 'S', body: 'Do it.\n' });
 const ONE_TICKET = { body: '# Design\n', tickets: [draft('T-1', ['AC-1', 'AC-2'])] };
 const TWO_TICKETS = { body: '# Design\n', tickets: [draft('T-1', ['AC-1']), draft('T-2', ['AC-2'])] };
-const TEST_PLAN = { body: '# Test plan\n', coverage: CRITERIA.map(({ id }) => ({ ac: id, commands: ['true'], notes: '' })), harness_tickets: [], protected: [] };
+// `true` passes on any commit, so these entries are regression guards: a fresh entry has to fail on the milestone's base.
+const TEST_PLAN = { body: '# Test plan\n', coverage: CRITERIA.map(({ id }) => ({ ac: id, commands: ['true'], notes: '', regression: true })), harness_tickets: [], protected: [] };
 const APPROVE = { verdict: 'approve', summary: 'Fine', findings: [] };
 const PASS = { results: CRITERIA.map(({ id }) => ({ ac: id, status: 'passing', commands: [], notes: '' })), bugs: [], summary: 'All good' };
 const failing = (ac: string) => ({
@@ -1485,7 +1486,7 @@ describe('review focus: a change mid-flight', () => {
 
   it('holds the Bug while QA asks to change a Test Plan command, then verifies again with the new one', async () => {
     const h = await harness();
-    const plan = { ...TEST_PLAN, coverage: [{ ac: 'AC-1', commands: ['false'], notes: '' }, { ac: 'AC-2', commands: ['true'], notes: '' }] };
+    const plan = { ...TEST_PLAN, coverage: [{ ac: 'AC-1', commands: ['false'], notes: '', regression: true }, { ac: 'AC-2', commands: ['true'], notes: '', regression: true }] };
     await toVerify(h, { plan });
     const dispute = { target_artifact: 'TEST-PLAN-M1@1', target_ac: 'AC-1', proposed_text: 'true', rationale: 'It checks the wrong thing', evidence: 'The Spec never names that file' };
 

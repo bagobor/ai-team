@@ -9,25 +9,27 @@ import { applyOutput } from '../src/engine/apply/index.ts';
 import { worktreePath } from '../src/paths.ts';
 import { parseTicket } from '../src/tickets/ticket.ts';
 import { addAttemptWorktree } from '../src/git/workspace.ts';
-import { commitAll, revParse, run, tempDir } from './helpers/repo.ts';
+import { commitAll, commitOnBranch, revParse, run, tempDir } from './helpers/repo.ts';
 import { CRITERIA, ctxFor, evidenceOf, lockSpec, projectOf, publish } from './helpers/apply.ts';
 import { makeEngine, type TestEngine } from './helpers/engine.ts';
 
 type Result = { ac: string; status: 'passing' | 'failing'; commands: string[]; notes: string };
 type Bug = { ac: string; title: string; description: string; touches: string[]; commands: string[] };
-type Coverage = { ac: string; commands: string[]; notes: string };
+type Coverage = { ac: string; commands: string[]; notes: string; regression?: boolean };
 
 const pass = (ac: string, commands: string[] = ['true'], notes = 'Looks good'): Result => ({ ac, status: 'passing', commands, notes });
 const fail = (ac: string, commands: string[] = [], notes = 'It broke'): Result => ({ ac, status: 'failing', commands, notes });
 const bug = (ac: string, overrides: Partial<Bug> = {}): Bug => ({ ac, title: `${ac} is broken`, description: 'It does the wrong thing', touches: ['src/**'], commands: [], ...overrides });
-const covers = (ac: string, ...commands: string[]): Coverage => ({ ac, commands, notes: '' });
+// Most of these tests run `true`, which passes on any commit, so their entries are regression guards. A fresh entry has to fail without the work.
+const covers = (ac: string, ...commands: string[]): Coverage => ({ ac, commands, notes: '', regression: true });
+const fresh = (ac: string, ...commands: string[]): Coverage => ({ ac, commands, notes: '' });
 // As QA wrote one in a real run: a pin, and a section beside the criterion.
 const disputes = (ac: string) => ({ target_artifact: 'TEST-PLAN-M1@1', target_section: `${ac} commands`, target_ac: ac, proposed_text: 'true', rationale: 'The command checks the wrong file', evidence: 'It reads README.txt, which the Spec never names' });
 
 describe('qa_verify applier', () => {
   let e: TestEngine;
 
-  async function setUp(engine: TestEngine, coverage: Coverage[], round = 1, criteria: Criterion[] = CRITERIA): Promise<void> {
+  async function setUp(engine: TestEngine, coverage: Coverage[], round = 1, criteria: Criterion[] = CRITERIA, extra: Record<string, unknown> = {}): Promise<void> {
     e = engine;
     await lockSpec(e, criteria);
     const project = await projectOf(e);
@@ -37,20 +39,24 @@ describe('qa_verify applier', () => {
       message: 'the design and the plan',
       publish: [
         { id: 'TECH-M1', type: 'tech_design', status: 'approved', ownerRole: 'tech_lead', approvedBy: 'owner:tech_lead', derivedFrom: ['SPEC-M1@1'], milestone: 1, body: '# Design\n' },
-        { id: 'TEST-PLAN-M1', type: 'test_plan', status: 'approved', ownerRole: 'tech_lead', approvedBy: 'owner:tech_lead', derivedFrom: ['SPEC-M1@1'], milestone: 1, body: '# Plan\n', fields: { data: { coverage } } },
+        { id: 'TEST-PLAN-M1', type: 'test_plan', status: 'approved', ownerRole: 'tech_lead', approvedBy: 'owner:tech_lead', derivedFrom: ['SPEC-M1@1'], milestone: 1, body: '# Plan\n', fields: { data: { coverage, ...extra } } },
       ],
     });
   }
 
-  const start = async (coverage: Coverage[] = [covers('AC-1', 'true'), covers('AC-2', 'true')], options: Parameters<typeof makeEngine>[0] = { steps: [] }, round = 1): Promise<void> => setUp(await makeEngine(options), coverage, round);
+  const start = async (coverage: Coverage[] = [covers('AC-1', 'true'), covers('AC-2', 'true')], options: Parameters<typeof makeEngine>[0] = { steps: [] }, round = 1, extra: Record<string, unknown> = {}): Promise<void> =>
+    setUp(await makeEngine(options), coverage, round, CRITERIA, extra);
 
   afterEach(async () => {
     await e.cleanup();
   });
 
-  const qaCtx = async (output: { results: Result[]; bugs?: Bug[]; summary?: string; change_requests?: unknown[] }, worktree?: string) =>
-    ctxFor(e, 'qa_verify', { bugs: [], summary: 'Done', ...output }, { kind: 'qa_verify', role: 'qa_engineer', inputs: ['SPEC-M1@1', 'TEST-PLAN-M1@1'], baseSha: await revParse(e.repoPath), ...(worktree ? { worktree } : {}) });
-  const verify = async (output: Parameters<typeof qaCtx>[0], worktree?: string) => applyOutput(await qaCtx(output, worktree));
+  // baseSha is the head QA verifies: the repo's own HEAD unless a test puts the work on a branch past it.
+  const qaCtx = async (output: { results: Result[]; bugs?: Bug[]; summary?: string; change_requests?: unknown[] }, worktree?: string, baseSha?: string) =>
+    ctxFor(e, 'qa_verify', { bugs: [], summary: 'Done', ...output }, { kind: 'qa_verify', role: 'qa_engineer', inputs: ['SPEC-M1@1', 'TEST-PLAN-M1@1'], baseSha: baseSha ?? (await revParse(e.repoPath)), ...(worktree ? { worktree } : {}) });
+  const verify = async (output: Parameters<typeof qaCtx>[0], worktree?: string, baseSha?: string) => applyOutput(await qaCtx(output, worktree, baseSha));
+  const baseWorktree = (ctx: Awaited<ReturnType<typeof qaCtx>>) => worktreePath(e.paths, 'p', `${ctx.task.ticket_id}-base`, ctx.attempt.k);
+  const baseBranch = (ctx: Awaited<ReturnType<typeof qaCtx>>) => run(e.repoPath, 'branch', '--list', `aiteam/verify/${ctx.task.ticket_id}-a${ctx.attempt.k}-base`).trim();
   const criterion = async (ac: string) => {
     const found = (await e.store.listCriteria((await projectOf(e)).id, 1)).find((c) => c.ac_id === ac);
     if (!found) throw new Error(`No ${ac}`);
@@ -423,5 +429,165 @@ describe('qa_verify applier', () => {
     expect(evidenceOf(result)).toMatch(/stopped/);
     expect((await criterion('AC-1')).status).toBe('unverified');
     expect(existsSync(worktreePath(e.paths, 'p', `${ctx.task.ticket_id}-verify`, ctx.attempt.k))).toBe(false);
+  });
+
+  // The second run: the milestone's merge-base with main, with QA's protected files laid over it.
+  describe('against the base', () => {
+    const withSetup = async (setup: string): Promise<void> => {
+      await e.artifacts.commit(await projectOf(e), { message: 'the profile', publish: [{ id: 'ENV-PROFILE', type: 'environment_profile', status: 'approved', ownerRole: 'tech_lead', derivedFrom: [], body: '# Env\n', fields: { data: { network_allow: [], setup } } }] });
+    };
+
+    it('rejects a criterion whose commands pass on the base too', async () => {
+      await start([fresh('AC-1', 'true'), covers('AC-2', 'true')]);
+      const result = await verify({ results: [pass('AC-1'), pass('AC-2')] });
+      expect(evidenceOf(result)).toMatch(/AC-1's Test Plan commands pass on the base too/);
+      expect(evidenceOf(result)).toMatch(/Change Request/);
+      expect((await criterion('AC-1')).status).toBe('unverified');
+    });
+
+    it('names every criterion that passes on the base, in one refusal', async () => {
+      await start([fresh('AC-1', 'true'), fresh('AC-2', 'true')]);
+      const text = evidenceOf(await verify({ results: [pass('AC-1'), pass('AC-2')] }));
+      expect(text).toMatch(/AC-1's Test Plan commands pass on the base too/);
+      expect(text).toMatch(/AC-2's Test Plan commands pass on the base too/);
+    });
+
+    it('takes a criterion whose commands fail on the base', async () => {
+      // feature.txt exists only on the verified commit, which sits on a branch past the base.
+      await start([fresh('AC-1', 'test -f feature.txt'), covers('AC-2', 'true')]);
+      const head = await commitOnBranch(e.repoPath, 'aiteam/m1', { 'feature.txt': 'x' });
+      await publish(e, await verify({ results: [pass('AC-1'), pass('AC-2')] }, undefined, head));
+      expect(await criterion('AC-1')).toMatchObject({ status: 'passing' });
+      expect(await evidence('AC-1')).toMatch(/On the base \([0-9a-f]{7}\), failed as it should/);
+    });
+
+    it('runs the base at the merge-base with main, not at main itself', async () => {
+      await start([fresh('AC-1', 'test -f feature.txt'), covers('AC-2', 'true')]);
+      const base = await revParse(e.repoPath);
+      const head = await commitOnBranch(e.repoPath, 'aiteam/m1', { 'feature.txt': 'x' });
+      // main moves on after the branch left it, and carries feature.txt too, but that is not where the milestone began.
+      await writeFile(join(e.repoPath, 'feature.txt'), 'x');
+      commitAll(e.repoPath, 'main gets there on its own');
+
+      await publish(e, await verify({ results: [pass('AC-1'), pass('AC-2')] }, undefined, head));
+
+      expect(await evidence('AC-1')).toContain(`On the base (${base.slice(0, 7)}), failed as it should`);
+    });
+
+    it('marks a regression entry that passes on the base as a guard', async () => {
+      await start();
+      await publish(e, await verify({ results: [pass('AC-1'), pass('AC-2')] }));
+      expect(await criterion('AC-1')).toMatchObject({ status: 'passing' });
+      expect(await evidence('AC-1')).toMatch(/On the base \([0-9a-f]{7}\), passed too: a regression guard/);
+    });
+
+    it('lays the protected files over the base', async () => {
+      // The protected test exists only on head; with the overlay, a command that only checks for it passes on base, so it is vacuous.
+      await start([fresh('AC-1', 'test -f acceptance/ac-1.sh'), covers('AC-2', 'true')], undefined, 1, { protected: ['acceptance/**'] });
+      const head = await commitOnBranch(e.repoPath, 'aiteam/m1', { 'acceptance/ac-1.sh': 'exit 0' });
+      expect(evidenceOf(await verify({ results: [pass('AC-1'), pass('AC-2')] }, undefined, head))).toMatch(/pass on the base too/);
+    });
+
+    it('lays only the protected files, so the rest of the work is still missing', async () => {
+      await start([fresh('AC-1', 'test -f acceptance/ac-1.sh && test -f feature.txt'), covers('AC-2', 'true')], undefined, 1, { protected: ['acceptance/**'] });
+      const head = await commitOnBranch(e.repoPath, 'aiteam/m1', { 'acceptance/ac-1.sh': 'exit 0', 'feature.txt': 'x' });
+      await publish(e, await verify({ results: [pass('AC-1'), pass('AC-2')] }, undefined, head));
+      expect(await evidence('AC-1')).toMatch(/failed as it should/);
+    });
+
+    it('judges the Test Plan\'s commands alone, not QA\'s own', async () => {
+      await start([fresh('AC-1', 'true'), covers('AC-2', 'true')]);
+      const head = await commitOnBranch(e.repoPath, 'aiteam/m1', { 'feature.txt': 'x' });
+      expect(evidenceOf(await verify({ results: [pass('AC-1', ['test -f feature.txt']), pass('AC-2')] }, undefined, head))).toMatch(/AC-1's Test Plan commands pass on the base too/);
+    });
+
+    it('takes a CR on vacuous commands as a dispute', async () => {
+      await start([fresh('AC-1', 'true'), covers('AC-2', 'true')]);
+      await publish(e, await verify({ results: [pass('AC-1'), pass('AC-2')], change_requests: [disputes('AC-1')] }));
+      expect(await criterion('AC-1')).toMatchObject({ status: 'failing' });
+      expect(await ids()).not.toContain('BUG-M1-1');
+      expect((await ids()).filter((id) => id.includes('-B-'))).toEqual([]);
+      expect(await evidence('AC-1')).toMatch(/On the base \([0-9a-f]{7}\), passed too, so it shows nothing/);
+      expect(await evidence('AC-1')).toContain('CR-1');
+      expect((await criterion('AC-2')).status).toBe('passing');
+    });
+
+    it('still refuses when the request is about another criterion', async () => {
+      await start([fresh('AC-1', 'true'), covers('AC-2', 'true')]);
+      expect(evidenceOf(await verify({ results: [pass('AC-1'), pass('AC-2')], change_requests: [disputes('AC-2')] }))).toMatch(/AC-1's Test Plan commands pass on the base too/);
+    });
+
+    it('counts a base where setup fails as red', async () => {
+      // The setup passes on the verified commit, where feature.txt is, and fails on the base, where it is not.
+      await start([fresh('AC-1', 'true'), covers('AC-2', 'true')]);
+      await withSetup('test -f feature.txt');
+      const head = await commitOnBranch(e.repoPath, 'aiteam/m1', { 'feature.txt': 'x' });
+
+      await publish(e, await verify({ results: [pass('AC-1'), pass('AC-2')] }, undefined, head));
+
+      expect(await criterion('AC-1')).toMatchObject({ status: 'passing' });
+      expect(await evidence('AC-1')).toMatch(/The base \([0-9a-f]{7}\) could not be set up/);
+    });
+
+    it('runs the Environment Profile setup on the base too', async () => {
+      // installed.txt is there on the base only if its setup ran, so `true` is not what makes this pass.
+      await start([fresh('AC-1', 'test -f installed.txt'), covers('AC-2', 'true')]);
+      await withSetup('touch installed.txt');
+      expect(evidenceOf(await verify({ results: [pass('AC-1'), pass('AC-2')] }))).toMatch(/AC-1's Test Plan commands pass on the base too/);
+    });
+
+    it('counts a command that times out on the base as red', async () => {
+      await start([fresh('AC-1', 'test -f feature.txt || sleep 30'), covers('AC-2', 'true')], { steps: [], config: { checkTimeoutS: 1 } });
+      const head = await commitOnBranch(e.repoPath, 'aiteam/m1', { 'feature.txt': 'x' });
+
+      await publish(e, await verify({ results: [pass('AC-1'), pass('AC-2')] }, undefined, head));
+
+      expect(await criterion('AC-1')).toMatchObject({ status: 'passing' });
+      expect(await evidence('AC-1')).toMatch(/failed as it should/);
+    });
+
+    it('compares only the criteria that held on the verified commit', async () => {
+      await start([fresh('AC-1', 'exit 1'), covers('AC-2', 'true')]);
+      await publish(e, await verify({ results: [pass('AC-1'), pass('AC-2')] }));
+      expect(await criterion('AC-1')).toMatchObject({ status: 'failing' });
+      expect(await evidence('AC-1')).not.toMatch(/On the base/);
+      expect(await evidence('AC-2')).toMatch(/On the base/);
+    });
+
+    it('removes the base worktree and its branch', async () => {
+      await start();
+      const ctx = await qaCtx({ results: [pass('AC-1'), pass('AC-2')] });
+      await publish(e, await applyOutput(ctx));
+      expect(existsSync(baseWorktree(ctx))).toBe(false);
+      expect(baseBranch(ctx)).toBe('');
+    });
+
+    it('removes the base worktree and its branch when the output is refused', async () => {
+      await start([fresh('AC-1', 'true'), covers('AC-2', 'true')]);
+      const ctx = await qaCtx({ results: [pass('AC-1'), pass('AC-2')] });
+      expect(evidenceOf(await applyOutput(ctx))).toMatch(/pass on the base too/);
+      expect(existsSync(baseWorktree(ctx))).toBe(false);
+      expect(baseBranch(ctx)).toBe('');
+    });
+
+    it('records nothing when it is stopped during the base run', async () => {
+      // On the verified commit the command returns at once, so the stop can only land while the base is running.
+      await start([fresh('AC-1', 'test -f feature.txt || sleep 30'), covers('AC-2', 'true')]);
+      const head = await commitOnBranch(e.repoPath, 'aiteam/m1', { 'feature.txt': 'x' });
+      const ctx = await qaCtx({ results: [pass('AC-1'), pass('AC-2')] }, undefined, head);
+      const stopper = new AbortController();
+      const watcher = setInterval(() => {
+        if (existsSync(baseWorktree(ctx))) stopper.abort();
+      }, 20);
+
+      try {
+        expect(evidenceOf(await applyOutput({ ...ctx, signal: stopper.signal }))).toMatch(/stopped/);
+      } finally {
+        clearInterval(watcher);
+      }
+      expect((await criterion('AC-1')).status).toBe('unverified');
+      expect(existsSync(baseWorktree(ctx))).toBe(false);
+      expect(baseBranch(ctx)).toBe('');
+    });
   });
 });
