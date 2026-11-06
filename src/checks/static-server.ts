@@ -60,6 +60,8 @@ function answer(res: ServerResponse, status: number, text: string): void {
 // Serves one directory, or with `mounts` several under their own prefixes, to the play browser and the stakeholder on this machine.
 export function serveStatic(root: string, opts: { port?: number; mounts?: boolean } = {}): Promise<StaticServer> {
   const mounts = new Map<string, string>();
+  // Filled in once the port is known, which is before the first request can arrive.
+  let hosts: string[] = [];
 
   // The longest prefix wins, so a mount can sit under another one's path.
   function rootFor(path: string): { root: string; rest: string } | undefined {
@@ -69,6 +71,9 @@ export function serveStatic(root: string, opts: { port?: number; mounts?: boolea
   }
 
   async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    // A page on any other site can rebind its own name to 127.0.0.1, but it can't make the browser send this Host.
+    const host = req.headers.host;
+    if (host === undefined || !hosts.includes(host)) return answer(res, 403, 'This Host is not allowed');
     if (req.method !== 'GET' && req.method !== 'HEAD') {
       res.setHeader('Allow', 'GET, HEAD');
       return answer(res, 405, 'Method not allowed');
@@ -103,7 +108,8 @@ export function serveStatic(root: string, opts: { port?: number; mounts?: boolea
       .pipe(res);
   }
 
-  const server = createServer((req, res) => {
+  // Node would answer a request with no Host 400 itself; refusing it here keeps every Host refusal the same 403.
+  const server = createServer({ requireHostHeader: false }, (req, res) => {
     handle(req, res).catch(() => {
       if (res.headersSent) res.destroy();
       else answer(res, 500, 'Internal error');
@@ -116,6 +122,7 @@ export function serveStatic(root: string, opts: { port?: number; mounts?: boolea
     server.listen(opts.port ?? 0, '127.0.0.1', () => {
       server.off('error', reject);
       const port = (server.address() as AddressInfo).port;
+      hosts = [`127.0.0.1:${port}`, `localhost:${port}`];
       resolve({
         url: `http://127.0.0.1:${port}/`,
         port,

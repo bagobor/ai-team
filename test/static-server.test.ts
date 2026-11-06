@@ -7,9 +7,12 @@ import { tempDir } from './helpers/repo.ts';
 type Reply = { status: number; headers: Record<string, string | string[] | undefined>; body: string };
 
 // fetch() normalizes `..` and `%2e%2e` away before sending, so traversal has to go out as written.
-function get(server: StaticServer, path: string): Promise<Reply> {
+// `host` replaces the Host header, and null sends none.
+function get(server: StaticServer, path: string, host?: string | null): Promise<Reply> {
+  const headers = typeof host === 'string' ? { host } : {};
   return new Promise((resolve, reject) => {
-    const req = request({ host: '127.0.0.1', port: server.port, path, method: 'GET' }, (res) => {
+    const options = { host: '127.0.0.1', port: server.port, path, method: 'GET', headers, setHost: host !== null };
+    const req = request(options, (res) => {
       let body = '';
       res.setEncoding('utf8').on('data', (chunk: string) => (body += chunk));
       res.on('end', () => resolve({ status: res.statusCode ?? 0, headers: res.headers, body }));
@@ -85,6 +88,15 @@ describe('serveStatic', () => {
   it('listens on 127.0.0.1 only', () => {
     expect(server.url.startsWith('http://127.0.0.1:')).toBe(true);
     expect(server.url).toBe(`http://127.0.0.1:${server.port}/`);
+  });
+
+  it('answers only a request addressed to it on this machine', async () => {
+    expect((await get(server, '/index.html', `evil.example:${server.port}`)).status).toBe(403);
+    expect((await get(server, '/index.html', '127.0.0.1')).status).toBe(403);
+    expect((await get(server, '/index.html', null)).status).toBe(403);
+
+    expect((await get(server, '/index.html', `127.0.0.1:${server.port}`)).status).toBe(200);
+    expect((await get(server, '/index.html', `localhost:${server.port}`)).status).toBe(200);
   });
 });
 
