@@ -581,6 +581,17 @@ describe('flow', () => {
     expect(await taskIds(h)).toContain('M1-REVIEW-1');
   });
 
+  it('tells the Test Plan, QA and the Milestone Review that only the automated criteria are theirs', async () => {
+    const h = await harness();
+    await toVerify(h, HUMAN_FLOW);
+    expect(orderOf(await byTicket(h, 'M1-TESTPLAN')).instructions).toContain('each automated acceptance criterion');
+    expect(orderOf(await byTicket(h, 'M1-QA-1')).instructions).toContain('every automated acceptance criterion');
+
+    await finish(h, 'M1-QA-1', AUTOMATED_PASS);
+    await h.conductor.tick();
+    expect(orderOf(await byTicket(h, 'M1-REVIEW-1')).instructions).toContain('each automated criterion has passed or been waived, and the stakeholder checks the rest');
+  });
+
   it('tells the stakeholder at milestone approval that the automated criteria passed QA', async () => {
     const h = await harness();
     await toVerify(h, HUMAN_FLOW);

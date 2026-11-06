@@ -185,7 +185,7 @@ export function testPlanTask(project: ProjectRow, n: number, inputs: string[]): 
     milestone: n,
     role_id: 'qa_engineer',
     kind: 'authoring',
-    order: workOrder('test_plan', `Write the Test Plan for milestone ${n}. Name the commands that verify each acceptance criterion. Add a harness ticket only for test tooling those commands need that the product won't include. The Tech Lead is splitting the product into tickets at the same time, and those tickets build the product and everything its criteria ask it to include, such as its tests.`, inputs, INTEGRATION),
+    order: workOrder('test_plan', `Write the Test Plan for milestone ${n}. Name the commands that verify each automated acceptance criterion. Add a harness ticket only for test tooling those commands need that the product won't include. The Tech Lead is splitting the product into tickets at the same time, and those tickets build the product and everything its criteria ask it to include, such as its tests.`, inputs, INTEGRATION),
   };
 }
 
@@ -197,7 +197,7 @@ export function qaTask(project: ProjectRow, n: number, round: number, inputs: st
     milestone: n,
     role_id: 'qa_engineer',
     kind: 'qa_verify',
-    order: workOrder('qa_verify', `Verify every acceptance criterion of milestone ${n} on the integration branch. Where a criterion refers to the Tech Design, check the build against it. Report a Bug for each criterion that fails.`, inputs, INTEGRATION),
+    order: workOrder('qa_verify', `Verify every automated acceptance criterion of milestone ${n} on the integration branch. Where a criterion refers to the Tech Design, check the build against it. Report a Bug for each criterion that fails.`, inputs, INTEGRATION),
   };
 }
 
@@ -209,7 +209,7 @@ export function milestoneReviewTask(project: ProjectRow, n: number, round: numbe
     milestone: n,
     role_id: 'pm',
     kind: 'authoring',
-    order: workOrder('milestone_review', `Write the Milestone Review of milestone ${n} for the stakeholder: what was built, known issues, and any deviations from the Spec or the Tech Design. Your inputs leave out the verification commands and their output, because each criterion has already passed or been waived: the status beside it is the engine's own record.`, inputs, INTEGRATION),
+    order: workOrder('milestone_review', `Write the Milestone Review of milestone ${n} for the stakeholder: what was built, known issues, and any deviations from the Spec or the Tech Design. Your inputs leave out the verification commands and their output, because each automated criterion has passed or been waived, and the stakeholder checks the rest: its status is the engine's record.`, inputs, INTEGRATION),
   };
 }
 

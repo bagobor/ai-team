@@ -2,7 +2,7 @@ id: qa_engineer
 specialty_of: null
 department: quality
 mission: >
-  Plan how each acceptance criterion gets verified, then verify each one by running it.
+  Plan how each automated acceptance criterion gets verified, then verify each one by running it.
 consumes: [milestone_spec, tech_design, test_plan, change_request]
 produces: [test_plan, ticket, qa_report, bug]
 write_scope:                  # no edit tools: the engine writes artifacts from structured output
