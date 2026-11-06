@@ -1,12 +1,15 @@
-import { createReadStream } from 'node:fs';
-import { realpath, stat } from 'node:fs/promises';
+import { constants, realpathSync } from 'node:fs';
+import { open, realpath, stat, type FileHandle } from 'node:fs/promises';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { extname, join, sep } from 'node:path';
+import { pipeline } from 'node:stream';
 
 export type StaticServer = {
   url: string;
   port: number;
+  // The directory every request is held to, resolved once at start. Empty with mounts, which each have their own.
+  root: string;
   mount(prefix: string, root: string): void;
   unmount(prefix: string): void;
   close(): Promise<void>;
@@ -33,24 +36,37 @@ function trimSlashes(prefix: string): string {
   return prefix.replace(/^\/+|\/+$/g, '');
 }
 
-// Resolves symlinks first, so a link inside the root can't hand out a file from outside it.
-async function locate(root: string, path: string): Promise<{ file: string; size: number } | undefined> {
+type Opened = { handle: FileHandle; size: number; file: string };
+
+// Opens first and checks after, so a link swapped in between the check and the read can't hand out a file from outside `base`.
+// `base` is resolved once, by the caller, so a root swapped for a link while the server runs doesn't move it.
+async function openInside(base: string, target: string, index = true): Promise<Opened | undefined> {
+  let handle: FileHandle | undefined;
   try {
-    const base = await realpath(root);
-    const inside = (p: string) => p === base || p.startsWith(base + sep);
-    let file = await realpath(join(base, path));
-    if (!inside(file)) return undefined;
-    let info = await stat(file);
-    if (info.isDirectory()) {
-      file = await realpath(join(file, 'index.html'));
-      if (!inside(file)) return undefined;
-      info = await stat(file);
+    // A pipe would hold the open until something wrote to it; non-blocking makes it just another non-file.
+    handle = await open(target, constants.O_RDONLY | constants.O_NONBLOCK);
+    const opened = await handle.stat();
+    const real = await realpath(target);
+    // The name leads to what was opened only if both are the same inode, and only then does `real` say where it lives.
+    const named = await stat(real);
+    const same = named.dev === opened.dev && named.ino === opened.ino;
+    if (!same || (real !== base && !real.startsWith(base + sep))) return await shut(handle);
+    if (opened.isDirectory() && index) {
+      await shut(handle);
+      return await openInside(base, join(real, 'index.html'), false);
     }
-    return info.isFile() ? { file, size: info.size } : undefined;
+    if (!opened.isFile()) return await shut(handle);
+    return { handle, size: opened.size, file: real };
   } catch {
     // Missing, unreadable or a broken link: all the same to a browser.
+    if (handle) await shut(handle);
     return undefined;
   }
+}
+
+async function shut(handle: FileHandle): Promise<undefined> {
+  await handle.close().catch(() => {});
+  return undefined;
 }
 
 function answer(res: ServerResponse, status: number, text: string): void {
@@ -58,14 +74,17 @@ function answer(res: ServerResponse, status: number, text: string): void {
 }
 
 // Serves one directory, or with `mounts` several under their own prefixes, to the play browser and the stakeholder on this machine.
-export function serveStatic(root: string, opts: { port?: number; mounts?: boolean } = {}): Promise<StaticServer> {
+export async function serveStatic(root: string, opts: { port?: number; mounts?: boolean } = {}): Promise<StaticServer> {
+  // Each root is resolved once, here or at mount(), and every request is held to that fixed path.
+  // A process the sandbox can't stop may swap a root for a link while the server runs; the server keeps serving where it started.
+  const base = opts.mounts ? '' : await realpath(root);
   const mounts = new Map<string, string>();
   // Filled in once the port is known, which is before the first request can arrive.
   let hosts: string[] = [];
 
   // The longest prefix wins, so a mount can sit under another one's path.
   function rootFor(path: string): { root: string; rest: string } | undefined {
-    if (!opts.mounts) return { root, rest: path };
+    if (!opts.mounts) return { root: base, rest: path };
     const prefix = [...mounts.keys()].sort((a, b) => b.length - a.length).find((p) => path === `/${p}` || path.startsWith(`/${p}/`));
     return prefix === undefined ? undefined : { root: mounts.get(prefix)!, rest: path.slice(prefix.length + 1) || '/' };
   }
@@ -90,7 +109,7 @@ export function serveStatic(root: string, opts: { port?: number; mounts?: boolea
     if (path.includes('\0')) return answer(res, 400, 'Bad request');
 
     const target = rootFor(path);
-    const found = target && (await locate(target.root, target.rest));
+    const found = target && (await openInside(target.root, join(target.root, target.rest)));
     if (!found) return answer(res, 404, 'Not found');
 
     res.writeHead(200, {
@@ -101,11 +120,12 @@ export function serveStatic(root: string, opts: { port?: number; mounts?: boolea
     });
     if (req.method === 'HEAD') {
       res.end();
+      await shut(found.handle);
       return;
     }
-    createReadStream(found.file)
-      .on('error', () => res.destroy())
-      .pipe(res);
+    // The body comes from the descriptor that was checked, never from the name again.
+    // pipeline() closes the descriptor however the response ends, a browser hanging up halfway included.
+    pipeline(found.handle.createReadStream(), res, () => {});
   }
 
   // Node would answer a request with no Host 400 itself; refusing it here keeps every Host refusal the same 403.
@@ -126,11 +146,12 @@ export function serveStatic(root: string, opts: { port?: number; mounts?: boolea
       resolve({
         url: `http://127.0.0.1:${port}/`,
         port,
+        root: base,
         mount(prefix, dir) {
           if (!opts.mounts) throw new Error('This server was started without mounts');
           const key = trimSlashes(prefix);
           if (key === '') throw new Error('A mount needs a prefix');
-          mounts.set(key, dir);
+          mounts.set(key, realpathSync(dir));
         },
         unmount(prefix) {
           mounts.delete(trimSlashes(prefix));

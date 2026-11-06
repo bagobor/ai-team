@@ -1,13 +1,13 @@
-import { homedir } from 'node:os';
 import { isHumanCheck } from '../../artifacts/acs.ts';
 import { runSandboxed } from '../../checks/run-checks.ts';
 import { advanceBaseBranch, snapshotState, syncBaseIntoIntegration } from '../../git/merge.ts';
-import { addAttemptWorktree, ensureIntegrationBranch, removeAttemptWorktree } from '../../git/workspace.ts';
-import { stateRepoDir, workerDenyRead, worktreePath } from '../../paths.ts';
+import { ensureIntegrationBranch } from '../../git/workspace.ts';
+import { stateRepoDir, worktreePath } from '../../paths.ts';
 import type { ProfileData } from '../apply/discovery.ts';
 import { ENV_PROFILE, reviewId, specId, techId, testPlanId } from '../apply/ids.ts';
 import type { EngineDeps, Runner } from '../runner.ts';
 import type { MilestoneRow, ProjectRow, Store, TaskRow } from '../store.ts';
+import { withHeadWorktree } from './head-worktree.ts';
 import { playBug, problemLine, runPlayGate } from './play-gate.ts';
 import { ensureTask, isClosed, latestPin, milestoneReviewTask, noteOf, pinOf, qaTask, raiseHold, RETRY_OR_HALT, roundId, roundOf, specTask, techTask, testPlanTask, ticketTask, openHold, type TaskSpec, type TicketFields } from './tasks.ts';
 import { ensureTryWorktree, removeTryWorktree } from './try.ts';
@@ -18,6 +18,9 @@ const HOLD_KINDS = ['smoke', 'base_conflict', 'base_refused', 'qa_cap', 'play'] 
 const STALE_BLOCKS: readonly string[] = ['tech_design', 'test_plan', 'ticket'];
 
 const byId = (tasks: TaskRow[], id: string) => tasks.find(({ ticket_id }) => ticket_id === id);
+
+// A problem's own text may already end a sentence, and a second full stop would read as a typo.
+const sentence = (text: string) => (/[.!?]$/.test(text) ? text : `${text}.`);
 
 // An open request could still change what the stakeholder approves, so CP4 and the merge wait until it is decided.
 const requestOpen = async (deps: EngineDeps, project: ProjectRow) =>
@@ -41,15 +44,15 @@ function hold(s: Store, project: ProjectRow, n: number, kind: HoldKind, title: s
 const holdBaseConflict = (s: Store, project: ProjectRow, n: number, conflicts: string[]) =>
   hold(s, project, n, 'base_conflict', `${project.base_branch} conflicts with milestone ${n}`, `Merging ${project.base_branch} into the integration branch conflicts in: ${conflicts.join(', ')}`, `Resolve the conflict in ${project.base_branch} or on the integration branch, then retry.`);
 
-// QA and the play gate both spend rounds, so either can be the one that finds them all used.
-const holdQaCap = (s: Store, project: ProjectRow, n: number, round: number, cap: number, failing: string) =>
+// QA and the play gate both spend rounds, so either can be the one that finds them all used. Each says it in its own words.
+const holdQaCap = (s: Store, project: ProjectRow, n: number, title: string, why: string) =>
   raiseHold(s, project, `qa_cap:M${n}`, {
     milestone: n,
     type: 'question',
     ref: { kind: 'qa_cap', milestone: n },
-    title: `Milestone ${n} still fails after ${round} QA rounds`,
+    title,
     asked_by: 'engine',
-    why: `${failing} The milestone has used its ${cap} rounds.`,
+    why,
     blocks: [`Milestone ${n}`],
     evidence: [],
     recommendation: 'Give it three more rounds if the failures look close to fixed, otherwise halt and look at the Bug reports.',
@@ -93,25 +96,18 @@ async function afterSpec(deps: EngineDeps, project: ProjectRow, { n }: Milestone
   });
 }
 
-// Runs in a worktree of its own at the integration head, with the same setup a ticket gets, and leaves nothing behind.
+// Runs at the integration head with the same setup a ticket gets.
 async function runSmoke(deps: EngineDeps, project: ProjectRow, n: number): Promise<{ ok: true } | { ok: false; why: string }> {
   const { commands, setup } = (await deps.artifacts.read(project, ENV_PROFILE)).fields.data as ProfileData;
-  const { headSha } = await ensureIntegrationBranch(project.repo_path, n, project.base_branch);
-  const worktree = worktreePath(deps.paths, project.name, `M${n}-smoke`, 1);
-  const branch = `aiteam/smoke/M${n}`;
-  await removeAttemptWorktree(project.repo_path, worktree, branch);
-  await addAttemptWorktree(project.repo_path, worktree, branch, headSha);
-  try {
-    const env = { worktree, repoPath: project.repo_path, denyRead: workerDenyRead(deps.paths, homedir()), timeoutS: deps.config.checkTimeoutS, onEvent: () => {} };
+  return withHeadWorktree(deps, project, n, 'smoke', async (checkout) => {
+    const env = { ...checkout, onEvent: () => {} };
     if (setup) {
       const prepared = await runSandboxed({ ...env, network: true, commands: [setup] });
       if (!prepared.ok) return { ok: false, why: prepared.evidence };
     }
     const smoke = await runSandboxed({ ...env, commands: [commands.smoke] });
     return smoke.ok ? { ok: true } : { ok: false, why: smoke.evidence };
-  } finally {
-    await removeAttemptWorktree(project.repo_path, worktree, branch);
-  }
+  });
 }
 
 async function newTicketSpecs(deps: EngineDeps, project: ProjectRow, n: number, tasks: TaskRow[]): Promise<TaskSpec[]> {
@@ -181,14 +177,21 @@ async function build(deps: EngineDeps, runner: Runner, project: ProjectRow, m: M
   if ((await artifacts.list(project.id)).some((row) => row.milestone === n && row.status === 'stale' && STALE_BLOCKS.includes(row.type))) return;
 
   const played = await runPlayGate(deps, project, n);
+  if (played.kind === 'unavailable' && played.cause === 'setup') {
+    await hold(store, project, n, 'play', `The setup failed before milestone ${n}'s game could be played`, played.why, "Fix the Environment Profile's setup command, or what it fetches from, such as a lockfile or a registry, then retry. No QA round starts until the game has been played.");
+    return;
+  }
   if (played.kind === 'unavailable') {
     await hold(store, project, n, 'play', `Milestone ${n}'s game can't be played here`, played.why, 'Fix what stops the engine playing the game on this machine, such as a missing Chrome (chrome.binary in ~/.aiteam/config.yaml), then retry. No QA round starts until the game has been played.');
     return;
   }
   if (played.kind === 'failed') {
-    const failing = `The game doesn't run: ${problemLine(played.problems[0]!)}.`;
     if (m.verify_round >= m.verify_cap) {
-      await holdQaCap(store, project, n, m.verify_round, m.verify_cap, failing);
+      // No QA ran, so these are rounds, not QA rounds. Only the first problem fits in a line; the Bugs hold the rest.
+      const rounds = (k: number) => `${k} round${k === 1 ? '' : 's'}`;
+      const used = m.verify_cap === 1 ? 'its only round' : `its ${rounds(m.verify_cap)}`;
+      const why = `The game doesn't run: ${sentence(problemLine(played.problems[0]!))} The milestone has used ${used}.`;
+      await holdQaCap(store, project, n, `Milestone ${n}'s game still doesn't run after ${rounds(m.verify_round)}`, why);
       return;
     }
     // The round is spent with the Bug that records it, so a crash can't charge it twice or file a Bug for free.
@@ -236,7 +239,7 @@ async function verify(deps: EngineDeps, project: ProjectRow, m: MilestoneRow, ta
     return;
   }
   const failing = criteria.filter(({ status }) => status !== 'passing' && status !== 'waived').map(({ ac_id }) => ac_id);
-  await holdQaCap(store, project, n, round, cap, `These criteria don't pass: ${failing.join(', ')}.`);
+  await holdQaCap(store, project, n, `Milestone ${n} still fails after ${round} QA rounds`, `These criteria don't pass: ${failing.join(', ')}. The milestone has used its ${cap} rounds.`);
 }
 
 async function afterMilestoneReview(deps: EngineDeps, project: ProjectRow, m: MilestoneRow, tasks: TaskRow[]): Promise<void> {

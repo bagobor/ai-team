@@ -1,26 +1,26 @@
 import { realpath, stat } from 'node:fs/promises';
-import { homedir } from 'node:os';
 import { join, sep } from 'node:path';
 import { isHumanCheck } from '../../artifacts/acs.ts';
 import type { NewVersion } from '../../artifacts/store.ts';
 import type { PlayProblem } from '../../checks/play.ts';
 import { runSandboxed, type CommandEnv, type SandboxedInput } from '../../checks/run-checks.ts';
 import { serveStatic } from '../../checks/static-server.ts';
-import { addAttemptWorktree, ensureIntegrationBranch, removeAttemptWorktree } from '../../git/workspace.ts';
-import { workerDenyRead, worktreePath } from '../../paths.ts';
 import type { PlayBlock, ProfileData } from '../apply/discovery.ts';
 import { ENV_PROFILE, specId, techId } from '../apply/ids.ts';
 import { bugTicket, nextBugNumber } from '../apply/qa.ts';
 import { fenced } from '../apply/text.ts';
 import type { EngineDeps } from '../runner.ts';
 import type { ProjectRow } from '../store.ts';
+import { withHeadWorktree } from './head-worktree.ts';
 import { latestPin } from './tasks.ts';
 
+// `profile` is the one the gate built with, so the Bug's ticket proves the fix with that profile's own test command.
+// `cause` says what a person must fix: this machine's browser, or the profile's setup.
 export type PlayGateResult =
   | { kind: 'skipped' }
   | { kind: 'passed'; headSha: string }
-  | { kind: 'failed'; headSha: string; problems: PlayProblem[] }
-  | { kind: 'unavailable'; why: string };
+  | { kind: 'failed'; headSha: string; problems: PlayProblem[]; profile: ProfileData }
+  | { kind: 'unavailable'; cause: 'browser' | 'setup'; why: string };
 
 type Failed = Extract<PlayGateResult, { kind: 'failed' }>;
 type Played = Exclude<PlayGateResult, { kind: 'skipped' }>;
@@ -41,16 +41,17 @@ async function runSetup(env: SiteEnv, profile: ProfileData): Promise<{ ok: true 
 // The build ran code a worker wrote, which can leave the root as a link out of the checkout. The server only keeps
 // what it serves inside the root it is given, so the root itself is checked here.
 async function siteRoot(worktree: string, root: string): Promise<Built> {
-  const dir = join(worktree, root);
+  let real: string;
   try {
     const base = await realpath(worktree);
-    const real = await realpath(dir);
+    real = await realpath(join(worktree, root));
     if (real !== base && !real.startsWith(base + sep)) return { ok: false, why: `play.root ${root} leads outside the checkout` };
     if (!(await stat(real)).isDirectory()) return { ok: false, why: `play.root ${root} is not a directory after the build` };
   } catch {
     return { ok: false, why: `play.root ${root} does not exist after the build` };
   }
-  return { ok: true, root: dir };
+  // The server is given the resolved directory, so a link swapped in at play.root once this check has passed leads nowhere.
+  return { ok: true, root: real };
 }
 
 // Everything runs in the sandbox, never in the engine's own process, since the build is the product's own code.
@@ -65,46 +66,45 @@ export async function buildSite(env: SiteEnv, profile: ProfileData, opts: { setu
   return siteRoot(env.worktree, profile.play.root);
 }
 
+const CHROME_SETTING = 'The engine plays the game in the Chrome that chrome.binary in ~/.aiteam/config.yaml names.';
+
+// A browser's own problem names the path it tried. The setting that chose that path is what a person changes.
+const browserWhy = (why: string): string => (why.includes('chrome.binary') ? why : `${why}\n${CHROME_SETTING}`);
+
 // A problem from the browser itself says nothing about the game, so it holds instead of costing a round.
-function judged(headSha: string, problems: PlayProblem[], ok: boolean): Played {
+function judged(headSha: string, problems: PlayProblem[], ok: boolean, profile: ProfileData): Played {
   const browser = problems.filter(({ kind }) => kind === 'browser');
-  if (browser.length > 0) return { kind: 'unavailable', why: browser.map(({ detail }) => detail).join('\n') };
+  if (browser.length > 0) return { kind: 'unavailable', cause: 'browser', why: browserWhy(browser.map(({ detail }) => detail).join('\n')) };
   if (ok && problems.length === 0) return { kind: 'passed', headSha };
   // A Bug with nothing in it would give an Engineer nothing to fix.
-  return { kind: 'failed', headSha, problems: problems.length > 0 ? problems : [{ kind: 'load', detail: 'The play run failed and named no problem' }] };
+  return { kind: 'failed', headSha, profile, problems: problems.length > 0 ? problems : [{ kind: 'load', detail: 'The play run failed and named no problem' }] };
 }
 
-// Runs in a worktree of its own at the integration head, as the smoke pre-flight does, and leaves nothing behind.
+// Plays in a checkout of the integration head, as the smoke pre-flight checks one.
 async function playHead(deps: EngineDeps, project: ProjectRow, n: number, profile: ProfileData, play: PlayBlock): Promise<Played> {
   const { player } = deps;
-  if (!player) return { kind: 'unavailable', why: 'The engine was started without a browser to play the game in.' };
+  if (!player) return { kind: 'unavailable', cause: 'browser', why: 'The engine was started without a browser to play the game in.' };
   const missing = player.unavailable();
-  if (missing) return { kind: 'unavailable', why: missing };
+  if (missing) return { kind: 'unavailable', cause: 'browser', why: browserWhy(missing) };
 
-  const { headSha } = await ensureIntegrationBranch(project.repo_path, n, project.base_branch);
-  const worktree = worktreePath(deps.paths, project.name, `M${n}-play`, 1);
-  const branch = `aiteam/play/M${n}`;
-  await removeAttemptWorktree(project.repo_path, worktree, branch);
-  await addAttemptWorktree(project.repo_path, worktree, branch, headSha);
-  try {
-    const env = { worktree, repoPath: project.repo_path, denyRead: workerDenyRead(deps.paths, homedir()), timeoutS: deps.config.checkTimeoutS };
+  return withHeadWorktree(deps, project, n, 'play', async (env, headSha): Promise<Played> => {
     // A setup that fails may be the registry or the network, not the game, so it asks rather than filing a Bug.
     const prepared = await runSetup(env, profile);
-    if (!prepared.ok) return { kind: 'unavailable', why: prepared.why };
+    if (!prepared.ok) return { kind: 'unavailable', cause: 'setup', why: prepared.why };
     const site = await buildSite(env, profile, { setup: false });
-    if (!site.ok) return { kind: 'failed', headSha, problems: [{ kind: 'load', detail: site.why }] };
+    if (!site.ok) return { kind: 'failed', headSha, profile, problems: [{ kind: 'load', detail: site.why }] };
     const server = await serveStatic(site.root);
     try {
+      // The root was checked before the server resolved it, and a process the sandbox can't stop may have swapped it in between.
+      if (server.root !== site.root) return { kind: 'failed', headSha, profile, problems: [{ kind: 'load', detail: `play.root ${play.root} changed while the engine began serving it` }] };
       // A file name may hold a space, # or %, which a URL reads as something else.
       const page = play.entry.split('/').map(encodeURIComponent).join('/');
       const played = await player.smoke(server.url + page, play.keys);
-      return judged(headSha, played.problems, played.ok);
+      return judged(headSha, played.problems, played.ok, profile);
     } finally {
       await server.close();
     }
-  } finally {
-    await removeAttemptWorktree(project.repo_path, worktree, branch);
-  }
+  });
 }
 
 // Builds, serves and smoke-plays the integration head before a QA round, so a game that never starts doesn't reach QA.
@@ -117,7 +117,7 @@ export async function runPlayGate(deps: EngineDeps, project: ProjectRow, n: numb
   await deps.store.logEvent(project.id, 'play.result', {
     milestone: n,
     outcome: result.kind,
-    ...(result.kind === 'unavailable' ? { why: result.why } : { headSha: result.headSha }),
+    ...(result.kind === 'unavailable' ? { cause: result.cause, why: result.why } : { headSha: result.headSha }),
     ...(result.kind === 'failed' ? { problems: result.problems } : {}),
   });
   return result;
@@ -131,10 +131,9 @@ const multiLine = ({ detail }: PlayProblem) => /[\r\n]/.test(detail.trim());
 // The engine files this Bug itself: no QA ran, so what the browser saw is the whole of the evidence. A game that
 // doesn't run fails every automated criterion, so its ticket names them all, and the profile's test command proves
 // the fix broke nothing else.
-export async function playBug(deps: EngineDeps, project: ProjectRow, n: number, round: number, { headSha, problems }: Failed): Promise<{ bug: NewVersion; ticket: NewVersion }> {
+export async function playBug(deps: EngineDeps, project: ProjectRow, n: number, round: number, { headSha, problems, profile }: Failed): Promise<{ bug: NewVersion; ticket: NewVersion }> {
   const k = await nextBugNumber(deps, project, n);
   const id = `BUG-M${n}-${k}`;
-  const { commands } = (await deps.artifacts.read(project, ENV_PROFILE)).fields.data as ProfileData;
   const acs = (await deps.store.listCriteria(project.id, n)).filter((criterion) => !isHumanCheck(criterion)).map(({ ac_id }) => ac_id);
   const specPin = await latestPin(deps, project, specId(n));
   const full = problems.filter(multiLine);
@@ -150,6 +149,6 @@ export async function playBug(deps: EngineDeps, project: ProjectRow, n: number, 
     ...(full.length === 0 ? [] : ['## In full', '', ...full.flatMap(({ kind, detail }) => [`${kind}:`, '', fenced(detail), ''])]),
   ].join('\n');
   const bug: NewVersion = { id, type: 'bug', status: 'approved', ownerRole: 'qa_engineer', approvedBy: 'engine', milestone: n, derivedFrom: [specPin, await latestPin(deps, project, ENV_PROFILE)], fields: { data: { acs, headSha, problems } }, body };
-  const ticket = bugTicket(n, k, { acs, title: 'The game does not run', touches: ['**'], definition_of_done: [commands.test], techPin: await latestPin(deps, project, techId(n)), specPin });
+  const ticket = bugTicket(n, k, { acs, title: 'The game does not run', touches: ['**'], definition_of_done: [profile.commands.test], techPin: await latestPin(deps, project, techId(n)), specPin });
   return { bug, ticket };
 }

@@ -45,6 +45,7 @@ describe('applyEvent', () => {
       event('play.result', { milestone: 1, outcome: 'unavailable', why: 'Chrome was not found at /nope' }, null),
       event('play.result', { milestone: 1, outcome: 'passed', problems: [] }, null),
       event('play.result', { milestone: 1, outcome: 'failed', problems: [{ kind: 'load', detail: 'The build command failed.\n$ npm run build\nerror TS2304' }] }, null),
+      event('play.result', { milestone: 1, outcome: 'unavailable', cause: 'setup', why: "The Environment Profile's setup failed, so the game could not be built.\n$ npm ci\nnpm ERR! 404" }, null),
     );
 
     expect(rows[0]).toMatchObject({ kind: 'test', bold: 'play M1', text: 'failed: exception: boom; blank: All white', tone: 'bad' });
@@ -52,6 +53,7 @@ describe('applyEvent', () => {
     expect(rows[2]).toMatchObject({ text: 'passed', tone: 'good' });
     // A build's whole output is in the Bug. One row of the log takes its first line.
     expect(rows[3]).toMatchObject({ text: 'failed: load: The build command failed.' });
+    expect(rows[4]).toMatchObject({ text: "unavailable: The Environment Profile's setup failed, so the game could not be built." });
   });
 
   it('says why a document changed when the event carries a reason', () => {

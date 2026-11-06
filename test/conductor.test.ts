@@ -1262,9 +1262,9 @@ describe('the play gate', () => {
 
     const hold = await pending(h, 'qa_cap');
     expect(hold.dedupe_key).toBe('qa_cap:M1:1');
-    expect(hold.why).toMatch(/doesn't run/);
-    expect(hold.why).toContain('boom at game.js:3');
-    expect(hold.why).not.toContain('Uncaught TypeError');
+    // No QA ran, so the hold counts the gate's rounds as rounds, and names only the first problem.
+    expect(hold.title).toBe("Milestone 1's game still doesn't run after 1 round");
+    expect(hold.why).toBe("The game doesn't run: exception: boom at game.js:3. The milestone has used its only round.");
     expect(hold.options.map(({ id }) => id)).toEqual(['more', 'halt']);
     expect(await milestoneOf(h)).toMatchObject({ phase: 'build', verify_round: 1 });
     expect(await bugIds(h)).toEqual(['BUG-M1-1']);
@@ -1279,6 +1279,43 @@ describe('the play gate', () => {
     expect(player.calls).toHaveLength(3);
     expect(await milestoneOf(h)).toMatchObject({ phase: 'build', verify_cap: 4, verify_round: 2 });
     expect(await taskIds(h)).toContain('M1-B-2');
+  });
+
+  it('ends the cap hold on one period when the problem has its own', async () => {
+    const { h } = await playing(playResult(), { profile: { ...PLAY_PROFILE, commands: { ...PLAY_PROFILE.commands, build: 'echo build-broke; exit 4' } } });
+    await h.store.patchMilestone(h.project.id, 1, { verify_cap: 1 });
+    await mergeGame(h);
+    await mergeGame(h, 'M1-B-1');
+
+    expect((await pending(h, 'qa_cap')).why).toBe("The game doesn't run: load: The build command failed, so there was nothing to play. The milestone has used its only round.");
+  });
+
+  it('re-pins its Bug ticket when the Spec moves while the Bug is open', async () => {
+    const { h } = await playing(BOOM);
+    await mergeGame(h);
+    await ownerApplies(h, scopeChange);
+
+    expect(await statusOf(h, 'M1-B-1')).toBe('stale');
+    expect(orderOf(await byTicket(h, 'M1-REVISE-TECH-M1-1')).instructions).toContain('M1-B-1');
+    await finish(h, 'M1-REVISE-TECH-M1-1', revised([stillValid('M1-B-1')]));
+
+    expect(await statusOf(h, 'M1-B-1')).toBe('approved');
+    expect((await h.artifacts.latest(h.project.id, 'M1-B-1'))!.derived_from).toContain('SPEC-M1@2');
+  });
+
+  // The setup passes at design, before the game is merged, and fails once it is.
+  it('holds on a failed setup with its output, and files no Bug', async () => {
+    const setup = 'if [ -f index.html ]; then echo setup-broke; exit 3; fi';
+    const { h, player } = await playing(playResult(), { profile: { ...PLAY_PROFILE, setup } });
+    await mergeGame(h);
+
+    const hold = await pending(h, 'play');
+    expect(hold.title).toBe("The setup failed before milestone 1's game could be played");
+    expect(hold.why).toContain('setup-broke');
+    expect(hold.recommendation).not.toMatch(/Chrome/);
+    expect(player.calls).toEqual([]);
+    expect(await bugIds(h)).toEqual([]);
+    expect(await milestoneOf(h)).toMatchObject({ phase: 'build', verify_round: 0 });
   });
 
   it('holds when Chrome is unavailable', async () => {
@@ -1307,7 +1344,9 @@ describe('the play gate', () => {
     const { h } = await playing(playResult([{ kind: 'browser', detail: 'Chrome at /x exited before DevTools opened' }]));
     await mergeGame(h);
 
-    expect((await pending(h, 'play')).why).toContain('/x');
+    const hold = await pending(h, 'play');
+    expect(hold.why).toContain('/x');
+    expect(hold.why).toContain('chrome.binary');
     expect(await bugIds(h)).toEqual([]);
     expect(await taskIds(h)).not.toContain('M1-B-1');
     expect(await milestoneOf(h)).toMatchObject({ phase: 'build', verify_round: 0 });
