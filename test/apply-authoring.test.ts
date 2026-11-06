@@ -1,9 +1,12 @@
+import { Ajv } from 'ajv';
 import { readFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { sectionText } from '../src/artifacts/format.ts';
 import { applyOutput } from '../src/engine/apply/index.ts';
+import { loadRole } from '../src/roles/role.ts';
 import { stateRepoDir } from '../src/paths.ts';
 import { apply, CRITERIA, ctxFor, evidenceOf, lockSpec, projectOf, publish, specBody, ticketTask } from './helpers/apply.ts';
 import { makeEngine, type TestEngine } from './helpers/engine.ts';
@@ -300,6 +303,61 @@ describe('appliers', () => {
       ['unknown', [coverage('AC-1'), coverage('AC-2'), coverage('AC-3')], /AC-3/],
     ])('rejects a Test Plan with a criterion %s', async (_name, rows, evidence) => {
       expect(evidenceOf(await apply(e, 'test_plan', { ...TEST_PLAN, coverage: rows }))).toMatch(evidence);
+    });
+
+    // What a person sees or does in the browser is shown by playing the page, which needs a page the profile says how to build and serve.
+    describe('a play script', () => {
+      const script = { steps: [{ key: 'Space' }, { wait_ms: 500 }], expect: 'window.started === true' };
+      const playing = (play: unknown = script, commands: string[] = []) => ({ ...TEST_PLAN, coverage: [{ ...coverage('AC-1', commands), play }, coverage('AC-2')] });
+      const profile = async (play: unknown) =>
+        e.artifacts.commit(await projectOf(e), { message: 'the profile', publish: [{ id: 'ENV-PROFILE', type: 'environment_profile', status: 'approved', ownerRole: 'tech_lead', derivedFrom: [], body: '# Env\n', fields: { data: { ...PROFILE, play } } }] });
+      const SITE = { root: 'dist', entry: 'index.html', keys: ['Space'] };
+
+      it('accepts an entry with only a play script', async () => {
+        await profile(SITE);
+        await publish(e, await apply(e, 'test_plan', playing(), { inputs: ['SPEC-M1@1'] }));
+
+        expect((await read('TEST-PLAN-M1')).fields.data).toEqual({ coverage: playing().coverage, protected: [] });
+      });
+
+      // The model answers to this schema, so a shape the engine takes but the schema forbids could never be written.
+      it('is a shape the Test Plan schema allows', async () => {
+        const { schema } = await loadRole(fileURLToPath(new URL('../seed/knowledge', import.meta.url)), 'qa_engineer', 'test_plan');
+        const validate = new Ajv({ strict: false }).compile(schema);
+        const full = { steps: [{ key: 'Space', hold_ms: 100 }, { wait_ms: 500 }, { eval: 'window.start()' }], expect: 'window.started === true' };
+
+        expect(validate(playing(full)), JSON.stringify(validate.errors)).toBe(true);
+        expect(validate(playing({ steps: [{ press: 'Space' }], expect: 'true' }))).toBe(false);
+        expect(validate(playing({ steps: [] }))).toBe(false);
+      });
+
+      it('accepts an entry with commands and a play script', async () => {
+        await profile(SITE);
+        await publish(e, await apply(e, 'test_plan', playing(script, ['npm test']), { inputs: ['SPEC-M1@1'] }));
+      });
+
+      it.each([
+        ['the profile has no play block', null, playing(), /AC-1.*no play block/],
+        ['a key is not one', SITE, playing({ ...script, steps: [{ key: 'Fire' }] }), /Fire is not a key/],
+        ['there are 51 steps', SITE, playing({ ...script, steps: Array.from({ length: 51 }, () => ({ eval: '1' })) }), /at most 50 steps/],
+        ['it expects nothing', SITE, playing({ ...script, expect: ' ' }), /expect/],
+        ['an entry has neither commands nor a play script', SITE, { ...TEST_PLAN, coverage: [coverage('AC-1', []), coverage('AC-2')] }, /AC-1 needs at least one command or a play script/],
+      ])('rejects a Test Plan when %s', async (_name, site, output, evidence) => {
+        await profile(site);
+        expect(evidenceOf(await apply(e, 'test_plan', output))).toMatch(evidence);
+      });
+
+      it('rejects a play script when there is no profile at all', async () => {
+        expect(evidenceOf(await apply(e, 'test_plan', playing()))).toMatch(/no play block/);
+      });
+
+      it('holds a revision of the plan to the same rules', async () => {
+        await profile(SITE);
+        await publish(e, await apply(e, 'test_plan', playing(), { inputs: ['SPEC-M1@1'] }));
+        const revision = { unaffected: false, rationale: 'r', body: '# Plan two\n', coverage: [coverage('AC-1', []), coverage('AC-2')], ticket_decisions: [], tickets: [] };
+
+        expect(evidenceOf(await apply(e, 'revise_test_plan', revision, { inputs: ['SPEC-M1@1', 'TEST-PLAN-M1@1'] }))).toMatch(/AC-1 needs at least one command or a play script/);
+      });
     });
 
     it('keeps the protected globs when the plan is revised, which has no way to name new ones', async () => {

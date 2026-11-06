@@ -43,7 +43,8 @@ export type SandboxedInput = CommandEnv & { commands: string[]; onEvent: (type: 
 
 export type SandboxedResult = { ok: boolean; runs: CheckRun[]; evidence: string };
 
-const TAIL_CHARS = 8000;
+// A play run's record is cut to the same length, since it is read in the same places.
+export const TAIL_CHARS = 8000;
 const KILL_GRACE_S = 2;
 const MAX_TIMER_MS = 2 ** 31 - 1;
 // A process outside the command's group can still hold its output open after it exits.

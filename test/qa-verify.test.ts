@@ -5,18 +5,20 @@ import type { AddressInfo } from 'node:net';
 import { join } from 'node:path';
 import type { Criterion } from '../src/artifacts/acs.ts';
 import { renderArtifact, sectionsOf, sectionText } from '../src/artifacts/format.ts';
+import type { PlayProblem } from '../src/checks/play.ts';
 import { applyOutput } from '../src/engine/apply/index.ts';
-import { bugTicket } from '../src/engine/apply/qa.ts';
+import { bugTicket, playRun } from '../src/engine/apply/qa.ts';
 import { worktreePath } from '../src/paths.ts';
 import { parseTicket } from '../src/tickets/ticket.ts';
 import { addAttemptWorktree } from '../src/git/workspace.ts';
 import { commitAll, commitOnBranch, revParse, run, tempDir } from './helpers/repo.ts';
 import { CRITERIA, ctxFor, evidenceOf, lockSpec, projectOf, publish } from './helpers/apply.ts';
 import { makeEngine, type TestEngine } from './helpers/engine.ts';
+import { fakePlayer, playResult } from './helpers/play.ts';
 
 type Result = { ac: string; status: 'passing' | 'failing'; commands: string[]; notes: string };
 type Bug = { ac: string; title: string; description: string; touches: string[]; commands: string[] };
-type Coverage = { ac: string; commands: string[]; notes: string; regression?: boolean };
+type Coverage = { ac: string; commands: string[]; notes: string; regression?: boolean; play?: unknown };
 
 const pass = (ac: string, commands: string[] = ['true'], notes = 'Looks good'): Result => ({ ac, status: 'passing', commands, notes });
 const fail = (ac: string, commands: string[] = [], notes = 'It broke'): Result => ({ ac, status: 'failing', commands, notes });
@@ -590,6 +592,266 @@ describe('qa_verify applier', () => {
         clearInterval(watcher);
       }
       expect((await criterion('AC-1')).status).toBe('unverified');
+      expect(existsSync(baseWorktree(ctx))).toBe(false);
+      expect(baseBranch(ctx)).toBe('');
+    });
+  });
+
+  // A criterion only a browser can show is played in the page the profile builds, on the verified commit and again on the base.
+  describe('a play script', () => {
+    const PLAY = { steps: [{ key: 'Space' }], expect: 'window.ok' };
+    const PAGE = '<p>the work</p>';
+    const MISSED = playResult([{ kind: 'expect', detail: 'window.ok was false' }]);
+    const scripted = (ac: string, ...commands: string[]): Coverage => ({ ...fresh(ac, ...commands), play: PLAY });
+    // The profile as QA verify reads it: how to build the page and which one to play.
+    const withSite = async (overrides: { build?: string; play?: unknown } = {}): Promise<void> => {
+      const play = 'play' in overrides ? overrides.play : { root: '.', entry: 'index.html', keys: ['Space'] };
+      await e.artifacts.commit(await projectOf(e), {
+        message: 'the profile',
+        publish: [{ id: 'ENV-PROFILE', type: 'environment_profile', status: 'approved', ownerRole: 'tech_lead', derivedFrom: [], body: '# Env\n', fields: { data: { commands: { build: overrides.build ?? 'true', test: 'echo profile-test', lint: 'true', smoke: 'true' }, toolchains: [], network_allow: [], setup: null, play } } }],
+      });
+    };
+    // index.html exists only on the verified commit, which sits on a branch past the base.
+    const onHead = () => commitOnBranch(e.repoPath, 'aiteam/m1', { 'index.html': PAGE });
+    const results = [pass('AC-1', []), pass('AC-2')];
+    const nothingRecorded = async () => {
+      expect((await criterion('AC-1')).status).toBe('unverified');
+      expect(await ids()).not.toContain('QA-REPORT-M1-1');
+      expect(await ids()).not.toContain('BUG-M1-1');
+    };
+
+    it('records a play script as a run of its criterion', async () => {
+      await start([scripted('AC-1'), covers('AC-2', 'true')]);
+      await withSite();
+      const player = fakePlayer([playResult(), MISSED]);
+      const script = vi.spyOn(player, 'script');
+      e.player = player;
+      const head = await onHead();
+
+      await publish(e, await verify({ results }, undefined, head));
+
+      expect(await criterion('AC-1')).toMatchObject({ status: 'passing' });
+      expect(await evidence('AC-1')).toContain('play: 1 steps, expect window.ok');
+      expect(await evidence('AC-1')).toMatch(/On the base \([0-9a-f]{7}\), failed as it should/);
+      expect(player.calls).toHaveLength(2);
+      expect(player.calls[0]!.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/index\.html$/);
+      expect(player.calls[0]!.body).toBe(PAGE);
+      expect(player.calls[1]!.body).not.toBe(PAGE);
+      expect(script).toHaveBeenCalledWith(player.calls[0]!.url, PLAY);
+    });
+
+    it('fails a criterion whose play script fails', async () => {
+      await start([scripted('AC-1'), covers('AC-2', 'true')]);
+      await withSite();
+      const player = fakePlayer(MISSED);
+      e.player = player;
+
+      await publish(e, await verify({ results }, undefined, await onHead()));
+
+      expect(await criterion('AC-1')).toMatchObject({ status: 'failing' });
+      expect((await e.artifacts.read(await projectOf(e), 'BUG-M1-1')).body).toContain('window.ok was false');
+      // Only a criterion that held on the verified commit is compared with the base.
+      expect(player.calls).toHaveLength(1);
+    });
+
+    it('rejects a play script that passes on the base too', async () => {
+      await start([scripted('AC-1'), covers('AC-2', 'true')]);
+      await withSite();
+      e.player = fakePlayer(playResult());
+
+      expect(evidenceOf(await verify({ results }, undefined, await onHead()))).toMatch(/pass on the base too/);
+      await nothingRecorded();
+    });
+
+    it('takes a play script that passes on the base too when the entry is a regression guard', async () => {
+      await start([{ ...scripted('AC-1'), regression: true }, covers('AC-2', 'true')]);
+      await withSite();
+      e.player = fakePlayer(playResult());
+
+      await publish(e, await verify({ results }, undefined, await onHead()));
+
+      expect(await evidence('AC-1')).toMatch(/passed too: a regression guard/);
+    });
+
+    it('shows the problems of a run before its log', async () => {
+      await start([scripted('AC-1'), covers('AC-2', 'true')]);
+      await withSite();
+      const noisy = { ...MISSED, log: Array.from({ length: 2000 }, (_, i) => `frame ${i} of the log`) };
+      e.player = fakePlayer(noisy);
+
+      await publish(e, await verify({ results }, undefined, await onHead()));
+
+      const shown = await evidence('AC-1');
+      expect(shown).toContain('Command, exit code 1:');
+      // What fits is cut from the end, so the problem that says what failed is never what is dropped.
+      expect(shown).toMatch(/expect: window\.ok was false\n[^\n]*the log\nframe \d+ of the log/);
+      expect(shown.length).toBeLessThan(3000);
+    });
+
+    describe('the record of a run', () => {
+      const result = (problems: PlayProblem[] = [{ kind: 'expect', detail: 'window.ok was false' }], log: string[] = ['loaded', 'pressed Space']) => ({ ok: problems.length === 0, problems, durationMs: 1234, log });
+
+      it('is a CheckRun whose command says what was played', () => {
+        expect(playRun({ steps: [{ key: 'Space' }, { wait_ms: 5 }], expect: 'window.ok' }, result([]))).toEqual({ command: 'play: 2 steps, expect window.ok', exitCode: 0, timedOut: false, durationMs: 1234, outputTail: 'loaded\npressed Space' });
+      });
+
+      it('lists the problems, one per line, and then the log', () => {
+        const run = playRun(PLAY, result([{ kind: 'expect', detail: 'window.ok was false' }, { kind: 'console', detail: 'boom' }]));
+        expect(run).toMatchObject({ exitCode: 1, timedOut: false, outputTail: 'expect: window.ok was false\nconsole: boom\nloaded\npressed Space' });
+      });
+
+      it('has timed out when a problem says so', () => {
+        expect(playRun(PLAY, result([{ kind: 'timeout', detail: 'The script ran past 20 s' }]))).toMatchObject({ exitCode: 1, timedOut: true });
+      });
+
+      it('is cut to the length of any other run, keeping the problems and the end of the log', () => {
+        const log = Array.from({ length: 3000 }, (_, i) => `frame ${i}`);
+        const { outputTail } = playRun(PLAY, result(undefined, log));
+        expect(outputTail.length).toBeLessThanOrEqual(8000);
+        expect(outputTail.startsWith('expect: window.ok was false\n')).toBe(true);
+        expect(outputTail.endsWith('frame 2999')).toBe(true);
+      });
+
+      it('keeps the start of a list of problems that alone is too long', () => {
+        const { outputTail } = playRun(PLAY, result([{ kind: 'expect', detail: 'x'.repeat(9000) }], ['log line']));
+        expect(outputTail).toHaveLength(8000);
+        expect(outputTail.startsWith('expect: xxx')).toBe(true);
+      });
+    });
+
+    it('runs the script after its entry\'s commands, in the page they leave', async () => {
+      await start([scripted('AC-1', "echo '<p>made</p>' > index.html"), covers('AC-2', 'true')]);
+      await withSite();
+      const player = fakePlayer([playResult(), MISSED]);
+      e.player = player;
+
+      await publish(e, await verify({ results }));
+
+      expect(player.calls[0]!.body).toBe('<p>made</p>\n');
+      expect(await criterion('AC-1')).toMatchObject({ status: 'passing' });
+    });
+
+    it('builds and serves once for all the entries of a checkout', async () => {
+      // The second build in one checkout finds the first one's line, and fails.
+      await start([scripted('AC-1'), scripted('AC-2')]);
+      await withSite({ build: 'echo built >> builds.txt && test "$(wc -l < builds.txt)" -eq 1' });
+      const player = fakePlayer([playResult(), playResult(), MISSED, MISSED]);
+      e.player = player;
+
+      await publish(e, await verify({ results: [pass('AC-1', []), pass('AC-2', [])] }, undefined, await onHead()));
+
+      expect(await criterion('AC-1')).toMatchObject({ status: 'passing' });
+      expect(await criterion('AC-2')).toMatchObject({ status: 'passing' });
+      expect(player.calls).toHaveLength(4);
+      expect(player.calls[0]!.url).toBe(player.calls[1]!.url);
+      expect(player.calls[2]!.url).toBe(player.calls[3]!.url);
+      expect(player.calls[0]!.url).not.toBe(player.calls[2]!.url);
+    });
+
+    it('fails the entries that have a script when the site will not build, and files a Bug the Engineer can prove', async () => {
+      await start([scripted('AC-1'), covers('AC-2', 'true')]);
+      await withSite({ build: 'echo no-site-today; exit 3' });
+      const player = fakePlayer(playResult());
+      e.player = player;
+
+      await publish(e, await verify({ results }, undefined, await onHead()));
+
+      expect(await criterion('AC-1')).toMatchObject({ status: 'failing' });
+      expect(await criterion('AC-2')).toMatchObject({ status: 'passing' });
+      expect(await evidence('AC-1')).toMatch(/load: The build command failed/);
+      expect(await evidence('AC-1')).toContain('no-site-today');
+      expect(player.calls).toHaveLength(0);
+      // The ticket's proof is run as a shell command, and a play run is not one.
+      const ticket = (await e.artifacts.read(await projectOf(e), 'M1-B-1')).fields.definition_of_done as string[];
+      expect(ticket).toEqual(['echo profile-test']);
+    });
+
+    it('keeps the commands that failed as the proof of a Bug, and leaves the play run out of it', async () => {
+      await start([scripted('AC-1', 'exit 4'), covers('AC-2', 'true')]);
+      await withSite();
+      e.player = fakePlayer(MISSED);
+
+      await publish(e, await verify({ results }, undefined, await onHead()));
+
+      expect((await e.artifacts.read(await projectOf(e), 'M1-B-1')).fields.definition_of_done).toEqual(['exit 4']);
+    });
+
+    it('counts a site that will not build on the base as red', async () => {
+      await start([scripted('AC-1'), covers('AC-2', 'true')]);
+      await withSite({ build: 'test -f index.html' });
+      const player = fakePlayer(playResult());
+      e.player = player;
+
+      await publish(e, await verify({ results }, undefined, await onHead()));
+
+      expect(await criterion('AC-1')).toMatchObject({ status: 'passing' });
+      expect(await evidence('AC-1')).toMatch(/On the base \([0-9a-f]{7}\), failed as it should/);
+      expect(player.calls).toHaveLength(1);
+    });
+
+    it('sends QA back with no Bug when the engine has no browser', async () => {
+      await start([scripted('AC-1'), covers('AC-2', 'true')]);
+      await withSite();
+
+      expect(evidenceOf(await verify({ results }, undefined, await onHead()))).toMatch(/without a browser/);
+      await nothingRecorded();
+    });
+
+    it('sends QA back with the reason the browser is unavailable, and with no Bug', async () => {
+      await start([scripted('AC-1'), covers('AC-2', 'true')]);
+      await withSite();
+      const player = fakePlayer(playResult(), { unavailable: 'Chrome is not at /nowhere/chrome' });
+      e.player = player;
+
+      expect(evidenceOf(await verify({ results }, undefined, await onHead()))).toContain('Chrome is not at /nowhere/chrome');
+      expect(player.calls).toHaveLength(0);
+      await nothingRecorded();
+    });
+
+    it('does not ask for a browser when no entry has a script', async () => {
+      await start([covers('AC-1', 'true'), covers('AC-2', 'true')]);
+      e.player = fakePlayer(playResult(), { unavailable: 'Chrome is not at /nowhere/chrome' });
+
+      await publish(e, await verify({ results: [pass('AC-1'), pass('AC-2')] }));
+
+      expect(await criterion('AC-1')).toMatchObject({ status: 'passing' });
+    });
+
+    it('sends QA back, never filing a Bug, when the browser itself fails on the verified commit', async () => {
+      await start([scripted('AC-1'), covers('AC-2', 'true')]);
+      await withSite();
+      e.player = fakePlayer(playResult([{ kind: 'browser', detail: 'Chrome closed before the script ran' }]));
+
+      expect(evidenceOf(await verify({ results }, undefined, await onHead()))).toContain('Chrome closed before the script ran');
+      await nothingRecorded();
+    });
+
+    it('sends QA back, never recording red, when the browser itself fails on the base', async () => {
+      await start([scripted('AC-1'), covers('AC-2', 'true')]);
+      await withSite();
+      e.player = fakePlayer([playResult(), playResult([{ kind: 'browser', detail: 'Chrome closed before the script ran' }])]);
+
+      expect(evidenceOf(await verify({ results }, undefined, await onHead()))).toContain('Chrome closed before the script ran');
+      await nothingRecorded();
+    });
+
+    it('sends QA back when the profile no longer has a play block', async () => {
+      await start([scripted('AC-1'), covers('AC-2', 'true')]);
+      await withSite({ play: null });
+      e.player = fakePlayer(playResult());
+
+      expect(evidenceOf(await verify({ results }, undefined, await onHead()))).toMatch(/no play block/);
+      await nothingRecorded();
+    });
+
+    it('removes the checkouts when a browser problem sends QA back', async () => {
+      await start([scripted('AC-1'), covers('AC-2', 'true')]);
+      await withSite();
+      e.player = fakePlayer([playResult(), playResult([{ kind: 'browser', detail: 'Chrome closed' }])]);
+      const ctx = await qaCtx({ results }, undefined, await onHead());
+
+      await applyOutput(ctx);
+
       expect(existsSync(baseWorktree(ctx))).toBe(false);
       expect(baseBranch(ctx)).toBe('');
     });

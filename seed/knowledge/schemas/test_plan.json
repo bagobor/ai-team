@@ -40,6 +40,46 @@
           "regression": {
             "description": "True only for a criterion that already holds before this milestone's work and must keep holding, so its commands are expected to pass on the milestone's base too. Leave it out otherwise: the engine runs your commands on the base as well, with your protected files laid over it, and refuses a criterion whose commands pass there, because they would show nothing of this milestone's work.",
             "type": "boolean"
+          },
+          "play": {
+            "description": "A short run of the real page, for a criterion only a browser can show: what to press and wait for, then a JavaScript expression that must be true. Read state the game exposes, never the DOM text alone. Needs the profile's play block; commands may then be empty.",
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "steps",
+              "expect"
+            ],
+            "properties": {
+              "steps": {
+                "description": "At most 50, with at most 20000 ms of holding and waiting in all. Each step has exactly one of key, wait_ms or eval.",
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "key": {
+                      "description": "A KeyboardEvent.code, such as Space, ArrowLeft or KeyZ.",
+                      "type": "string"
+                    },
+                    "hold_ms": {
+                      "description": "With key: how long it is held. Default 50.",
+                      "type": "number"
+                    },
+                    "wait_ms": {
+                      "type": "number"
+                    },
+                    "eval": {
+                      "description": "JavaScript to run in the page.",
+                      "type": "string"
+                    }
+                  }
+                }
+              },
+              "expect": {
+                "description": "A JavaScript expression that is true when the script worked.",
+                "type": "string"
+              }
+            }
           }
         }
       }

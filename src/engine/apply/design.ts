@@ -1,16 +1,19 @@
 import { isHumanCheck } from '../../artifacts/acs.ts';
 import { ArtifactError, parsePin, sectionText, formatPin, type ArtifactDoc, type ArtifactStatus } from '../../artifacts/format.ts';
 import type { NewVersion, StatusChange } from '../../artifacts/store.ts';
+import { scriptProblems, type PlayScript } from '../../checks/play.ts';
 import { proposesCurrent } from '../change-requests.ts';
 import { isHarnessTicket, protectedGlobs, protectedProblems } from '../protected.ts';
 import type { EngineDeps } from '../runner.ts';
 import type { ArtifactVersionRow, CriterionRow, ProjectRow, TaskRow } from '../store.ts';
+import { approvedProfile } from './discovery.ts';
 import { techId, testPlanId } from './ids.ts';
 import type { Applier, ApplyCtx } from './index.ts';
 import { withRaised } from './raised.ts';
 import { validateTickets, type TicketDraft } from './tickets.ts';
 
-export type Coverage = { ac: string; commands: string[]; notes: string; regression?: boolean };
+// A play script proves a criterion only a browser can show, so an entry needs commands, a script, or both.
+export type Coverage = { ac: string; commands: string[]; notes: string; regression?: boolean; play?: PlayScript };
 type DesignOutput = { body: string; tickets: TicketDraft[] };
 type TestPlanOutput = { body: string; coverage: Coverage[]; protected: string[]; harness_tickets: TicketDraft[] };
 type Decision = { ticket: string; decision: 'still_valid' | 'superseded'; rationale: string };
@@ -37,13 +40,19 @@ const uncovered = (acIds: string[], covered: string[]) => acIds.filter((ac) => !
 const automatedIds = (criteria: CriterionRow[]) => criteria.filter((criterion) => !isHumanCheck(criterion)).map(({ ac_id }) => ac_id);
 const humanCheckIds = (criteria: CriterionRow[]) => criteria.filter(isHumanCheck).map(({ ac_id }) => ac_id);
 
-function coverageProblems(acIds: string[], coverage: Coverage[], humanIds: string[]): string[] {
+// hasPlay is whether the Environment Profile says how to build and serve a page, which a play script needs.
+function coverageProblems(acIds: string[], coverage: Coverage[], humanIds: string[], hasPlay: boolean): string[] {
   const problems: string[] = [];
   for (const ac of acIds) {
     const rows = coverage.filter((row) => row.ac === ac);
     if (rows.length === 0) problems.push(`${ac} is not in the coverage`);
     if (rows.length > 1) problems.push(`${ac} is in the coverage more than once`);
-    if (rows.some((row) => row.commands.length === 0 || row.commands.some((command) => command.trim() === ''))) problems.push(`${ac} needs at least one command, and no blank ones`);
+    if (rows.some((row) => (row.commands.length === 0 && row.play === undefined) || row.commands.some((command) => command.trim() === ''))) problems.push(`${ac} needs at least one command or a play script, and no blank commands`);
+    for (const { play } of rows) {
+      if (play === undefined) continue;
+      if (!hasPlay) problems.push(`${ac} has a play script, but the Environment Profile has no play block, so there is no page to play`);
+      problems.push(...scriptProblems(play).map((problem) => `${ac}'s play script: ${problem}`));
+    }
   }
   for (const { ac } of coverage) {
     if (humanIds.includes(ac)) problems.push(`${ac} is checked by the stakeholder, so it has no place in the coverage`);
@@ -51,6 +60,8 @@ function coverageProblems(acIds: string[], coverage: Coverage[], humanIds: strin
   }
   return problems;
 }
+
+const hasPlayBlock = async (ctx: ApplyCtx): Promise<boolean> => ((await approvedProfile(ctx))?.play ?? null) !== null;
 
 const designDoc = (ctx: ApplyCtx, body: string, status: ArtifactStatus = 'approved'): NewVersion => ({
   id: techId(ctx.task.milestone),
@@ -94,7 +105,7 @@ export const applyTestPlan: Applier = async (ctx) => {
   const acIds = automatedIds(criteria);
 
   const validated = await validateTickets(ctx, milestone, harness_tickets, acIds, await knownTickets(ctx), 'Q', body);
-  const problems = [...(validated.ok ? [] : [validated.evidence]), ...coverageProblems(acIds, coverage, humanCheckIds(criteria)), ...protectedProblems(globs)];
+  const problems = [...(validated.ok ? [] : [validated.evidence]), ...coverageProblems(acIds, coverage, humanCheckIds(criteria), await hasPlayBlock(ctx)), ...protectedProblems(globs)];
   if (!validated.ok || problems.length > 0) return { ok: false, evidence: problems.join('\n') };
 
   return withRaised(ctx, { message: `milestone ${milestone}: test plan`, publish: [testPlanDoc(ctx, body, coverage, globs), ...validated.docs] });
@@ -216,7 +227,7 @@ const applyRevise =
     if (!output.unaffected && (body === null || body.trim() === '')) problems.push('An affected document needs a new body');
     if (replaced !== undefined) {
       if (output.coverage === null) problems.push('A new Test Plan needs its full coverage');
-      else problems.push(...coverageProblems(acIds, output.coverage, humanCheckIds(criteria)), ...addedFlags(output.coverage, replaced, docId), ...movedFlags(output.coverage, replaced, docId));
+      else problems.push(...coverageProblems(acIds, output.coverage, humanCheckIds(criteria), await hasPlayBlock(ctx)), ...addedFlags(output.coverage, replaced, docId), ...movedFlags(output.coverage, replaced, docId));
     }
 
     const tickets = await ticketsOfDoc(ctx.deps, ctx.project, milestone, prefix);

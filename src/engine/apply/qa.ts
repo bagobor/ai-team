@@ -1,14 +1,17 @@
 import { isHumanCheck } from '../../artifacts/acs.ts';
 import type { NewVersion } from '../../artifacts/store.ts';
-import { runSandboxed, type CheckRun } from '../../checks/run-checks.ts';
+import type { PlayProblem, PlayResult, PlayScript, Player } from '../../checks/play.ts';
+import { runSandboxed, TAIL_CHARS, type CheckRun } from '../../checks/run-checks.ts';
 import { requestOf } from '../change-requests.ts';
+import { browserWhy, buildSite, NO_BROWSER, servePage } from '../conductor/play-gate.ts';
 import { addAttemptWorktree, mergeBase, overlayPaths, removeAttemptWorktree } from '../../git/workspace.ts';
 import { worktreePath } from '../../paths.ts';
 import { protectedPaths } from '../protected.ts';
 import type { EngineDeps } from '../runner.ts';
 import type { ProjectRow } from '../store.ts';
 import type { Coverage } from './design.ts';
-import { ENV_PROFILE, specId, techId, testPlanId } from './ids.ts';
+import { approvedProfile, type PlayBlock, type ProfileData } from './discovery.ts';
+import { specId, techId, testPlanId } from './ids.ts';
 import type { Applier, ApplyCtx } from './index.ts';
 import { raisedOf, sentBack, withRaised, type Raised } from './raised.ts';
 import { sandboxEnv } from './sandbox.ts';
@@ -33,7 +36,10 @@ type Verdict = { ac: string; claimed: QaResult['status']; status: QaResult['stat
 const OUTPUT_TAIL = 2000;
 const COMMAND_NOT_FOUND = 127;
 
-const failedCommands = (runs: CheckRun[]) => runs.filter((run) => run.exitCode !== 0).map((run) => run.command);
+// A play run is recorded as a CheckRun so it reads like the rest of a criterion's evidence, but its command is a description, not something a shell runs.
+const isPlayRun = ({ command }: CheckRun) => command.startsWith('play: ');
+const shellRuns = (runs: CheckRun[]) => runs.filter((run) => !isPlayRun(run));
+const failedCommands = (runs: CheckRun[]) => shellRuns(runs).filter((run) => run.exitCode !== 0).map((run) => run.command);
 const nonBlank = (commands: string[]) => commands.map((command) => command.trim()).filter((command) => command !== '');
 
 // A human check is the stakeholder's to judge at milestone approval, so QA reports on the automated criteria alone, and neither a result nor a Bug may name one.
@@ -70,11 +76,7 @@ export async function nextBugNumber(deps: Pick<EngineDeps, 'artifacts' | 'store'
 }
 
 async function approvedSetup(ctx: ApplyCtx): Promise<string | null> {
-  const { artifacts } = ctx.deps;
-  const row = await artifacts.latest(ctx.project.id, ENV_PROFILE);
-  if (row?.status !== 'approved' && row?.status !== 'stale') return null;
-  const { setup } = (await artifacts.read(ctx.project, ENV_PROFILE)).fields.data as { setup: string | null };
-  return setup;
+  return (await approvedProfile(ctx))?.setup ?? null;
 }
 
 // The commit QA verifies.
@@ -104,7 +106,9 @@ async function runEach(ctx: ApplyCtx, worktree: string, commands: string[]): Pro
   return runs;
 }
 
-const STOPPED = { ok: false as const, evidence: 'QA verification was stopped before it finished' };
+// What sends QA back with the reason, and records nothing.
+type Refused = { ok: false; evidence: string };
+const STOPPED: Refused = { ok: false, evidence: 'QA verification was stopped before it finished' };
 
 // Setup is the one step that gets the network. Nothing comes back when the profile has none.
 async function runSetup(ctx: ApplyCtx, worktree: string) {
@@ -114,15 +118,83 @@ async function runSetup(ctx: ApplyCtx, worktree: string) {
 
 const plannedFor = (coverage: Coverage[], ac: string) => [...new Set(nonBlank(coverage.filter((entry) => entry.ac === ac).flatMap((entry) => entry.commands)))];
 
-async function verifyAll(ctx: ApplyCtx, worktree: string, results: QaResult[], coverage: Coverage[]): Promise<{ ok: true; verdicts: Verdict[] } | { ok: false; evidence: string }> {
+// A play script runs in the page the profile builds, in a browser, so it needs both of those to be there.
+type Scripted = { ac: string; play: PlayScript };
+type Site = { player: Player; profile: ProfileData; play: PlayBlock };
+
+const scriptsOf = (coverage: Coverage[], acs: string[]): Scripted[] => acs.flatMap((ac) => coverage.flatMap((entry) => (entry.ac === ac && entry.play !== undefined ? [{ ac, play: entry.play }] : [])));
+
+const playCommand = ({ steps, expect }: PlayScript) => `play: ${steps.length} steps, expect ${expect}`;
+
+// The problems come first, since they are what a person reads, and the log's own tail fills what room is left.
+function playTail(problems: PlayProblem[], log: string[]): string {
+  const found = problems.map(({ kind, detail }) => `${kind}: ${detail}`).join('\n').slice(0, TAIL_CHARS);
+  const room = TAIL_CHARS - found.length - 1;
+  return [found, room > 0 ? log.join('\n').slice(-room) : ''].filter((part) => part !== '').join('\n');
+}
+
+export const playRun = (play: PlayScript, { ok, problems, durationMs, log }: PlayResult): CheckRun => ({
+  command: playCommand(play),
+  exitCode: ok && problems.length === 0 ? 0 : 1,
+  timedOut: problems.some(({ kind }) => kind === 'timeout'),
+  durationMs,
+  outputTail: playTail(problems, log),
+});
+
+// QA is sent back, with no Bug, when a script can't be played at all: that is this machine's, not the product's.
+async function playSite(ctx: ApplyCtx, scripted: Scripted[]): Promise<{ ok: true; site: Site } | Refused> {
+  const { player } = ctx.deps;
+  const noBrowser = (why: string): Refused => ({ ok: false, evidence: `The Test Plan has play scripts, but there is no browser to play them in, so nothing was verified.\n${why}` });
+  if (!player) return noBrowser(NO_BROWSER);
+  const missing = player.unavailable();
+  if (missing) return noBrowser(browserWhy(missing));
+  const profile = await approvedProfile(ctx);
+  if (!profile?.play) return { ok: false, evidence: `${[...new Set(scripted.map(({ ac }) => ac))].join(', ')} has a play script in the Test Plan, but the approved Environment Profile has no play block, so there is no page to play and nothing was verified.` };
+  return { ok: true, site: { player, profile, play: profile.play } };
+}
+
+// Builds the checkout and serves it once, then plays each script on that one server, in order. The runs come back in the order of the scripts.
+// A site that won't build or serve gives every script a red run, since none has a page to run in, which on the base is the red that shows the work.
+// A problem of the browser's own says nothing about the page, so it sends QA back like a browser that is not there.
+async function playScripts(ctx: ApplyCtx, worktree: string, { player, profile, play }: Site, scripts: Scripted[]): Promise<{ ok: true; runs: CheckRun[] } | Refused> {
+  const red = (why: string) => ({ ok: true as const, runs: scripts.map((script) => playRun(script.play, { ok: false, problems: [{ kind: 'load', detail: why }], durationMs: 0, log: [] })) });
+  const built = await buildSite(sandboxEnv(ctx, worktree), profile, { setup: false });
+  if (ctx.signal.aborted) return STOPPED;
+  if (!built.ok) return red(built.why);
+
+  const served = await servePage(built.root, play, async (page): Promise<PlayResult[] | Refused> => {
+    const played: PlayResult[] = [];
+    for (const script of scripts) {
+      if (ctx.signal.aborted) return STOPPED;
+      played.push(await player.script(page, script.play));
+    }
+    return played;
+  });
+  if (!served.ok) return red(served.why);
+  if (!Array.isArray(served.value)) return served.value;
+  if (ctx.signal.aborted) return STOPPED;
+
+  const browser = served.value.flatMap(({ problems }) => problems).filter(({ kind }) => kind === 'browser');
+  if (browser.length > 0) return { ok: false, evidence: `The browser could not play the Test Plan's scripts, so nothing was verified.\n${browserWhy(browser.map(({ detail }) => detail).join('\n'))}` };
+  return { ok: true, runs: served.value.map((result, i) => playRun(scripts[i]!.play, result)) };
+}
+
+async function verifyAll(ctx: ApplyCtx, worktree: string, results: QaResult[], coverage: Coverage[], site: Site | undefined): Promise<{ ok: true; verdicts: Verdict[] } | Refused> {
   const installed = await runSetup(ctx, worktree);
   if (installed && !installed.ok) return ctx.signal.aborted ? STOPPED : { ok: false, evidence: `The Environment Profile's setup failed, so nothing could be verified.\n${installed.evidence}` };
 
-  // Every Test Plan command goes before any of QA's, which share this worktree and could otherwise rewrite the tests they run.
+  // Every Test Plan command and script goes before any of QA's, which share this worktree and could otherwise rewrite the tests they run or the page they play.
+  // A script plays after the commands of every entry, so the page is built from the checkout as they left it.
   const planned = new Map<string, CheckRun[]>();
   for (const { ac } of results) {
     planned.set(ac, await runEach(ctx, worktree, plannedFor(coverage, ac)));
     if (ctx.signal.aborted) return STOPPED;
+  }
+  const scripts = site ? scriptsOf(coverage, results.map(({ ac }) => ac)) : [];
+  if (site && scripts.length > 0) {
+    const played = await playScripts(ctx, worktree, site, scripts);
+    if (!played.ok) return played;
+    scripts.forEach(({ ac }, i) => planned.get(ac)?.push(played.runs[i]!));
   }
 
   const verdicts: Verdict[] = [];
@@ -144,7 +216,7 @@ async function verifyAll(ctx: ApplyCtx, worktree: string, results: QaResult[], c
 // A command that passes with none of the milestone's work proves nothing about it, so each criterion that held is run again where the work is not.
 // This run starts only after the verified commit's is done and is not overlapped with it, so a QA round now costs about twice its command time.
 // QA's protected files are laid over the base first, since the Test Plan's commands run them and they exist only on the verified commit.
-async function verifyOnBase(ctx: ApplyCtx, held: string[], coverage: Coverage[]): Promise<{ ok: true; onBase: Map<string, OnBase> } | typeof STOPPED> {
+async function verifyOnBase(ctx: ApplyCtx, held: string[], coverage: Coverage[], site: Site | undefined): Promise<{ ok: true; onBase: Map<string, OnBase> } | Refused> {
   const { project, task } = ctx;
   const head = verifiedHead(ctx);
   const sha = await mergeBase(project.repo_path, head, `refs/heads/${project.base_branch}`);
@@ -152,7 +224,7 @@ async function verifyOnBase(ctx: ApplyCtx, held: string[], coverage: Coverage[])
 
   return inFreshWorktree(
     ctx,
-    async (worktree): Promise<{ ok: true; onBase: Map<string, OnBase> } | typeof STOPPED> => {
+    async (worktree): Promise<{ ok: true; onBase: Map<string, OnBase> } | Refused> => {
       // Git runs here before any setup or command does, because worker-written code can rewrite this worktree's .git (see linkedLocation).
       await overlayPaths(worktree, head, globs);
 
@@ -165,9 +237,18 @@ async function verifyOnBase(ctx: ApplyCtx, held: string[], coverage: Coverage[])
         return { ok: true, onBase };
       }
 
+      const ran = new Map<string, CheckRun[]>();
       for (const ac of held) {
-        const runs = await runEach(ctx, worktree, plannedFor(coverage, ac));
+        ran.set(ac, await runEach(ctx, worktree, plannedFor(coverage, ac)));
         if (ctx.signal.aborted) return STOPPED;
+      }
+      const scripts = site ? scriptsOf(coverage, held) : [];
+      if (site && scripts.length > 0) {
+        const played = await playScripts(ctx, worktree, site, scripts);
+        if (!played.ok) return played;
+        scripts.forEach(({ ac }, i) => ran.get(ac)?.push(played.runs[i]!));
+      }
+      for (const [ac, runs] of ran) {
         // A run that timed out or was stopped has no exit code of 0, so it is red like any other failure.
         onBase.set(ac, { sha, runs, red: runs.some((run) => run.exitCode !== 0) });
       }
@@ -179,10 +260,13 @@ async function verifyOnBase(ctx: ApplyCtx, held: string[], coverage: Coverage[])
 
 const outcomeOf = ({ timedOut, exitCode }: CheckRun) => (timedOut ? 'timed out' : exitCode === null ? 'was stopped' : `exit code ${exitCode}`);
 
+// A command's output ends with what went wrong. A play run's begins with it, so it is cut from the other end.
+const shown = (run: CheckRun) => (isPlayRun(run) ? run.outputTail.slice(0, OUTPUT_TAIL) : run.outputTail.slice(-OUTPUT_TAIL));
+
 const runLines = (runs: CheckRun[]) =>
   runs.length === 0
     ? ['No command ran.', '']
-    : runs.flatMap((run) => [`Command, ${outcomeOf(run)}:`, '', fenced(run.command), '', ...(run.outputTail.trim() === '' ? ['No output.'] : ['Output:', '', fenced(run.outputTail.slice(-OUTPUT_TAIL))]), '']);
+    : runs.flatMap((run) => [`Command, ${outcomeOf(run)}:`, '', fenced(run.command), '', ...(run.outputTail.trim() === '' ? ['No output.'] : ['Output:', '', fenced(shown(run))]), '']);
 
 export const notedLines = (noted: string[]): string[] => (noted.length === 0 ? [] : ['QA also noted, with no ticket opened because the criterion passes:', '', ...noted.map((line) => `- ${line}`), '']);
 
@@ -282,12 +366,18 @@ export const applyQaVerify: Applier = async (ctx) => {
   const back = await sentBack(ctx, raised);
   if (back) return back;
 
-  const verified = await inFreshWorktree(ctx, (worktree) => verifyAll(ctx, worktree, output.results, coverage));
+  // The browser is looked for before anything runs, so a machine without one costs no work and no Bug.
+  const scripted = scriptsOf(coverage, output.results.map(({ ac }) => ac));
+  const playing = scripted.length === 0 ? undefined : await playSite(ctx, scripted);
+  if (playing && !playing.ok) return playing;
+  const site = playing?.site;
+
+  const verified = await inFreshWorktree(ctx, (worktree) => verifyAll(ctx, worktree, output.results, coverage, site));
   if (!verified.ok) return verified;
 
   // A criterion that failed on the verified commit has nothing to compare, so only the ones that held go to the base.
   const held = verified.verdicts.filter(({ status }) => status === 'passing').map(({ ac }) => ac);
-  const base = held.length === 0 ? undefined : await verifyOnBase(ctx, held, coverage);
+  const base = held.length === 0 ? undefined : await verifyOnBase(ctx, held, coverage, site);
   if (base && !base.ok) return base;
   const judged = verified.verdicts.map((verdict): Verdict => {
     const onBase = base?.onBase.get(verdict.ac);
@@ -330,7 +420,9 @@ export const applyQaVerify: Applier = async (ctx) => {
       for (const bug of filed.length > 0 ? filed : [undefined]) {
         const title = bug?.title ?? `${ac} failed verification`;
         const touches = bug && bug.touches.length > 0 ? bug.touches : ['**'];
-        const fallbacks = [failedCommands(runs), nonBlank(bug?.commands ?? []), runs.map(({ command }) => command), [criterion.verification.how]];
+        // A play run is no command for an Engineer's checks to run, so a Bug it alone fails is proved by the profile's own test command.
+        const proof = site && runs.some(isPlayRun) ? nonBlank([site.profile.commands.test]) : [];
+        const fallbacks = [failedCommands(runs), nonBlank(bug?.commands ?? []), proof, shellRuns(runs).map(({ command }) => command), [criterion.verification.how]];
         const definition_of_done = fallbacks.find((commands) => commands.length > 0) ?? [];
         publish.push(bugDoc(milestone, k, reportId, verdict, bug, title, touches));
         publish.push(bugTicket(milestone, k, { acs: [ac], title, touches, definition_of_done, techPin: `${tech.artifact_id}@${tech.version}`, specPin }));

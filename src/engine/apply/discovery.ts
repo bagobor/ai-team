@@ -3,7 +3,7 @@ import { parsePin } from '../../artifacts/format.ts';
 import { keyProblem } from '../../checks/play.ts';
 import { runSandboxed } from '../../checks/run-checks.ts';
 import { ENV_PROFILE } from './ids.ts';
-import type { Applier } from './index.ts';
+import type { Applier, ApplyCtx } from './index.ts';
 import { withRaised } from './raised.ts';
 import { sandboxEnv } from './sandbox.ts';
 
@@ -26,6 +26,14 @@ export type ProfileData = {
 };
 
 type ProfileOutput = ProfileData & { body: string };
+
+// The profile the engine builds and plays by: one the stakeholder approved, or that went stale because something it read moved on.
+// A proposed one has not been agreed, and nothing is built from it.
+export async function approvedProfile({ deps, project }: Pick<ApplyCtx, 'deps' | 'project'>): Promise<ProfileData | null> {
+  const row = await deps.artifacts.latest(project.id, ENV_PROFILE);
+  if (row?.status !== 'approved' && row?.status !== 'stale') return null;
+  return (await deps.artifacts.read(project, ENV_PROFILE)).fields.data as ProfileData;
+}
 
 const DISCOVERY_IDS = new Set(['ROADMAP', 'TEAM-PROPOSAL', 'HUMAN-REQUIREMENTS']);
 

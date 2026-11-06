@@ -71,7 +71,9 @@ export async function buildSite(env: SiteEnv, profile: ProfileData, opts: { setu
 const CHROME_SETTING = 'The engine plays the game in the Chrome that chrome.binary in ~/.aiteam/config.yaml names.';
 
 // A browser's own problem names the path it tried. The setting that chose that path is what a person changes.
-const browserWhy = (why: string): string => (why.includes('chrome.binary') ? why : `${why}\n${CHROME_SETTING}`);
+export const browserWhy = (why: string): string => (why.includes('chrome.binary') ? why : `${why}\n${CHROME_SETTING}`);
+
+export const NO_BROWSER = 'The engine was started without a browser to play the game in.';
 
 // A problem from the browser itself says nothing about the game, so it holds instead of costing a round.
 function judged(headSha: string, problems: PlayProblem[], ok: boolean, profile: ProfileData): Played {
@@ -82,10 +84,33 @@ function judged(headSha: string, problems: PlayProblem[], ok: boolean, profile: 
   return { kind: 'failed', headSha, profile, problems: problems.length > 0 ? problems : [{ kind: 'load', detail: 'The play run failed and named no problem' }] };
 }
 
+// Serves a built site for as long as `use` runs, and hands it the address of the entry page. The play gate and QA verify
+// both play a checkout this way, so what makes the root safe to serve is checked in one place.
+export async function servePage<T>(root: string, play: PlayBlock, use: (page: string) => Promise<T>): Promise<{ ok: true; value: T } | { ok: false; why: string }> {
+  let server: StaticServer;
+  try {
+    server = await serveStatic(root);
+  } catch (err) {
+    // What the build left running can remove the root after it was checked, and the server's realpath of it is what
+    // finds that. Any other failure to start is the engine's own, and stays an error.
+    if ((err as NodeJS.ErrnoException).syscall !== 'realpath') throw err;
+    return { ok: false, why: missingRoot(play.root) };
+  }
+  try {
+    // The root was checked before the server resolved it, and a process the sandbox can't stop may have swapped it in between.
+    if (server.root !== root) return { ok: false, why: `play.root ${play.root} changed while the engine began serving it` };
+    // A file name may hold a space, # or %, which a URL reads as something else.
+    const page = play.entry.split('/').map(encodeURIComponent).join('/');
+    return { ok: true, value: await use(server.url + page) };
+  } finally {
+    await server.close();
+  }
+}
+
 // Plays in a checkout of the integration head, as the smoke pre-flight checks one.
 async function playHead(deps: EngineDeps, project: ProjectRow, n: number, profile: ProfileData, play: PlayBlock): Promise<Played> {
   const { player } = deps;
-  if (!player) return { kind: 'unavailable', cause: 'browser', why: 'The engine was started without a browser to play the game in.' };
+  if (!player) return { kind: 'unavailable', cause: 'browser', why: NO_BROWSER };
   const missing = player.unavailable();
   if (missing) return { kind: 'unavailable', cause: 'browser', why: browserWhy(missing) };
 
@@ -95,25 +120,9 @@ async function playHead(deps: EngineDeps, project: ProjectRow, n: number, profil
     if (!prepared.ok) return { kind: 'unavailable', cause: 'setup', why: prepared.why };
     const site = await buildSite(env, profile, { setup: false });
     if (!site.ok) return { kind: 'failed', headSha, profile, problems: [{ kind: 'load', detail: site.why }] };
-    let server: StaticServer;
-    try {
-      server = await serveStatic(site.root);
-    } catch (err) {
-      // What the build left running can remove the root after it was checked, and the server's realpath of it is what
-      // finds that. Any other failure to start is the engine's own, and stays an error.
-      if ((err as NodeJS.ErrnoException).syscall !== 'realpath') throw err;
-      return { kind: 'failed', headSha, profile, problems: [{ kind: 'load', detail: missingRoot(play.root) }] };
-    }
-    try {
-      // The root was checked before the server resolved it, and a process the sandbox can't stop may have swapped it in between.
-      if (server.root !== site.root) return { kind: 'failed', headSha, profile, problems: [{ kind: 'load', detail: `play.root ${play.root} changed while the engine began serving it` }] };
-      // A file name may hold a space, # or %, which a URL reads as something else.
-      const page = play.entry.split('/').map(encodeURIComponent).join('/');
-      const played = await player.smoke(server.url + page, play.keys);
-      return judged(headSha, played.problems, played.ok, profile);
-    } finally {
-      await server.close();
-    }
+    const served = await servePage(site.root, play, (page) => player.smoke(page, play.keys));
+    if (!served.ok) return { kind: 'failed', headSha, profile, problems: [{ kind: 'load', detail: served.why }] };
+    return judged(headSha, served.value.problems, served.value.ok, profile);
   });
 }
 
