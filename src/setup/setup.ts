@@ -39,6 +39,17 @@ export async function syncSeed(p: Paths, seedDir: string = DEFAULT_SEED): Promis
   return { added, kept };
 }
 
+// A knowledge repo set up by an older version keeps that version's files, and a schema there can refuse what this
+// version's roles write with nothing to say why. Setup and the daemon both say which files those are.
+export function keptWarning(p: Paths, kept: string[], seedDir: string = DEFAULT_SEED): string | undefined {
+  if (kept.length === 0) return undefined;
+  return [
+    `These files in ${p.knowledge} differ from this version's seed and were left as they are:`,
+    ...kept.map((file) => `  ${file}`),
+    `A document the engine refuses may need them copied from the seed, in ${seedDir}.`,
+  ].join('\n');
+}
+
 export async function runSetup(
   p: Paths,
   seedDir: string = DEFAULT_SEED,

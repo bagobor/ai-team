@@ -18,7 +18,7 @@ import { addProject, addTicket } from '../src/engine/intake.ts';
 import { Store, type TaskRow } from '../src/engine/store.ts';
 import { EventLog } from '../src/events.ts';
 import { resolvePaths, type Paths } from '../src/paths.ts';
-import { runSetup } from '../src/setup/setup.ts';
+import { keptWarning, runSetup } from '../src/setup/setup.ts';
 import { freePort, okStep, resultLine, ticket, until } from './helpers/engine.ts';
 import { makeRepo, tempDir } from './helpers/repo.ts';
 
@@ -256,6 +256,20 @@ describe('the daemon', () => {
 
       expect(existsSync(charter)).toBe(true);
       await daemon.stop();
+    });
+
+    it('warns on start about knowledge files that differ from the seed, and only then', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        await (await startDaemon({ paths, config: config() })).stop();
+        expect(warn).not.toHaveBeenCalled();
+
+        writeFileSync(join(paths.knowledge, 'schemas', 'test_plan.json'), '{}\n');
+        await (await startDaemon({ paths, config: config() })).stop();
+        expect(warn).toHaveBeenCalledExactlyOnceWith(keptWarning(paths, ['schemas/test_plan.json']));
+      } finally {
+        warn.mockRestore();
+      }
     });
 
     it(

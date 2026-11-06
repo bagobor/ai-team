@@ -5,7 +5,7 @@ import { loadConfig } from './config.ts';
 import { startDaemon } from './daemon.ts';
 import { resolvePaths, type Paths } from './paths.ts';
 import { runDoctor } from './setup/doctor.ts';
-import { runSetup } from './setup/setup.ts';
+import { keptWarning, runSetup } from './setup/setup.ts';
 
 const USAGE = `Usage:
   aiteam setup                                      Create ~/.aiteam and print the agent-home login command
@@ -121,7 +121,8 @@ async function main(argv: string[]): Promise<number> {
       const { created, added, kept, loginCommand } = await runSetup(paths);
       for (const path of created) console.log(`Created ${path}`);
       for (const file of added) console.log(`Added ${file}`);
-      for (const file of kept) console.log(`Kept your version of ${file}; it differs from the seed`);
+      const stale = keptWarning(paths, kept);
+      if (stale) console.log(stale);
       console.log(`Log the agent home in once, in your own terminal:\n  ${loginCommand}`);
       return 0;
     }

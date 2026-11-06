@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { resolvePaths, type Paths } from '../src/paths.ts';
-import { runSetup, syncSeed } from '../src/setup/setup.ts';
+import { keptWarning, runSetup, syncSeed } from '../src/setup/setup.ts';
 
 const gitIn = (dir: string, ...args: string[]) => execFileSync('git', ['-C', dir, ...args], { encoding: 'utf8' }).trim();
 const commits = (dir: string) => gitIn(dir, 'log', '--format=%s').split('\n');
@@ -67,5 +67,28 @@ describe('syncSeed', () => {
 
     expect(await syncSeed(fresh)).toEqual({ added: [], kept: [] });
     expect(existsSync(fresh.knowledge)).toBe(false);
+  });
+});
+
+describe('keptWarning', () => {
+  const p = resolvePaths({ AITEAM_HOME: '/home/someone/.aiteam' });
+
+  it('names each kept file, says it was left as it is, and where the seed is', () => {
+    expect(keptWarning(p, ['schemas/environment_profile.json', 'schemas/test_plan.json'], '/opt/aiteam/seed/knowledge')).toBe(
+      [
+        "These files in /home/someone/.aiteam/knowledge differ from this version's seed and were left as they are:",
+        '  schemas/environment_profile.json',
+        '  schemas/test_plan.json',
+        'A document the engine refuses may need them copied from the seed, in /opt/aiteam/seed/knowledge.',
+      ].join('\n'),
+    );
+  });
+
+  it("points at this install's seed", () => {
+    expect(keptWarning(p, ['schemas/test_plan.json'])).toContain(`in ${join(import.meta.dirname, '..', 'seed', 'knowledge')}.`);
+  });
+
+  it('says nothing when every file matches the seed', () => {
+    expect(keptWarning(p, [])).toBeUndefined();
   });
 });

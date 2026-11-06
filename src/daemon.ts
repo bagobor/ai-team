@@ -17,7 +17,7 @@ import { TryServer } from './engine/try-server.ts';
 import { EventLog } from './events.ts';
 import type { Paths } from './paths.ts';
 import { createApp, serveWeb } from './server/app.ts';
-import { syncSeed } from './setup/setup.ts';
+import { keptWarning, syncSeed } from './setup/setup.ts';
 
 const PRUNE_INTERVAL_MS = 3_600_000;
 const HOST = '127.0.0.1';
@@ -89,7 +89,9 @@ export async function startDaemon(opts: { paths: Paths; config: Config; webDist?
     const scheduler = new Scheduler(deps, runner, new Conductor(deps, runner));
 
     const pruneQuietly = () => pruneWorktrees(deps).catch((err: unknown) => console.error('Pruning worktrees failed:', err));
-    await syncSeed(paths);
+    const { kept } = await syncSeed(paths);
+    const stale = keptWarning(paths, kept);
+    if (stale) console.warn(stale);
     await recover(deps);
     await pruneQuietly();
     scheduler.start();
