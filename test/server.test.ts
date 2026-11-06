@@ -1,10 +1,10 @@
-import { existsSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Hono } from 'hono';
 import { Conductor } from '../src/engine/conductor/index.ts';
 import { IllegalTransition, type MilestonePhase } from '../src/engine/fsm.ts';
 import type { NewInboxItem } from '../src/engine/inbox.ts';
-import { createApp } from '../src/server/app.ts';
+import { createApp, serveWeb } from '../src/server/app.ts';
 import { lockSpec, projectOf, ticketTask } from './helpers/apply.ts';
 import { makeEngine, ticket, until, type TestEngine } from './helpers/engine.ts';
 import { commitAll, makeRepo, revParse, tempDir } from './helpers/repo.ts';
@@ -73,6 +73,46 @@ describe('the API', () => {
     it('accepts JSON with a charset', async () => {
       const res = await post('/api/projects', {}, { 'content-type': 'Application/JSON; charset=utf-8' });
       expect(res.status).toBe(400);
+    });
+  });
+
+  // The try page CP4 links is agent-written code on the port after this one, so it knows where the Inbox is. In a frame
+  // it hid under its own buttons, a click on Approve would come from the Inbox itself, past the guard.
+  describe('framing', () => {
+    const framing = (res: Response) => [res.headers.get('x-frame-options'), res.headers.get('content-security-policy')];
+    const FORBIDDEN = ['DENY', "frame-ancestors 'none'"];
+
+    it('is forbidden on an API answer', async () => {
+      const res = await req('/api/tasks');
+      expect(res.status).toBe(200);
+      expect(framing(res)).toEqual(FORBIDDEN);
+    });
+
+    it.each([
+      ['a Host refused', () => req('/api/tasks', { headers: { host: 'evil.example:4780' } }), 403],
+      ['an Origin refused', () => req('/api/tasks', { headers: { origin: 'https://evil.example' } }), 403],
+      ['a write that is not JSON', () => req('/api/tasks/1/cancel', { method: 'POST' }), 415],
+      ['a route that is not there', () => req('/api/nothing/here'), 404],
+      ['a request the API refuses', () => post('/api/projects', {}), 400],
+    ])('is forbidden on %s', async (_case, send, status) => {
+      const res = await send();
+      expect(res.status).toBe(status);
+      expect(framing(res)).toEqual(FORBIDDEN);
+    });
+
+    it('is forbidden on the web UI, its assets and its own paths', async () => {
+      const web = tempDir('aiteam-web-');
+      mkdirSync(join(web, 'assets'));
+      writeFileSync(join(web, 'index.html'), '<div id="root"></div>');
+      writeFileSync(join(web, 'assets', 'app.js'), 'render();');
+      serveWeb(app, web);
+
+      for (const path of ['/', '/assets/app.js', '/projects/p/inbox']) {
+        const res = await req(path);
+        expect(res.status).toBe(200);
+        expect(framing(res)).toEqual(FORBIDDEN);
+      }
+      rmSync(web, { recursive: true, force: true });
     });
   });
 

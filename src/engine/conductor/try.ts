@@ -1,11 +1,13 @@
 import { existsSync } from 'node:fs';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { git } from '../../git/git.ts';
 import { addAttemptWorktree, removeAttemptWorktree } from '../../git/workspace.ts';
-import { workerDenyRead, worktreePath } from '../../paths.ts';
+import { worktreePath } from '../../paths.ts';
+import { sentence } from '../apply/text.ts';
+import { TRY_IT } from '../inbox.ts';
 import type { EngineDeps } from '../runner.ts';
 import type { ProjectRow } from '../store.ts';
+import { checkoutEnv } from './head-worktree.ts';
 import { buildSite, entryPath, playProfile, siteRoot } from './play-gate.ts';
 
 // Where the stakeholder tries a milestone before approving it. It is outside their repo, so their own checkout stays as it is, and the branch name keeps it apart from smoke and attempt branches.
@@ -42,8 +44,7 @@ export async function offerTry(deps: EngineDeps, project: ProjectRow, n: number,
   const { profile, play } = await playProfile(deps, project);
   if (play === null) return { value: worktree, link: false };
 
-  const env = { worktree, repoPath: project.repo_path, denyRead: workerDenyRead(deps.paths, homedir()), timeoutS: deps.config.checkTimeoutS };
-  const built = await buildSite(env, profile, { setup: true });
+  const built = await buildSite(checkoutEnv(deps, project, worktree), profile, { setup: true });
   let why: string;
   if (built.ok) {
     try {
@@ -54,7 +55,8 @@ export async function offerTry(deps: EngineDeps, project: ProjectRow, n: number,
   } else {
     why = built.why;
   }
-  return { value: `The build failed here: ${why}. The checkout is at ${worktree}.`, link: false };
+  // A build's output ends in a newline, and often in a full stop before it.
+  return { value: `The build failed here: ${sentence(why.trimEnd())} The checkout is at ${worktree}.`, link: false };
 }
 
 // The try server keeps its mounts only in memory, so after a restart a pending CP4's link answers 404 until this serves it
@@ -65,7 +67,7 @@ export async function serveTryAgain(deps: EngineDeps, project: ProjectRow, n: nu
   if (!tryServer || tryServer.mounted(project.name, n)) return;
   // A CP4 that offered the checkout, because its build failed, has nothing to serve.
   const cp4 = (await store.inboxByPrefix(project.id, `cp4:M${n}:`)).filter(({ state }) => state === 'pending').at(-1);
-  const offered = cp4?.evidence.find(({ label }) => label === 'Try it')?.value;
+  const offered = cp4?.evidence.find(({ label }) => label === TRY_IT)?.value;
   if (!offered?.startsWith(tryServer.url)) return;
   const { play } = await playProfile(deps, project);
   if (play === null) return;

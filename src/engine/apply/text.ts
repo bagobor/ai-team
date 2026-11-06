@@ -13,3 +13,6 @@ export function fenced(text: string): string {
   const fence = '`'.repeat(Math.max(3, longestRun + 1));
   return `${fence}\n${text.trimEnd()}\n${fence}`;
 }
+
+// Text the engine quotes, a problem's or a build's, may already end a sentence, and a second full stop would read as a typo.
+export const sentence = (text: string): string => (/[.!?]$/.test(text) ? text : `${text}.`);

@@ -1,4 +1,4 @@
-import type { CheckMark, InboxCheck, InboxRef, InboxRow, InboxType } from '../../../src/engine/inbox.ts';
+import { TRY_IT, type CheckMark, type InboxCheck, type InboxRef, type InboxRow, type InboxType } from '../../../src/engine/inbox.ts';
 
 export type InboxItem = InboxRow & { project: string; ageS: number };
 export type InboxGroup = { type: InboxType; label: string; items: InboxItem[] };
@@ -34,6 +34,20 @@ export function inboxLabel({ id, ref }: { id: number; ref: InboxRef }): string {
 export const projectPath = (project: string, page: 'inbox' | 'board' | 'documents') => `/projects/${encodeURIComponent(project)}/${page}`;
 
 export const documentLink = (project: string, pin: string) => `${projectPath(project, 'documents')}#${encodeURIComponent(pin)}`;
+
+// CP4's Try it is the one value the engine makes a link to its try server on this machine. Any other value is text: a
+// worker's own words reach evidence too, and an address that reads as local can lead elsewhere, as
+// http://127.0.0.1:4781@evil.example/ does, whose host is evil.example.
+export function isTryLink(ref: InboxRef, { label, value }: { label: string; value: string }): boolean {
+  if (ref.kind !== 'cp4' || label !== TRY_IT) return false;
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return false;
+  }
+  return url.protocol === 'http:' && url.hostname === '127.0.0.1' && url.port !== '' && url.username === '' && url.password === '';
+}
 
 export type DocumentPin = { id: string; version: number | null };
 

@@ -109,6 +109,15 @@ function guard(port: number): MiddlewareHandler {
   };
 }
 
+// CP4 asks the stakeholder to open the try page, which is agent-written code on the port after this one. In a frame it
+// hid under its own buttons, a click on Approve would be the Inbox's own request, which the guard lets through. So no
+// page may frame anything here. The headers are set once the answer is made, so a refusal, a 404 and an error carry them too.
+const unframed: MiddlewareHandler = async (c, next) => {
+  await next();
+  c.header('X-Frame-Options', 'DENY');
+  c.header('Content-Security-Policy', "frame-ancestors 'none'");
+};
+
 export function createApp(deps: EngineDeps & { runner: Runner }): Hono {
   const { store, log, runner } = deps;
   const app = new Hono();
@@ -122,6 +131,8 @@ export function createApp(deps: EngineDeps & { runner: Runner }): Hono {
   });
   app.notFound((c) => fail(c, 404, 'Not found'));
 
+  // First, so it wraps the guard and everything after it.
+  app.use('*', unframed);
   app.use('*', guard(deps.config.port));
 
   app.get('/api/health', (c) => c.json({ ok: true }));

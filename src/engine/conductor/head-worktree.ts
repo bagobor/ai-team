@@ -9,6 +9,14 @@ import type { ProjectRow } from '../store.ts';
 // to clear one a crash left behind.
 export type HeadPurpose = 'smoke' | 'play';
 
+// The sandbox a ticket gets, for a command the engine runs in one of its own checkouts of the project.
+export const checkoutEnv = (deps: EngineDeps, project: ProjectRow, worktree: string): CommandEnv => ({
+  worktree,
+  repoPath: project.repo_path,
+  denyRead: workerDenyRead(deps.paths, homedir()),
+  timeoutS: deps.config.checkTimeoutS,
+});
+
 // A check of the integration head runs in a checkout of its own, with the sandbox a ticket gets, and leaves nothing behind.
 // Every git call goes through the workspace helpers, from the repo's side: what runs in the checkout can rewrite its .git,
 // and git run from inside it would trust that.
@@ -26,7 +34,7 @@ export async function withHeadWorktree<T>(
   await removeAttemptWorktree(project.repo_path, worktree, branch);
   await addAttemptWorktree(project.repo_path, worktree, branch, headSha);
   try {
-    return await run({ worktree, repoPath: project.repo_path, denyRead: workerDenyRead(deps.paths, homedir()), timeoutS: deps.config.checkTimeoutS }, headSha);
+    return await run(checkoutEnv(deps, project, worktree), headSha);
   } finally {
     await removeAttemptWorktree(project.repo_path, worktree, branch);
   }

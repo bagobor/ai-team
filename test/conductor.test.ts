@@ -61,8 +61,8 @@ const failing = (ac: string) => ({
   summary: 'One failure',
 });
 const REVIEW = { body: '# How it went\n', known_issues: [], deviations: [], stakeholder_note: 'Ship it' };
-// What CP4 says when Try it is a checkout, which the next CP4 replaces.
-const DISPOSABLE = 'The checkout is replaced at the next CP4 and removed when the milestone merges or is rejected, so edits there are lost.';
+// What CP4 says when Try it is a checkout, which the engine replaces or removes.
+const DISPOSABLE = "The checkout is replaced when the milestone's head moves and removed when the milestone merges or is rejected, so edits there are lost.";
 const revised = (ticket_decisions: { ticket: string; decision: string; rationale: string }[] = [], tickets: unknown[] = []) => ({ unaffected: true, rationale: 'Still right', body: null, coverage: null, ticket_decisions, tickets });
 const stillValid = (ticket: string) => ({ ticket, decision: 'still_valid', rationale: 'Still right' });
 const criterionChange = { target_artifact: 'SPEC-M1', target_ac: 'AC-1', proposed_text: 'The first thing works faster', rationale: 'It was too slow', evidence: 'A timing run', raised_by: 'engineer' };
@@ -1569,6 +1569,14 @@ describe('the play gate', () => {
       await h.conductor.tick();
       expect(h.tryServer.mounted(h.project.name, 1)).toBe(false);
       expect((await fetched(linkOf(h))).status).toBe(404);
+    });
+
+    it('ends the failed build with one full stop when its output ends a sentence', async () => {
+      const h = await harness();
+      const cp4 = await toPlayableCp4(h, onlyInTry('echo "The bundler gave up."; exit 5'));
+
+      expect(tryIt(cp4).endsWith(`\nThe bundler gave up. The checkout is at ${tryPathOf(h)}.`)).toBe(true);
+      expect(tryIt(cp4)).not.toContain('..');
     });
 
     it('still asks at CP4 when the build cannot be served, and offers the checkout instead', async () => {

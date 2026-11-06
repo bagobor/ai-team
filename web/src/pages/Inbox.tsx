@@ -2,13 +2,10 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
 import type { InboxAnswer, InboxCheck } from '../../../src/engine/inbox.ts';
 import { answerInbox, ApiError, useInbox, useProjectEvents } from '../api.ts';
-import { ageLabel, canApprove, canRequestChanges, checkMarks, documentLink, failedChecksComment, groupInbox, inboxLabel, projectPath, type InboxItem, type Marks } from '../lib/inbox.ts';
+import { ageLabel, canApprove, canRequestChanges, checkMarks, documentLink, failedChecksComment, groupInbox, inboxLabel, isTryLink, projectPath, type InboxItem, type Marks } from '../lib/inbox.ts';
 import { Link } from '../router.tsx';
 
 const hasNotifications = () => 'Notification' in window;
-
-// The engine's try server serves CP4's build on this machine, so only an address here is linked. Any other one stays text.
-const TRY_LINK = 'http://127.0.0.1:';
 
 function NotifyMe() {
   const [permission, setPermission] = useState(() => (hasNotifications() ? Notification.permission : 'denied'));
@@ -206,9 +203,10 @@ function Detail({ item, onSettled }: { item: InboxItem; onSettled: (message: str
               <dd>
                 {pin !== undefined ? (
                   <Link to={documentLink(item.project, pin)}>{value}</Link>
-                ) : value.startsWith(TRY_LINK) ? (
-                  // A tab of its own, so playing the build leaves the Inbox where it was.
-                  <a href={value} target="_blank" rel="noopener">
+                ) : isTryLink(item.ref, { label, value }) ? (
+                  // A tab of its own, so playing the build leaves the Inbox where it was. The build is agent-written,
+                  // so it gets no handle on the Inbox and no Referer from it.
+                  <a href={value} target="_blank" rel="noopener noreferrer">
                     {value}
                   </a>
                 ) : (

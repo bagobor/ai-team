@@ -9,6 +9,10 @@ export type InboxRef =
 export type InboxType = 'approval' | 'question';
 export type InboxState = 'pending' | 'answered' | 'withdrawn';
 export type InboxEvidence = { label: string; value: string; pin?: string };
+
+// The label of CP4's evidence that links to the milestone's build. The Inbox links no other evidence to a page off the app.
+export const TRY_IT = 'Try it';
+
 export type InboxOption = { id: string; label: string };
 // A criterion only the stakeholder can judge, listed on the approval so their answer can say whether it holds.
 export type InboxCheck = { ac: string; text: string; how: string };

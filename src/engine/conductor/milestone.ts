@@ -5,6 +5,8 @@ import { ensureIntegrationBranch } from '../../git/workspace.ts';
 import { stateRepoDir, worktreePath } from '../../paths.ts';
 import type { ProfileData } from '../apply/discovery.ts';
 import { ENV_PROFILE, reviewId, specId, techId, testPlanId } from '../apply/ids.ts';
+import { sentence } from '../apply/text.ts';
+import { TRY_IT } from '../inbox.ts';
 import type { EngineDeps, Runner } from '../runner.ts';
 import type { MilestoneRow, ProjectRow, Store, TaskRow } from '../store.ts';
 import { withHeadWorktree } from './head-worktree.ts';
@@ -19,11 +21,9 @@ const STALE_BLOCKS: readonly string[] = ['tech_design', 'test_plan', 'ticket'];
 
 const byId = (tasks: TaskRow[], id: string) => tasks.find(({ ticket_id }) => ticket_id === id);
 
-// A checkout offered at CP4 is the engine's, not the stakeholder's, so they are told not to keep work in it.
-const DISPOSABLE = 'The checkout is replaced at the next CP4 and removed when the milestone merges or is rejected, so edits there are lost.';
-
-// A problem's own text may already end a sentence, and a second full stop would read as a typo.
-const sentence = (text: string) => (/[.!?]$/.test(text) ? text : `${text}.`);
+// A checkout offered at CP4 is the engine's, not the stakeholder's, so they are told not to keep work in it. A CP4 for the
+// same head keeps it as it is (ensureTryWorktree).
+const DISPOSABLE = "The checkout is replaced when the milestone's head moves and removed when the milestone merges or is rejected, so edits there are lost.";
 
 // An open request could still change what the stakeholder approves, so CP4 and the merge wait until it is decided.
 const requestOpen = async (deps: EngineDeps, project: ProjectRow) =>
@@ -284,7 +284,7 @@ async function afterMilestoneReview(deps: EngineDeps, project: ProjectRow, m: Mi
       evidence: [
         ...pins.map((pin) => ({ label: pin.split('@')[0]!, value: pin, pin })),
         { label: 'Branch', value: `aiteam/m${n} at ${headSha.slice(0, 7)}` },
-        { label: 'Try it', value: tryIt.value },
+        { label: TRY_IT, value: tryIt.value },
       ],
       recommendation,
       options: [],

@@ -1,4 +1,5 @@
 import type { LineageGraph } from '../src/artifacts/lineage.ts';
+import type { InboxRef } from '../src/engine/inbox.ts';
 import type { ArtifactSummary, TaskSummary } from '../web/src/api.ts';
 import { BOARD_COLUMNS, boardColumns, boardSummary, currentMilestone, diffLines, selectTasks } from '../web/src/lib/board.ts';
 import { groupDocuments } from '../web/src/lib/documents.ts';
@@ -12,6 +13,7 @@ import {
   failedChecksComment,
   groupInbox,
   inboxLabel,
+  isTryLink,
   newPendingIds,
   pinParts,
   type InboxItem,
@@ -127,6 +129,32 @@ describe('the checks the stakeholder marks', () => {
 describe('documentLink', () => {
   it('points a pin at its project\'s Documents page', () => {
     expect(documentLink('temp conv', 'SPEC-M1@2')).toBe('/projects/temp%20conv/documents#SPEC-M1%402');
+  });
+});
+
+describe('isTryLink', () => {
+  const CP4: InboxRef = { kind: 'cp4', milestone: 1 };
+  const TRY = 'http://127.0.0.1:4781/p/m1/index.html';
+
+  it('links CP4\'s Try it when it leads to a port on this machine', () => {
+    expect(isTryLink(CP4, { label: 'Try it', value: TRY })).toBe(true);
+  });
+
+  it.each([
+    // The URL parser reads 127.0.0.1 and 4781 as a username and password, so the host is evil.example.
+    ['an address whose host comes after a userinfo', 'Try it', 'http://127.0.0.1:4781@evil.example/p/m1/index.html'],
+    ['a host that only starts with 127.0.0.1', 'Try it', 'http://127.0.0.1.evil.example:4781/'],
+    ['https, which the try server never speaks', 'Try it', 'https://127.0.0.1:4781/'],
+    ['no port', 'Try it', 'http://127.0.0.1/p/m1/'],
+    ['a value that does not parse', 'Try it', 'http://127.0.0.1:port/'],
+    // A worker's own summary starts this evidence, so it can hold any address.
+    ['a try address under any other label', 'What the worker said', TRY],
+  ])('leaves %s as text', (_case, label, value) => {
+    expect(isTryLink(CP4, { label, value })).toBe(false);
+  });
+
+  it('leaves a Try it on any other item as text', () => {
+    expect(isTryLink({ kind: 'escalation', taskId: 3 }, { label: 'Try it', value: TRY })).toBe(false);
   });
 });
 
