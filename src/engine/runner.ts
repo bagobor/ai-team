@@ -19,6 +19,7 @@ import { ENV_PROFILE } from './apply/ids.ts';
 import { applyOutput } from './apply/index.ts';
 import { raisedRequests } from './apply/raised.ts';
 import { IllegalTransition } from './fsm.ts';
+import { isHarnessTicket, protectedPaths, type ProtectedPath } from './protected.ts';
 import { reviewInputs } from './review-inputs.ts';
 import { roleInputs, writeReference, type Reference } from './role-inputs.ts';
 import type { AttemptPatch, AttemptRow, ProjectRow, Store, TaskRow } from './store.ts';
@@ -63,6 +64,7 @@ type TaskText = {
   doneCommands: string[];
   inputs: ManifestInput[];
   acRefs: string[];
+  protectedPaths: string[];
   reference?: Reference;
   diff?: NonNullable<BuildInput['diff']>;
   comment?: string;
@@ -274,6 +276,7 @@ export class Runner {
       inputs: work.inputs,
       doneCommands: work.doneCommands,
       acRefs: work.acRefs,
+      protectedPaths: work.protectedPaths,
       networkAllow: work.networkAllow,
       ...(work.diff ? { diff: work.diff } : {}),
       ...(work.comment ? { comment: work.comment } : {}),
@@ -380,8 +383,14 @@ export class Runner {
       taskSource: task.ticket_path,
       doneCommands: ticket.definition_of_done,
       acRefs: ticket.ac_refs,
+      protectedPaths: (await this.protectedFrom(project, task)).map(({ glob }) => glob),
       ...(await roleInputs(this.deps, project, ticket.inputs)),
     };
+  }
+
+  // Every ticket but QA's harness tickets, bug tickets included, since they are the engineers' to write.
+  private async protectedFrom(project: ProjectRow, task: TaskRow): Promise<ProtectedPath[]> {
+    return isHarnessTicket(task.ticket_id) ? [] : protectedPaths(this.deps, project, task.milestone);
   }
 
   private async orderText(project: ProjectRow, task: TaskRow, order: WorkOrder): Promise<TaskText> {
@@ -391,6 +400,7 @@ export class Runner {
       taskSource: `workorder:${order.purpose}`,
       doneCommands: order.checks,
       acRefs: task.ac_refs,
+      protectedPaths: [],
       ...(order.purpose === 'milestone_review' ? await reviewInputs(this.deps, project, task.milestone, order.inputs) : await roleInputs(this.deps, project, order.inputs, { designInFile: order.purpose === 'qa_verify' })),
       ...(diff ? { diff } : {}),
       ...(order.comment ? { comment: order.comment } : {}),
@@ -509,6 +519,7 @@ export class Runner {
       worktree: attempt.worktree_path,
       baseSha: work.baseSha,
       writeScope: role.write_scope,
+      protectedPaths: await this.protectedFrom(project, task),
       commands: task.dod,
       denyRead: workerDenyRead(paths, homedir()),
       timeoutS: config.checkTimeoutS,

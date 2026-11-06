@@ -6,6 +6,7 @@
   "required": [
     "body",
     "coverage",
+    "protected",
     "harness_tickets"
   ],
   "properties": {
@@ -39,8 +40,15 @@
         }
       }
     },
+    "protected": {
+      "description": "Globs for the acceptance tests and fixtures your coverage commands run, such as `acceptance/**`. Only your harness tickets may write them. Any other ticket that touches one, in this milestone or a later one, fails its checks. Keep them out of the paths the project's `test` command collects, so a product ticket's definition of done never runs a test for a criterion it hasn't built yet.",
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
     "harness_tickets": {
-      "description": "Test tooling the commands need that the product won't include, such as a replay harness or recorded data. Never the product, or anything a criterion asks it to include, such as its tests: the Tech Lead's tickets build those. Often empty.",
+      "description": "The tickets that write what `protected` names: the acceptance tests your coverage commands run, and any harness or recorded data they need. Never the product itself, and never tests a criterion asks the product to include: the Tech Lead's tickets build those.",
       "type": "array",
       "items": {
         "type": "object",

@@ -201,7 +201,7 @@ describe('what a role reads on a milestone of 10 tickets and 30 criteria', () =>
       expectRoomForM4(ran);
       expect(ran.state).toBe('done');
       expect(await e.artifacts.latest(project.id, 'TEST-PLAN-M1')).toMatchObject({ derived_from: inputs });
-      expect((await e.artifacts.read(project, 'TEST-PLAN-M1@1')).fields.data).toEqual({ coverage: largeCoverage });
+      expect((await e.artifacts.read(project, 'TEST-PLAN-M1@1')).fields.data).toEqual({ coverage: largeCoverage, protected: [] });
     });
 
     it('can read the command the Spec gave each criterion', async () => {
@@ -229,7 +229,7 @@ describe('what a role reads on a milestone of 10 tickets and 30 criteria', () =>
 
       expectRoomForM4(ran);
       expect(ran.state).toBe('done');
-      expect((await e.artifacts.read(project, 'TEST-PLAN-M1@2')).fields.data).toEqual({ coverage: largeCoverage });
+      expect((await e.artifacts.read(project, 'TEST-PLAN-M1@2')).fields.data).toEqual({ coverage: largeCoverage, protected: [] });
     });
 
     it('of the Test Plan can read the commands it has to write again, with their notes in the manifest', async () => {
@@ -364,7 +364,7 @@ describe('a Spec with a human check', () => {
     const [spec] = await publish(e, await apply(e, 'milestone_spec', { body: '# Goal\n', criteria: [CRITERIA[0], HUMAN] }));
     await e.store.lockCriteria(project.id, 1, spec!.version, [CRITERIA[0]!, HUMAN]);
     const planned = [{ ac: 'AC-1', commands: [CRITERIA[0]!.verification.how], notes: '' }];
-    await publish(e, await apply(e, 'test_plan', { body: '# Plan\n', coverage: planned, harness_tickets: [] }, { inputs: ['SPEC-M1@1'], role: 'qa_engineer' }));
+    await publish(e, await apply(e, 'test_plan', { body: '# Plan\n', coverage: planned, harness_tickets: [], protected: [] }, { inputs: ['SPEC-M1@1'], role: 'qa_engineer' }));
     return roleInputs(e, project, ['SPEC-M1@1', 'TEST-PLAN-M1@1']);
   }
 

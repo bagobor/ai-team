@@ -743,6 +743,60 @@ describe('Runner', () => {
     });
   });
 
+  describe('protected paths', () => {
+    // The Test Plan QA left behind, in the one field the engine reads.
+    const testPlan = async (e: TestEngine, globs: string[], milestone = 1) =>
+      e.artifacts.commit(await projectOf(e), {
+        message: 'test plan',
+        publish: [{ id: `TEST-PLAN-M${milestone}`, type: 'test_plan', status: 'approved', ownerRole: 'qa_engineer', approvedBy: 'owner:qa_engineer', derivedFrom: [], milestone, body: '# Plan\n', fields: { data: { coverage: [], protected: globs } } }],
+      });
+    const systemText = (e: TestEngine, ticketId: string) => readFileSync(join(manifestDir(e.paths, 'p', ticketId, 1), 'system.md'), 'utf8');
+
+    it.each(['M1-T-1', 'M1-B-1'])('protects the Test Plan paths from %s', async (id) => {
+      const e = await engine({ steps: [okStep({ 'acceptance/x.js': '' })] });
+      await testPlan(e, ['acceptance/**']);
+      const t = await e.addTicket(ticket({ id }));
+
+      await runOnce(e, t.id);
+
+      const [a] = await e.store.listAttempts(t.id);
+      expect(a).toMatchObject({ state: 'failed', failure_kind: 'scope_violation' });
+      expect(a!.failure_evidence).toContain('acceptance/x.js is protected by TEST-PLAN-M1');
+      expect(systemText(e, id)).toContain('- `acceptance/**`');
+    });
+
+    it('lets a harness ticket write protected paths', async () => {
+      const e = await engine({ steps: [okStep({ 'acceptance/x.js': '' })] });
+      await testPlan(e, ['acceptance/**']);
+      const t = await e.addTicket(ticket({ id: 'M1-Q-1' }));
+
+      await runOnce(e, t.id);
+
+      expect(await task(e, t.id)).toMatchObject({ state: 'review' });
+      expect(systemText(e, 'M1-Q-1')).not.toContain('Protected paths');
+    });
+
+    it('keeps product tickets out of paths a plan protected in an earlier milestone', async () => {
+      const e = await engine({ steps: [okStep({ 'acceptance/x.js': '' })] });
+      await testPlan(e, ['acceptance/**'], 1);
+      const t = await e.addTicket(ticket({ id: 'M2-T-1', milestone: 2 }));
+
+      await runOnce(e, t.id);
+
+      expect((await e.store.listAttempts(t.id))[0]).toMatchObject({ state: 'failed', failure_kind: 'scope_violation' });
+    });
+
+    it('leaves a product ticket free to write anywhere else', async () => {
+      const e = await engine({ steps: [okStep({ 'src/a.mjs': '' })] });
+      await testPlan(e, ['acceptance/**']);
+      const t = await e.addTicket(ticket({ id: 'M1-T-1' }));
+
+      await runOnce(e, t.id);
+
+      expect(await task(e, t.id)).toMatchObject({ state: 'review' });
+    });
+  });
+
   describe('tasks with a work order', () => {
     it('finishes an authoring task from checks to done when its output applies', async () => {
       const e = await engine({ steps: [discoveryStep()] });

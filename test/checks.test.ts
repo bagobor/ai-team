@@ -125,6 +125,48 @@ describe('runChecks', () => {
     });
   });
 
+  describe('protected paths', () => {
+    const protectedBy = (glob: string, source = 'TEST-PLAN-M1') => ({ protectedPaths: [{ glob, source }] });
+
+    it('fails a change to a protected path and names who protects it', async () => {
+      await commitFiles('acceptance/ac-1.test.js');
+      const r = await checks({ ...protectedBy('acceptance/**'), commands: ['touch ran'] });
+
+      expect(r).toMatchObject({ ok: false, kind: 'scope_violation', violations: ['acceptance/ac-1.test.js'], runs: [] });
+      expect(r.ok === false && r.evidence).toContain("acceptance/ac-1.test.js is protected by TEST-PLAN-M1: only QA's harness tickets may change it");
+      expect(existsSync(join(worktree, 'ran'))).toBe(false);
+    });
+
+    it('names the plan that owns the glob a path matched', async () => {
+      await commitFiles('acceptance/a.js', 'fixtures/b.json');
+      const r = await checks({ protectedPaths: [{ glob: 'acceptance/**', source: 'TEST-PLAN-M1' }, { glob: 'fixtures/**', source: 'TEST-PLAN-M2' }] });
+
+      expect(r.ok === false && r.evidence).toContain('acceptance/a.js is protected by TEST-PLAN-M1');
+      expect(r.ok === false && r.evidence).toContain('fixtures/b.json is protected by TEST-PLAN-M2');
+    });
+
+    it.each(['acceptance/.hidden', 'ACCEPTANCE/b.js'])('protects %s, since dotfiles match and this filesystem folds case', async (path) => {
+      await commitFiles(path);
+      expect(await checks(protectedBy('acceptance/**'))).toMatchObject({ ok: false, kind: 'scope_violation', violations: [path] });
+    });
+
+    it('reports a path once when the role scope would refuse it as well', async () => {
+      await commitFiles('acceptance/a.js', 'docs/b.md');
+      const r = await checks({ ...protectedBy('acceptance/**'), writeScope: { allow: ['src/**', 'acceptance/**'], deny: ['acceptance/**'] } });
+
+      expect(r).toMatchObject({ ok: false, kind: 'scope_violation', violations: ['acceptance/a.js', 'docs/b.md'] });
+      const evidence = r.ok === false ? r.evidence : '';
+      expect(evidence.split('acceptance/a.js')).toHaveLength(2);
+      expect(evidence).toContain('acceptance/a.js is protected by TEST-PLAN-M1');
+      expect(evidence).toContain('These paths are outside the write scope:\ndocs/b.md');
+    });
+
+    it('leaves a path no glob names to the role scope', async () => {
+      await commitFiles('src/a.ts');
+      expect((await checks(protectedBy('acceptance/**'))).ok).toBe(true);
+    });
+  });
+
   describe('commands', () => {
     beforeEach(() => commitFiles('src/a.ts'));
 

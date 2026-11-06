@@ -1,6 +1,7 @@
 import { isHumanCheck } from '../../artifacts/acs.ts';
 import { ArtifactError, parsePin, sectionText, formatPin, type ArtifactStatus } from '../../artifacts/format.ts';
 import type { NewVersion, StatusChange } from '../../artifacts/store.ts';
+import { isHarnessTicket, protectedGlobs, protectedProblems } from '../protected.ts';
 import type { EngineDeps } from '../runner.ts';
 import type { ArtifactVersionRow, CriterionRow, ProjectRow, TaskRow } from '../store.ts';
 import { techId, testPlanId } from './ids.ts';
@@ -10,7 +11,7 @@ import { validateTickets, type TicketDraft } from './tickets.ts';
 
 export type Coverage = { ac: string; commands: string[]; notes: string };
 type DesignOutput = { body: string; tickets: TicketDraft[] };
-type TestPlanOutput = { body: string; coverage: Coverage[]; harness_tickets: TicketDraft[] };
+type TestPlanOutput = { body: string; coverage: Coverage[]; protected: string[]; harness_tickets: TicketDraft[] };
 type Decision = { ticket: string; decision: 'still_valid' | 'superseded'; rationale: string };
 type ReviseOutput = { unaffected: boolean; rationale: string; body: string | null; coverage: Coverage[] | null; ticket_decisions: Decision[]; tickets: TicketDraft[] };
 
@@ -61,7 +62,7 @@ const designDoc = (ctx: ApplyCtx, body: string, status: ArtifactStatus = 'approv
   body,
 });
 
-const testPlanDoc = (ctx: ApplyCtx, body: string, coverage: Coverage[], status: ArtifactStatus = 'approved'): NewVersion => ({
+const testPlanDoc = (ctx: ApplyCtx, body: string, coverage: Coverage[], globs: string[], status: ArtifactStatus = 'approved'): NewVersion => ({
   id: testPlanId(ctx.task.milestone),
   type: 'test_plan',
   status,
@@ -70,7 +71,7 @@ const testPlanDoc = (ctx: ApplyCtx, body: string, coverage: Coverage[], status: 
   milestone: ctx.task.milestone,
   derivedFrom: ctx.order.inputs.filter((pin) => parsePin(pin).id !== testPlanId(ctx.task.milestone)),
   body,
-  fields: { data: { coverage } },
+  fields: { data: { coverage, protected: globs } },
 });
 
 export const applyTechDesign: Applier = async (ctx) => {
@@ -86,16 +87,16 @@ export const applyTechDesign: Applier = async (ctx) => {
 };
 
 export const applyTestPlan: Applier = async (ctx) => {
-  const { body, coverage, harness_tickets } = ctx.output as TestPlanOutput;
+  const { body, coverage, harness_tickets, protected: globs } = ctx.output as TestPlanOutput;
   const { milestone } = ctx.task;
   const criteria = await lockedCriteria(ctx);
   const acIds = automatedIds(criteria);
 
   const validated = await validateTickets(ctx, milestone, harness_tickets, acIds, await knownTickets(ctx), 'Q', body);
-  const problems = [...(validated.ok ? [] : [validated.evidence]), ...coverageProblems(acIds, coverage, humanCheckIds(criteria))];
+  const problems = [...(validated.ok ? [] : [validated.evidence]), ...coverageProblems(acIds, coverage, humanCheckIds(criteria)), ...protectedProblems(globs)];
   if (!validated.ok || problems.length > 0) return { ok: false, evidence: problems.join('\n') };
 
-  return withRaised(ctx, { message: `milestone ${milestone}: test plan`, publish: [testPlanDoc(ctx, body, coverage), ...validated.docs] });
+  return withRaised(ctx, { message: `milestone ${milestone}: test plan`, publish: [testPlanDoc(ctx, body, coverage, globs), ...validated.docs] });
 };
 
 export type TicketOfDoc = { id: string; row: ArtifactVersionRow | undefined; task: TaskRow | undefined; acRefs: string[]; dependsOn: string[] };
@@ -106,7 +107,7 @@ const isClosed = ({ task }: TicketOfDoc) => task !== undefined && CLOSED.include
 // A revise speaks for its own document's tickets. Otherwise the two revisions that can run together would both decide
 // the same tickets, and the QA Engineer could cancel the Tech Lead's work.
 async function ticketsOfDoc(deps: Pick<EngineDeps, 'store' | 'artifacts'>, project: ProjectRow, milestone: number, prefix: Prefix): Promise<TicketOfDoc[]> {
-  const mine = (id: string) => /-Q-\d+$/.test(id) === (prefix === 'Q');
+  const mine = (id: string) => isHarnessTicket(id) === (prefix === 'Q');
   const rows = (await deps.artifacts.list(project.id)).filter((row) => row.type === 'ticket' && row.milestone === milestone && mine(row.artifact_id));
   const tasks = (await deps.store.listTasks(project.id)).filter((task) => task.kind === 'ticket' && task.milestone === milestone && mine(task.ticket_id));
 
@@ -221,7 +222,9 @@ const applyRevise =
       else status.push({ id: ticket.id, status: 'approved', approvedBy: 'owner:tech_lead', derivedFrom: await repinned(ctx, ticket.row, docId, body), rationale: decision?.rationale ?? `Closed before this revision of ${docId}` });
     }
 
-    const publish = [...(body === null ? [] : [prefix === 'T' ? designDoc(ctx, body, settled) : testPlanDoc(ctx, body, output.coverage!, settled)]), ...newDocs];
+    // A revision has no way to name protected paths, so the new Test Plan keeps those of the version it replaces.
+    const carried = prefix === 'Q' && body !== null ? protectedGlobs(await ctx.deps.artifacts.read(ctx.project, docId)) : [];
+    const publish = [...(body === null ? [] : [prefix === 'T' ? designDoc(ctx, body, settled) : testPlanDoc(ctx, body, output.coverage!, carried, settled)]), ...newDocs];
     return withRaised(ctx, { message: `milestone ${milestone}: revise ${docId}`, publish, status }, async (s) => {
       for (const id of superseded) {
         const task = await s.getTaskByTicket(ctx.project.id, id);

@@ -36,7 +36,7 @@ const HUMAN = { id: 'AC-2', text: 'Dodging feels fair', verification: { method: 
 const draft = (key: string, ac_refs: string[]) => ({ key, title: key, specialty: 'engineer', ac_refs, touches: ['src/**'], depends_on: [], definition_of_done: ['true'], inputs: [], size: 'S', body: 'Do it.\n' });
 const ONE_TICKET = { body: '# Design\n', tickets: [draft('T-1', ['AC-1', 'AC-2'])] };
 const TWO_TICKETS = { body: '# Design\n', tickets: [draft('T-1', ['AC-1']), draft('T-2', ['AC-2'])] };
-const TEST_PLAN = { body: '# Test plan\n', coverage: CRITERIA.map(({ id }) => ({ ac: id, commands: ['true'], notes: '' })), harness_tickets: [] };
+const TEST_PLAN = { body: '# Test plan\n', coverage: CRITERIA.map(({ id }) => ({ ac: id, commands: ['true'], notes: '' })), harness_tickets: [], protected: [] };
 const APPROVE = { verdict: 'approve', summary: 'Fine', findings: [] };
 const PASS = { results: CRITERIA.map(({ id }) => ({ ac: id, status: 'passing', commands: [], notes: '' })), bugs: [], summary: 'All good' };
 const failing = (ac: string) => ({

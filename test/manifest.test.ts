@@ -146,6 +146,17 @@ describe('buildManifest', () => {
       expect(built({ ...input, acRefs: ['AC-1', 'AC-3'] }).system).toContain('`AC-1`, `AC-3`');
       expect(built(input).system).not.toContain('Acceptance criteria');
     });
+
+    it('lists protected paths in a ticket manifest', () => {
+      const { system } = built({ ...input, protectedPaths: ['acceptance/**', 'fixtures/replay.json'] });
+
+      expect(system).toContain("Protected paths: QA's acceptance tests. Read and run them; never change them:\n- `acceptance/**`\n- `fixtures/replay.json`");
+    });
+
+    it('says nothing of protected paths when there are none', () => {
+      expect(built(input).system).not.toContain('Protected paths');
+      expect(built({ ...input, protectedPaths: [] }).system).not.toContain('Protected paths');
+    });
   });
 
   describe('network allow-list', () => {

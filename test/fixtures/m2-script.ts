@@ -60,6 +60,7 @@ const TEST_PLAN = {
     { ac: 'AC-1', commands: [C2F_COMMAND, HARNESS_COMMAND], notes: '' },
     { ac: 'AC-2', commands: [F2C_COMMAND], notes: '' },
   ],
+  protected: [],
   harness_tickets: [
     { key: 'Q-1', title: 'A test harness', specialty: 'engineer', ac_refs: ['AC-1'], touches: ['test/**'], depends_on: [], definition_of_done: ['test -s test/tempconv.test.mjs'], inputs: [], size: 'S', body: 'Add a test for c2f.\n' },
   ],

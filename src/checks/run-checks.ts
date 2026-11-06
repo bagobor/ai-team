@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { dirname } from 'node:path';
 import picomatch from 'picomatch';
 import { workerEnv } from '../adapters/env.ts';
+import type { ProtectedPath } from '../engine/protected.ts';
 import type { EventType } from '../events.ts';
 import { changedPaths } from '../git/workspace.ts';
 import { killGroup, killGroupNow, spawnGroup } from '../proc.ts';
@@ -18,6 +19,8 @@ export type ChecksInput = {
   worktree: string;
   baseSha: string;
   writeScope: { allow: string[]; deny: string[] };
+  // Only QA's harness tickets may change these, whatever their role allows.
+  protectedPaths?: ProtectedPath[];
   commands: string[];
   denyRead: string[];
   timeoutS: number;
@@ -52,6 +55,15 @@ function scopeViolations(paths: string[], scope: ChecksInput['writeScope']): str
   const allowed = picomatch(scope.allow, { dot: true });
   const denied = picomatch(scope.deny, { dot: true, nocase: true });
   return paths.filter((path) => ALWAYS_OFF_LIMITS.test(path) || denied(path) || !allowed(path));
+}
+
+// A protected path is named first, so the evidence says who protects it rather than that the role's scope refused it. This filesystem folds case, so the match does too.
+function protectedViolations(paths: string[], protectedPaths: ProtectedPath[]): { path: string; source: string }[] {
+  const matchers = protectedPaths.map(({ glob, source }) => ({ source, matches: picomatch(glob, { dot: true, nocase: true }) }));
+  return paths.flatMap((path) => {
+    const hit = matchers.find(({ matches }) => matches(path));
+    return hit ? [{ path, source: hit.source }] : [];
+  });
 }
 
 // The sandbox matches real paths, so a symlink such as macOS's /tmp has to be resolved first.
@@ -188,9 +200,16 @@ export async function runChecks(i: ChecksInput): Promise<ChecksResult> {
     return { ok: false, kind: 'no_changes', runs: [], evidence: `The attempt changed nothing since ${i.baseSha}.` };
   }
 
-  const violations = scopeViolations(paths, i.writeScope);
+  const guarded = protectedViolations(paths, i.protectedPaths ?? []);
+  const guardedPaths = new Set(guarded.map(({ path }) => path));
+  const outside = scopeViolations(paths.filter((path) => !guardedPaths.has(path)), i.writeScope);
+  const violations = [...guardedPaths, ...outside];
   if (violations.length > 0) {
-    return { ok: false, kind: 'scope_violation', runs: [], violations, evidence: `These paths are outside the write scope:\n${violations.join('\n')}` };
+    const lines = [
+      ...guarded.map(({ path, source }) => `${path} is protected by ${source}: only QA's harness tickets may change it`),
+      ...(outside.length > 0 ? [`These paths are outside the write scope:\n${outside.join('\n')}`] : []),
+    ];
+    return { ok: false, kind: 'scope_violation', runs: [], violations, evidence: lines.join('\n') };
   }
 
   const { ok, runs, evidence } = await runSandboxed(i);

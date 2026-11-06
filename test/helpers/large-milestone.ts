@@ -33,7 +33,7 @@ export const largeTickets = Array.from({ length: TICKET_COUNT }, (_, t) => ({
 export const largeDesign = { body: '# Design\n', tickets: largeTickets };
 // The first real project's Tech Designs ran from 7,000 to 12,000 characters of prose.
 export const proseDesign = { body: `# Design\n\n## Power-ups\n\ndesign-prose-marker ${words(6000)}\n\n## Boss\n\n${words(6000)}\n`, tickets: largeTickets };
-export const largeTestPlan = { body: `# Test plan\n\nplan-prose-marker ${words(1500)}\n`, coverage: largeCoverage, harness_tickets: [] };
+export const largeTestPlan = { body: `# Test plan\n\nplan-prose-marker ${words(1500)}\n`, coverage: largeCoverage, harness_tickets: [], protected: [] };
 
 // Each document comes from its real applier, so these are the sizes and shapes a real milestone leaves behind.
 // Run 4's PM wrote its own Acceptance criteria section, so by default this Spec has one too, and the engine's comes second.

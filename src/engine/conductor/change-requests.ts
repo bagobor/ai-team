@@ -4,6 +4,7 @@ import { openTickets } from '../apply/design.ts';
 import { techId, testPlanId } from '../apply/ids.ts';
 import { recommendationOf } from '../apply/review.ts';
 import type { InboxRow } from '../inbox.ts';
+import { isHarnessTicket } from '../protected.ts';
 import type { EngineDeps, Runner } from '../runner.ts';
 import type { ArtifactVersionRow, ProjectRow, Store } from '../store.ts';
 import { ensureTask, isClosed, lastSucceeded, pinOf, recommendationTask, reviseInputs, reviseTask } from './tasks.ts';
@@ -138,7 +139,7 @@ async function reviseStale(deps: Deps, project: ProjectRow): Promise<void> {
   for (const row of await artifacts.list(project.id)) {
     if (row.milestone !== n || row.status !== 'stale') continue;
     if (row.type === 'tech_design' || row.type === 'test_plan') stale.add(row.artifact_id);
-    else if (row.type === 'ticket') stale.add(/-Q-\d+$/.test(row.artifact_id) ? testPlanId(n) : techId(n));
+    else if (row.type === 'ticket') stale.add(isHarnessTicket(row.artifact_id) ? testPlanId(n) : techId(n));
   }
 
   const tasks = await store.listTasks(project.id);

@@ -40,7 +40,7 @@ const draft = (key: string, ac_refs: string[], overrides: Record<string, unknown
 });
 const DESIGN = { body: '# Design\n', tickets: [draft('T-1', ['AC-1']), draft('T-2', ['AC-2'])] };
 const coverage = (ac: string, commands = ['npm test']) => ({ ac, commands, notes: '' });
-const TEST_PLAN = { body: '# Test plan\n', coverage: [coverage('AC-1'), coverage('AC-2')], harness_tickets: [] };
+const TEST_PLAN = { body: '# Test plan\n', coverage: [coverage('AC-1'), coverage('AC-2')], harness_tickets: [], protected: [] as string[] };
 const REVISE = { unaffected: false, rationale: 'The spec moved', body: '# Design two\n', coverage: null, ticket_decisions: [], tickets: [] };
 
 describe('appliers', () => {
@@ -250,8 +250,25 @@ describe('appliers', () => {
       const [row, ticket] = await publish(e, await apply(e, 'test_plan', { ...TEST_PLAN, harness_tickets: [draft('Q-1', ['AC-1'])] }, { inputs: ['SPEC-M1@1'] }));
 
       expect(row).toMatchObject({ artifact_id: 'TEST-PLAN-M1', status: 'approved', owner_role: 'qa_engineer', approved_by: 'owner:qa_engineer' });
-      expect((await read('TEST-PLAN-M1')).fields.data).toEqual({ coverage: TEST_PLAN.coverage });
+      expect((await read('TEST-PLAN-M1')).fields.data).toEqual({ coverage: TEST_PLAN.coverage, protected: [] });
       expect(ticket).toMatchObject({ artifact_id: 'M1-Q-1', owner_role: 'tech_lead' });
+    });
+
+    it('stores the protected globs', async () => {
+      await publish(e, await apply(e, 'test_plan', { ...TEST_PLAN, protected: ['acceptance/**'] }, { inputs: ['SPEC-M1@1'] }));
+      expect((await read('TEST-PLAN-M1')).fields.data).toEqual({ coverage: TEST_PLAN.coverage, protected: ['acceptance/**'] });
+    });
+
+    const { protected: _omitted, ...withoutProtected } = TEST_PLAN;
+    it.each([
+      ['covers the whole repository', { ...TEST_PLAN, protected: ['**'] }],
+      ['covers the whole repository, spelled another way', { ...TEST_PLAN, protected: ['**/*'] }],
+      ['names the state folder', { ...TEST_PLAN, protected: ['.aiteam/x'] }],
+      ['is blank', { ...TEST_PLAN, protected: ['acceptance/**', ' '] }],
+      ['is missing', withoutProtected],
+      ['is not a list of globs', { ...TEST_PLAN, protected: 'acceptance/**' }],
+    ])('rejects a Test Plan whose protected list %s', async (_name, output) => {
+      expect(evidenceOf(await apply(e, 'test_plan', output))).toMatch(/protected/);
     });
 
     it.each([
@@ -262,6 +279,16 @@ describe('appliers', () => {
       ['unknown', [coverage('AC-1'), coverage('AC-2'), coverage('AC-3')], /AC-3/],
     ])('rejects a Test Plan with a criterion %s', async (_name, rows, evidence) => {
       expect(evidenceOf(await apply(e, 'test_plan', { ...TEST_PLAN, coverage: rows }))).toMatch(evidence);
+    });
+
+    it('keeps the protected globs when the plan is revised, which has no way to name new ones', async () => {
+      await publish(e, await apply(e, 'test_plan', { ...TEST_PLAN, protected: ['acceptance/**'] }, { inputs: ['SPEC-M1@1'] }));
+      const revision = { unaffected: false, rationale: 'r', body: '# Plan two\n', coverage: [coverage('AC-1', ['npm run lint']), coverage('AC-2')], ticket_decisions: [], tickets: [] };
+
+      await publish(e, await apply(e, 'revise_test_plan', revision, { inputs: ['SPEC-M1@1', 'TEST-PLAN-M1@1'] }));
+
+      expect(await latest('TEST-PLAN-M1')).toMatchObject({ version: 2 });
+      expect((await read('TEST-PLAN-M1')).fields.data).toEqual({ coverage: revision.coverage, protected: ['acceptance/**'] });
     });
 
     it('wants Q keys from a Test Plan', async () => {
@@ -275,7 +302,7 @@ describe('appliers', () => {
     it('needs no coverage for a human check', async () => {
       const [row] = await publish(e, await apply(e, 'test_plan', { ...TEST_PLAN, coverage: [coverage('AC-1')] }));
       expect(row).toMatchObject({ artifact_id: 'TEST-PLAN-M1', status: 'approved' });
-      expect((await read('TEST-PLAN-M1')).fields.data).toEqual({ coverage: [coverage('AC-1')] });
+      expect((await read('TEST-PLAN-M1')).fields.data).toEqual({ coverage: [coverage('AC-1')], protected: [] });
     });
 
     it('rejects coverage for a human check', async () => {
@@ -454,7 +481,7 @@ describe('appliers', () => {
 
       await publish(e, await apply(e, 'revise_test_plan', { ...output, coverage: TEST_PLAN.coverage }, { inputs: ['SPEC-M1@2', 'TEST-PLAN-M1@1'] }));
       expect(await latest('TEST-PLAN-M1')).toMatchObject({ version: 2, status: 'approved', derived_from: ['SPEC-M1@2'] });
-      expect((await read('TEST-PLAN-M1')).fields.data).toEqual({ coverage: TEST_PLAN.coverage });
+      expect((await read('TEST-PLAN-M1')).fields.data).toEqual({ coverage: TEST_PLAN.coverage, protected: [] });
     });
   });
 

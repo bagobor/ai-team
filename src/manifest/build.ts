@@ -48,6 +48,7 @@ export type BuildInput = {
   inputs: ManifestInput[];
   doneCommands: string[];
   acRefs?: string[];
+  protectedPaths?: string[];
   diff?: { base: string; head: string; text: string };
   comment?: string;
   networkAllow?: string[];
@@ -70,7 +71,7 @@ const PREVIOUS_ATTEMPT_SOURCE = 'previous attempt';
 const INSTRUCTION_FILES = ['CLAUDE.md', join('.claude', 'CLAUDE.md'), 'AGENTS.md'];
 
 function outputContract(i: BuildInput): string {
-  const { role, schema, schemaSource, doneCommands, acRefs } = i;
+  const { role, schema, schemaSource, doneCommands, acRefs, protectedPaths } = i;
   const title = (schema as { title?: unknown }).title;
   const { allow, deny } = role.write_scope;
   const lines = [
@@ -81,6 +82,7 @@ function outputContract(i: BuildInput): string {
     ...(allow.length === 0
       ? ['You may not change any files.']
       : [`You may change: ${allow.map((p) => `\`${p}\``).join(', ')}.`, `You must not change: ${deny.map((p) => `\`${p}\``).join(', ')}.`]),
+    ...(protectedPaths?.length ? ['', "Protected paths: QA's acceptance tests. Read and run them; never change them:", ...protectedPaths.map((glob) => `- \`${glob}\``)] : []),
     ...(acRefs?.length ? ['', `Acceptance criteria in scope: ${acRefs.map((ac) => `\`${ac}\``).join(', ')}.`] : []),
     ...(doneCommands.length > 0 ? ['', 'Definition of done, each of which must exit 0:', ...doneCommands.map((command) => `- \`${command}\``)] : []),
   ];
