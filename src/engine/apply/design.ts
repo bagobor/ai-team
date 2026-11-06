@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from 'node:util';
 import { isHumanCheck } from '../../artifacts/acs.ts';
 import { ArtifactError, parsePin, sectionText, formatPin, type ArtifactDoc, type ArtifactStatus } from '../../artifacts/format.ts';
 import type { NewVersion, StatusChange } from '../../artifacts/store.ts';
@@ -17,7 +18,9 @@ export type Coverage = { ac: string; commands: string[]; notes: string; regressi
 type DesignOutput = { body: string; tickets: TicketDraft[] };
 type TestPlanOutput = { body: string; coverage: Coverage[]; protected: string[]; harness_tickets: TicketDraft[] };
 type Decision = { ticket: string; decision: 'still_valid' | 'superseded'; rationale: string };
-type ReviseOutput = { unaffected: boolean; rationale: string; body: string | null; coverage: Coverage[] | null; ticket_decisions: Decision[]; tickets: TicketDraft[] };
+// A revision rewrites every entry, so its play script is the replaced entry's unless the revision gives one, or null to clear it.
+type Revised = Omit<Coverage, 'play'> & { play?: PlayScript | null };
+type ReviseOutput = { unaffected: boolean; rationale: string; body: string | null; coverage: Revised[] | null; ticket_decisions: Decision[]; tickets: TicketDraft[] };
 
 type Prefix = 'T' | 'Q';
 
@@ -182,12 +185,25 @@ const coverageOf = (doc: ArtifactDoc): Coverage[] => {
   return Array.isArray(coverage) ? (coverage as Coverage[]) : [];
 };
 
-// An entry the revision writes without the flag takes the one the replaced Test Plan gave that criterion, but only for the commands the flag was approved on.
+// The model is shown the play only in the reference file, and a play that is left out is not one to drop, as for the regression flag below.
+// An entry that gives none takes the replaced version's; null clears it, and no key is stored for it.
+function keepingPlays(revised: Revised[], replaced: ArtifactDoc): Coverage[] {
+  const was = coverageOf(replaced);
+  return revised.map(({ play, ...row }) => {
+    const resolved = play === undefined ? was.find(({ ac }) => ac === row.ac)?.play : (play ?? undefined);
+    return resolved === undefined ? row : { ...row, play: resolved };
+  });
+}
+
+// The same script, whatever the order of the keys in the model's JSON.
+const samePlay = (a: PlayScript | undefined, b: PlayScript | undefined): boolean => isDeepStrictEqual(a, b);
+
+// An entry the revision writes without the flag takes the one the replaced Test Plan gave that criterion, but only for the commands and the play script the flag was approved on.
 function keepingFlags(revised: Coverage[], replaced: ArtifactDoc): Coverage[] {
   const was = coverageOf(replaced);
   return revised.map((row) => {
     const before = was.find(({ ac }) => ac === row.ac);
-    const flag = row.regression === undefined && before !== undefined && proposesCurrent(before, row.commands) ? before.regression : undefined;
+    const flag = row.regression === undefined && before !== undefined && proposesCurrent(before, row.commands) && samePlay(before.play, row.play) ? before.regression : undefined;
     return flag === undefined ? row : { ...row, regression: flag };
   });
 }
@@ -202,11 +218,21 @@ function addedFlags(revised: Coverage[], replaced: ArtifactDoc, docId: string): 
 }
 
 // The flag was approved for the commands it was asked on, so a revision that changes them can't keep it, or QA could put vacuous commands under a guard.
+// The same goes for the play script, which is as much of the entry's proof.
 function movedFlags(revised: Coverage[], replaced: ArtifactDoc, docId: string): string[] {
   const was = coverageOf(replaced);
+  const guards = (row: Coverage) => was.find((before) => before.ac === row.ac && before.regression === true);
   return revised
-    .filter((row) => row.regression === true && was.some((before) => before.ac === row.ac && before.regression === true && !proposesCurrent(before, row.commands)))
-    .map(({ ac }) => `${ac}'s commands differ from ${docId}@${replaced.version}, so its regression flag can't stay. A revision that changes a guard's commands drops the flag: raise a Change Request proposing ${ac}'s new commands once they are in, which the stakeholder decides.`);
+    .filter((row) => row.regression === true && guards(row) !== undefined)
+    .flatMap((row) => {
+      const before = guards(row) as Coverage;
+      if (!proposesCurrent(before, row.commands)) {
+        return [`${row.ac}'s commands differ from ${docId}@${replaced.version}, so its regression flag can't stay. A revision that changes a guard's commands drops the flag: raise a Change Request proposing ${row.ac}'s new commands once they are in, which the stakeholder decides.`];
+      }
+      return samePlay(before.play, row.play)
+        ? []
+        : [`${row.ac}'s play script differs from ${docId}@${replaced.version}, so its regression flag can't stay. A revision that changes a guard's play script drops the flag: raise a Change Request proposing ${row.ac}'s current commands, or the script's expect when it has none, which the stakeholder decides.`];
+    });
 }
 
 const applyRevise =
@@ -225,9 +251,11 @@ const applyRevise =
 
     const problems: string[] = [];
     if (!output.unaffected && (body === null || body.trim() === '')) problems.push('An affected document needs a new body');
+    // Every rule runs on the entries as they will be published, with the replaced version's play scripts carried over.
+    const carried = replaced === undefined || output.coverage === null ? undefined : keepingPlays(output.coverage, replaced);
     if (replaced !== undefined) {
-      if (output.coverage === null) problems.push('A new Test Plan needs its full coverage');
-      else problems.push(...coverageProblems(acIds, output.coverage, humanCheckIds(criteria), await hasPlayBlock(ctx)), ...addedFlags(output.coverage, replaced, docId), ...movedFlags(output.coverage, replaced, docId));
+      if (carried === undefined) problems.push('A new Test Plan needs its full coverage');
+      else problems.push(...coverageProblems(acIds, carried, humanCheckIds(criteria), await hasPlayBlock(ctx)), ...addedFlags(carried, replaced, docId), ...movedFlags(carried, replaced, docId));
     }
 
     const tickets = await ticketsOfDoc(ctx.deps, ctx.project, milestone, prefix);
@@ -269,10 +297,10 @@ const applyRevise =
       else status.push({ id: ticket.id, status: 'approved', approvedBy: 'owner:tech_lead', derivedFrom: await repinned(ctx, ticket.row, docId, body), rationale: decision?.rationale ?? `Closed before this revision of ${docId}` });
     }
 
-    const carried = replaced === undefined ? [] : protectedGlobs(replaced);
-    // The revising model is shown the plan without its regression flags, so an entry that leaves one out keeps the replaced version's while its commands stay the same, and only an explicit false clears it.
-    const coverage = replaced === undefined ? [] : keepingFlags(output.coverage!, replaced);
-    const publish = [...(body === null ? [] : [prefix === 'T' ? designDoc(ctx, body, settled) : testPlanDoc(ctx, body, coverage, carried, settled)]), ...newDocs];
+    const globs = replaced === undefined ? [] : protectedGlobs(replaced);
+    // The revising model is shown the plan without its regression flags, so an entry that leaves one out keeps the replaced version's while its commands and play script stay the same, and only an explicit false clears it.
+    const coverage = replaced === undefined || carried === undefined ? [] : keepingFlags(carried, replaced);
+    const publish = [...(body === null ? [] : [prefix === 'T' ? designDoc(ctx, body, settled) : testPlanDoc(ctx, body, coverage, globs, settled)]), ...newDocs];
     return withRaised(ctx, { message: `milestone ${milestone}: revise ${docId}`, publish, status }, async (s) => {
       for (const id of superseded) {
         const task = await s.getTaskByTicket(ctx.project.id, id);

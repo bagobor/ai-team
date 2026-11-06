@@ -133,13 +133,19 @@ function playTail(problems: PlayProblem[], log: string[]): string {
   return [found, room > 0 ? log.join('\n').slice(-room) : ''].filter((part) => part !== '').join('\n');
 }
 
-export const playRun = (play: PlayScript, { ok, problems, durationMs, log }: PlayResult): CheckRun => ({
-  command: playCommand(play),
-  exitCode: ok && problems.length === 0 ? 0 : 1,
-  timedOut: problems.some(({ kind }) => kind === 'timeout'),
-  durationMs,
-  outputTail: playTail(problems, log),
-});
+// A run that failed and named nothing would be red with nothing in it, which gives an Engineer and the stakeholder nothing to read.
+const named = (ok: boolean, problems: PlayProblem[]): PlayProblem[] => (ok || problems.length > 0 ? problems : [{ kind: 'load', detail: 'The play run failed and named no problem' }]);
+
+export const playRun = (play: PlayScript, { ok, problems, durationMs, log }: PlayResult): CheckRun => {
+  const found = named(ok, problems);
+  return {
+    command: playCommand(play),
+    exitCode: ok && found.length === 0 ? 0 : 1,
+    timedOut: found.some(({ kind }) => kind === 'timeout'),
+    durationMs,
+    outputTail: playTail(found, log),
+  };
+};
 
 // QA is sent back, with no Bug, when a script can't be played at all: that is this machine's, not the product's.
 async function playSite(ctx: ApplyCtx, scripted: Scripted[]): Promise<{ ok: true; site: Site } | Refused> {
@@ -149,8 +155,21 @@ async function playSite(ctx: ApplyCtx, scripted: Scripted[]): Promise<{ ok: true
   const missing = player.unavailable();
   if (missing) return noBrowser(browserWhy(missing));
   const profile = await approvedProfile(ctx);
-  if (!profile?.play) return { ok: false, evidence: `${[...new Set(scripted.map(({ ac }) => ac))].join(', ')} has a play script in the Test Plan, but the approved Environment Profile has no play block, so there is no page to play and nothing was verified.` };
+  if (!profile?.play) {
+    const acs = [...new Set(scripted.map(({ ac }) => ac))];
+    const who = acs.length > 1 ? `${acs.slice(0, -1).join(', ')} and ${acs[acs.length - 1]} have play scripts` : `${acs[0]} has a play script`;
+    return { ok: false, evidence: `${who} in the Test Plan, but the approved Environment Profile has no play block, so there is no page to play and nothing was verified.` };
+  }
   return { ok: true, site: { player, profile, play: profile.play } };
+}
+
+// The route named must be one the engine accepts for that entry. An entry with a play script and no commands has none to propose again, and a blank proposal is refused, so it proposes the script's expect.
+function vacuousText(ac: string, sha: string, coverage: Coverage[]): string {
+  const scripted = coverage.some((entry) => entry.ac === ac && entry.play !== undefined);
+  const bare = scripted && plannedFor(coverage, ac).length === 0;
+  const what = scripted ? 'checks' : 'commands';
+  const hold = bare ? `one whose proposed_text is the script's expect, word for word` : 'one that proposes the same commands';
+  return `${ac}'s Test Plan ${what} pass on the base too (${sha}), so they don't show this milestone's work.${bare ? ` ${ac} has a play script and no commands.` : ''} Raise a Change Request on ${ac}'s Test Plan commands with commands that fail without the work, or, if the criterion is meant to hold already, ${hold}, which asks the stakeholder to make the entry a regression guard.`;
 }
 
 // Builds the checkout and serves it once, then plays each script on that one server, in order. The runs come back in the order of the scripts.
@@ -385,14 +404,14 @@ export const applyQaVerify: Applier = async (ctx) => {
   });
 
   // Commands that pass on the base too don't show this milestone's work, unless the entry says the criterion already held.
-  // QA can't set that flag in its output, so the refusal names the request that does: one that proposes the entry's own commands.
+  // QA can't set that flag in its output, so the refusal names the request that does: one that proposes the entry's own commands, or the script's expect when it has none.
   const planId = testPlanId(milestone);
   const guarded = (ac: string) => coverage.some((entry) => entry.ac === ac && entry.regression === true);
   const vacuous = (verdict: Verdict): verdict is Verdict & { onBase: OnBase } => verdict.onBase !== undefined && !verdict.onBase.red && !guarded(verdict.ac);
   const refusals = judged
     .filter(vacuous)
     .filter(({ ac }) => requestOn(raised, planId, ac) === undefined)
-    .map(({ ac, onBase }) => `${ac}'s Test Plan commands pass on the base too (${onBase.sha.slice(0, 7)}), so they don't show this milestone's work. Raise a Change Request on ${ac}'s Test Plan commands with commands that fail without the work, or, if the criterion is meant to hold already, one that proposes the same commands, which asks the stakeholder to make the entry a regression guard.`);
+    .map(({ ac, onBase }) => vacuousText(ac, onBase.sha.slice(0, 7), coverage));
   if (refusals.length > 0) return { ok: false, evidence: refusals.join('\n') };
   // With QA's request to change the commands on record, the criterion fails without a Bug, as one whose plan commands fail does.
   const verdicts = judged.map((verdict): Verdict => {

@@ -390,3 +390,54 @@ describe('a Spec with a human check', () => {
     expect(text).toContain(CRITERIA[0]!.verification.how);
   });
 });
+
+// A criterion only a browser can show is proved by a script the engine plays, which a worker reading the plan must be able to see.
+describe('a Test Plan entry with a play script', () => {
+  let e: TestEngine;
+  const PLAY = { steps: [{ key: 'Space', hold_ms: 100 }, { wait_ms: 500 }, { eval: 'window.start()' }], expect: 'window.started === true' };
+
+  async function read() {
+    e = await makeEngine({ steps: [] });
+    const project = await projectOf(e);
+    const [spec] = await publish(e, await apply(e, 'milestone_spec', { body: '# Goal\n', criteria: CRITERIA }));
+    await e.store.lockCriteria(project.id, 1, spec!.version, CRITERIA);
+    const coverage = [
+      { ac: 'AC-1', commands: [], notes: 'Seen in the page', play: PLAY },
+      { ac: 'AC-2', commands: ['npm test -- second'], notes: '', play: PLAY },
+    ];
+    await e.artifacts.commit(project, { message: 'the plan', publish: [{ id: 'TEST-PLAN-M1', type: 'test_plan', status: 'approved', ownerRole: 'qa_engineer', derivedFrom: ['SPEC-M1@1'], milestone: 1, body: '# Plan\n', fields: { data: { coverage, protected: [] } } }] });
+    return roleInputs(e, project, ['SPEC-M1@1', 'TEST-PLAN-M1@1']);
+  }
+
+  afterEach(async () => {
+    await e.cleanup();
+  });
+
+  it('says in the Test Plan view that an entry is proved by a play script, with or without commands', async () => {
+    const { inputs } = await read();
+
+    const view = inputs[1]!.content;
+    expect(view).toContain('- AC-1 (0 commands, a play script): Seen in the page');
+    expect(view).toContain('- AC-2 (1 command, a play script)');
+  });
+
+  it('shows the steps and the expect of a script in the reference file, and says the engine plays it on the head and the base', async () => {
+    const { reference } = await read();
+
+    const text = reference!['verification.md']!;
+    const section = text.split('## AC-1\n')[1]!.split('## AC-2\n')[0]!;
+    expect(section).toContain('on the verified commit and again on the base');
+    expect(section).toContain('press Space, held 100 ms\nwait 500 ms\neval window.start()\nexpect window.started === true');
+    expect(section).not.toContain('The Spec says');
+    expect(text.split('## AC-2\n')[1]).toContain('npm test -- second');
+    expect(text.split('## AC-2\n')[1]).toContain('expect window.started === true');
+  });
+
+  it('does not call a play script a command in the line about the Spec\'s own command', async () => {
+    const { reference } = await read();
+
+    const section = reference!['verification.md']!.split('## AC-1\n')[1]!.split('## AC-2\n')[0]!;
+    expect(section).toContain("QA verifies with the Test Plan's checks above");
+    expect(section).not.toContain("Test Plan's commands above");
+  });
+});

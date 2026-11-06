@@ -62,13 +62,22 @@ export const proposesCurrent = (entry: Coverage, commands: string[]): boolean =>
   return asked.length === has.length && asked.every((command, i) => command === has[i]);
 };
 
-// A request for the commands an entry already has makes it a regression guard, which waives QA's check that the commands fail on the base.
+// An entry with a play script and no commands has none to propose again, and a request cannot be blank, so it proposes the script's expect, word for word.
+// An entry that has commands is asked for by its commands alone, or the expect would be a way to flag it without them.
+const proposesEntry = (entry: Coverage, proposed: string): boolean => {
+  if (proposesCurrent(entry, commandLines(proposed))) return true;
+  if (entry.play === undefined || runnable(entry.commands).length > 0) return false;
+  const lines = (text: string): string => runnable(text.split('\n')).join('\n');
+  return lines(proposed) === lines(entry.play.expect);
+};
+
+// A request for what an entry already proves it with makes it a regression guard, which waives QA's check that it fails on the base.
 // QA owns the Test Plan and raises these requests itself, so the stakeholder decides them, as they do a criterion's text.
 export function flagsRegression(cr: Pick<ArtifactDoc, 'fields'>, target: ArtifactDoc): boolean {
   const { target_ac, proposed_text } = requestOf(cr);
   if (target.type !== 'test_plan' || !target_ac) return false;
   const entry = coverageIn(target).find((row) => row.ac === target_ac);
-  return entry !== undefined && proposesCurrent(entry, commandLines(proposed_text));
+  return entry !== undefined && proposesEntry(entry, proposed_text);
 }
 
 const pinIn = (text: string): Pin | undefined => {
@@ -163,11 +172,11 @@ function commandsReplacement(doc: ArtifactDoc, ac: string, proposed: string): Re
   const coverage = coverageIn(doc);
   const entry = coverage.find((row) => row.ac === ac);
   if (!entry) throw new ChangeRequestError(`${doc.id} has no commands for ${ac}. It covers ${coverage.map((row) => row.ac).join(', ')}`);
-  const commands = commandLines(proposed);
   const data = doc.fields.data as Record<string, unknown>;
   // The flag was approved for the commands it was asked on. Other commands start without it, or QA could self-approve vacuous ones under a guard.
+  // The play script stays whatever the commands become: only a revision of the plan replaces it.
   const { regression: _approved, ...unflagged } = entry;
-  const replaced = proposesCurrent(entry, commands) ? { ...entry, regression: true } : { ...unflagged, commands };
+  const replaced = proposesEntry(entry, proposed) ? { ...entry, regression: true } : { ...unflagged, commands: commandLines(proposed) };
   return { body: doc.body, fields: { ...doc.fields, data: { ...data, coverage: coverage.map((row) => (row.ac === ac ? replaced : row)) } } };
 }
 
@@ -313,8 +322,9 @@ const slugOf = (input: ChangeRequestInput): string => input.target_ac?.toLowerCa
 // What the request replaces, as one version of its target has it.
 function wordsOf(input: ChangeRequestInput, version: ArtifactDoc): string | undefined {
   if (version.type === 'test_plan' && input.target_ac) {
-    const commands = coverageIn(version).find((row) => row.ac === input.target_ac)?.commands;
-    return commands === undefined ? undefined : JSON.stringify(commands);
+    const entry = coverageIn(version).find((row) => row.ac === input.target_ac);
+    // The script is part of what a flag on a play-only entry was asked on, so a plan that changed it has moved the words even if the commands are the same.
+    return entry === undefined ? undefined : JSON.stringify(entry.play === undefined ? entry.commands : [entry.commands, entry.play]);
   }
   return sectionsOf(version.body).find((section) => section.slug === slugOf(input))?.hash;
 }

@@ -54,6 +54,44 @@
           "regression": {
             "description": "True only for a criterion that already holds before this milestone's work and must keep holding, so its commands are expected to pass on the milestone's base too. Leave it out otherwise: the engine runs your commands on the base as well, with your protected files laid over it, and refuses a criterion whose commands pass there, because they would show nothing of this milestone's work. A revision rewrites every entry: leave this out to keep what the entry has now, or set false to clear it.",
             "type": "boolean"
+          },
+          "play": {
+            "description": "A revision rewrites every entry: leave this out to keep the play script the entry has now, give one to replace it, or null to clear it.",
+            "type": [
+              "object",
+              "null"
+            ],
+            "additionalProperties": false,
+            "required": [
+              "steps",
+              "expect"
+            ],
+            "properties": {
+              "steps": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "key": {
+                      "type": "string"
+                    },
+                    "hold_ms": {
+                      "type": "number"
+                    },
+                    "wait_ms": {
+                      "type": "number"
+                    },
+                    "eval": {
+                      "type": "string"
+                    }
+                  }
+                }
+              },
+              "expect": {
+                "type": "string"
+              }
+            }
           }
         }
       }

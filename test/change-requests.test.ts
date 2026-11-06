@@ -408,6 +408,77 @@ describe('Change Requests', () => {
       expect(flagsRegression(criterion, await read('SPEC-M1'))).toBe(false);
     });
 
+    // A play script is not something a request can write, so the entry's own words are its commands, and the script's expect when it has none.
+    describe('proved by a play script', () => {
+      const PLAY = { steps: [{ key: 'Space' }, { wait_ms: 500 }], expect: 'window.started === true' };
+      const playOnly = { ac: 'AC-1', commands: [] as string[], notes: 'Seen in the page', play: PLAY };
+      const withCommands = { ...playOnly, commands: ['npm test -- old'] };
+      const planOf = (first: Record<string, unknown>) => testPlan([first, COVERAGE[1]!] as typeof COVERAGE);
+
+      // There are no commands to propose again, and a request cannot say nothing.
+      it('is not asked for again with a blank proposal', async () => {
+        await planOf(playOnly);
+
+        await expect(fileChangeRequest(e, p, onCommands({ proposed_text: ' \n' }))).rejects.toThrow(/blank proposed_text/);
+      });
+
+      it('makes the entry a regression guard when it proposes the expect of a script that is all the entry has', async () => {
+        await planOf(playOnly);
+        await fileChangeRequest(e, p, onCommands({ proposed_text: `  ${PLAY.expect}\n` }));
+
+        await applyChangeRequest(e, p, 'CR-1');
+
+        expect((await coverageOf())[0]).toEqual({ ...playOnly, regression: true });
+        expect(await latest('CR-1')).toMatchObject({ status: 'approved', approved_by: 'stakeholder' });
+      });
+
+      it('says that request would flag the entry, and no other would', async () => {
+        await planOf(playOnly);
+        const same = await read((await fileChangeRequest(e, p, onCommands({ proposed_text: PLAY.expect }))).artifact_id);
+        const other = await read((await fileChangeRequest(e, p, onCommands({ proposed_text: 'npm test -- first' }))).artifact_id);
+        const plan = await read('TEST-PLAN-M1');
+
+        expect(flagsRegression(same, plan)).toBe(true);
+        expect(flagsRegression(other, plan)).toBe(false);
+      });
+
+      it('gives the entry the commands it proposes, and leaves its script as it is', async () => {
+        await planOf(playOnly);
+        await fileChangeRequest(e, p, onCommands());
+
+        await applyChangeRequest(e, p, 'CR-1');
+
+        const first = (await coverageOf())[0];
+        expect(first).toEqual({ ...playOnly, commands: ['npm test -- first', 'npm run lint'] });
+        expect(first).not.toHaveProperty('regression');
+      });
+
+      it('keeps the script of an entry whose commands it replaces, and drops the flag as for any new commands', async () => {
+        await planOf({ ...withCommands, regression: true });
+        await fileChangeRequest(e, p, onCommands());
+
+        await applyChangeRequest(e, p, 'CR-1');
+
+        expect((await coverageOf())[0]).toEqual({ ...withCommands, commands: ['npm test -- first', 'npm run lint'] });
+      });
+
+      it('does not take the expect for the same thing when the entry has commands', async () => {
+        await planOf(withCommands);
+        const request = await read((await fileChangeRequest(e, p, onCommands({ proposed_text: PLAY.expect }))).artifact_id);
+
+        expect(flagsRegression(request, await read('TEST-PLAN-M1'))).toBe(false);
+      });
+
+      it('refuses to apply when the script of that criterion changed after the request was filed', async () => {
+        await planOf(playOnly);
+        await fileChangeRequest(e, p, onCommands({ proposed_text: PLAY.expect }));
+        await planOf({ ...playOnly, play: { ...PLAY, expect: 'window.other === true' } });
+
+        await expect(applyChangeRequest(e, p, 'CR-1')).rejects.toThrow(ChangeRequestError);
+        expect((await coverageOf())[0]).not.toHaveProperty('regression');
+      });
+    });
+
     it('refuses a criterion the plan does not cover', async () => {
       await testPlan();
 

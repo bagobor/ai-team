@@ -351,12 +351,97 @@ describe('appliers', () => {
         expect(evidenceOf(await apply(e, 'test_plan', playing()))).toMatch(/no play block/);
       });
 
-      it('holds a revision of the plan to the same rules', async () => {
-        await profile(SITE);
-        await publish(e, await apply(e, 'test_plan', playing(), { inputs: ['SPEC-M1@1'] }));
-        const revision = { unaffected: false, rationale: 'r', body: '# Plan two\n', coverage: [coverage('AC-1', []), coverage('AC-2')], ticket_decisions: [], tickets: [] };
+      // The revising model rewrites every entry but is shown the play only in the reference file, so a revision that leaves it out is not asking for it to go.
+      describe('and a revision', () => {
+        const SECOND = { steps: [{ key: 'ArrowLeft', hold_ms: 100 }], expect: 'window.x < 0' };
+        // AC-1 is proved by a play script alone, AC-2 by a command and a play script.
+        const base = [{ ...coverage('AC-1', []), play: script }, { ...coverage('AC-2'), play: script }];
+        // The profile the plan is first published under is always SITE, and `site` is what it says when the revision is applied.
+        const revise = async (rows: unknown[], site: unknown = SITE, plan: unknown[] = base) => {
+          await profile(SITE);
+          await publish(e, await apply(e, 'test_plan', { ...TEST_PLAN, coverage: plan }, { inputs: ['SPEC-M1@1'] }));
+          if (site !== SITE) await profile(site);
+          const revision = { unaffected: false, rationale: 'r', body: '# Plan two\n', coverage: rows, ticket_decisions: [], tickets: [] };
+          return apply(e, 'revise_test_plan', revision, { inputs: ['SPEC-M1@1', 'TEST-PLAN-M1@1'] });
+        };
+        const revised = async (rows: unknown[], plan: unknown[] = base) => {
+          await publish(e, await revise(rows, SITE, plan));
+          expect(await latest('TEST-PLAN-M1')).toMatchObject({ version: 2 });
+          return ((await read('TEST-PLAN-M1')).fields.data as { coverage: Record<string, unknown>[] }).coverage;
+        };
 
-        expect(evidenceOf(await apply(e, 'revise_test_plan', revision, { inputs: ['SPEC-M1@1', 'TEST-PLAN-M1@1'] }))).toMatch(/AC-1 needs at least one command or a play script/);
+        it('keeps the play script of an entry that leaves it out, whatever its commands', async () => {
+          expect(await revised([coverage('AC-1', []), coverage('AC-2', ['npm run lint'])])).toEqual([{ ...coverage('AC-1', []), play: script }, { ...coverage('AC-2', ['npm run lint']), play: script }]);
+        });
+
+        it('replaces the play script of an entry that gives one', async () => {
+          expect(await revised([{ ...coverage('AC-1', []), play: SECOND }, coverage('AC-2')])).toEqual([{ ...coverage('AC-1', []), play: SECOND }, { ...coverage('AC-2'), play: script }]);
+        });
+
+        it('clears the play script of an entry that says null, and stores no key for it', async () => {
+          const rows = await revised([coverage('AC-1', []), { ...coverage('AC-2'), play: null }]);
+          expect(rows[1]).toEqual(coverage('AC-2'));
+          expect(rows[1]).not.toHaveProperty('play');
+          expect(rows[0]).toHaveProperty('play');
+        });
+
+        it('still revises an entry that is proved by a play script alone', async () => {
+          expect(await revised([{ ...coverage('AC-1', []), notes: 'now with a note' }, coverage('AC-2')])).toEqual([{ ...coverage('AC-1', []), notes: 'now with a note', play: script }, { ...coverage('AC-2'), play: script }]);
+        });
+
+        it('refuses an entry with no command once it says null', async () => {
+          expect(evidenceOf(await revise([{ ...coverage('AC-1', []), play: null }, coverage('AC-2')]))).toMatch(/AC-1 needs at least one command or a play script/);
+          expect(await latest('TEST-PLAN-M1')).toMatchObject({ version: 1 });
+        });
+
+        it('holds a play script it replaces to the rules of one at authoring', async () => {
+          expect(evidenceOf(await revise([{ ...coverage('AC-1', []), play: { ...script, steps: [{ key: 'Fire' }] } }, coverage('AC-2')]))).toMatch(/AC-1's play script: .*Fire is not a key/);
+        });
+
+        it('holds a play script it keeps to the profile as it is now', async () => {
+          expect(evidenceOf(await revise([coverage('AC-1', []), coverage('AC-2')], null))).toMatch(/AC-1 has a play script, but the Environment Profile has no play block/);
+        });
+
+        // A guard was approved for the play it was asked on, as for the commands, or QA could revise a vacuous script in under it.
+        describe('and the regression flag', () => {
+          const guarded = [{ ...coverage('AC-1'), play: script, regression: true }, coverage('AC-2')];
+
+          it('keeps the flag of an entry that leaves it out and keeps its play script', async () => {
+            expect((await revised([coverage('AC-1'), coverage('AC-2')], guarded))[0]).toEqual({ ...coverage('AC-1'), play: script, regression: true });
+          });
+
+          it('drops the flag of an entry that leaves it out and replaces its play script', async () => {
+            expect((await revised([{ ...coverage('AC-1'), play: SECOND }, coverage('AC-2')], guarded))[0]).toEqual({ ...coverage('AC-1'), play: SECOND });
+          });
+
+          it('drops the flag of an entry that leaves it out and clears its play script', async () => {
+            expect((await revised([{ ...coverage('AC-1'), play: null }, coverage('AC-2')], guarded))[0]).toEqual(coverage('AC-1'));
+          });
+
+          it('refuses a revision that keeps the flag on an entry whose play script it replaces', async () => {
+            expect(evidenceOf(await revise([{ ...coverage('AC-1'), play: SECOND, regression: true }, coverage('AC-2')], SITE, guarded))).toMatch(/AC-1's play script differs from TEST-PLAN-M1@1, so its regression flag can't stay/);
+            expect(await latest('TEST-PLAN-M1')).toMatchObject({ version: 1 });
+          });
+
+          it('takes the flag again with the same play script, however its keys are ordered', async () => {
+            const same = { expect: script.expect, steps: script.steps.map((step) => Object.fromEntries(Object.entries(step).reverse())) };
+            expect((await revised([{ ...coverage('AC-1'), play: same, regression: true }, coverage('AC-2')], guarded))[0]).toEqual({ ...coverage('AC-1'), play: script, regression: true });
+          });
+        });
+      });
+
+      // The model answers to the revision's schema, so a play script the engine takes but this schema forbids could never be written.
+      it('is a shape the revision schema allows, and null clears', async () => {
+        const { schema } = await loadRole(fileURLToPath(new URL('../seed/knowledge', import.meta.url)), 'qa_engineer', 'revise_test_plan');
+        const validate = new Ajv({ strict: false }).compile(schema);
+        const revision = (play: unknown) => ({ unaffected: false, rationale: 'r', body: '# Plan\n', coverage: [{ ...coverage('AC-1', []), play }], ticket_decisions: [], tickets: [] });
+        const full = { steps: [{ key: 'Space', hold_ms: 100 }, { wait_ms: 500 }, { eval: 'window.start()' }], expect: 'window.started === true' };
+
+        expect(validate(revision(full)), JSON.stringify(validate.errors)).toBe(true);
+        expect(validate(revision(null)), JSON.stringify(validate.errors)).toBe(true);
+        expect(validate({ ...revision(full), coverage: [coverage('AC-1', [])] }), JSON.stringify(validate.errors)).toBe(true);
+        expect(validate(revision({ steps: [{ press: 'Space' }], expect: 'true' }))).toBe(false);
+        expect(validate(revision({ steps: [] }))).toBe(false);
       });
     });
 

@@ -59,6 +59,8 @@ describe('qa_verify applier', () => {
     ctxFor(e, 'qa_verify', { bugs: [], summary: 'Done', ...output }, { kind: 'qa_verify', role: 'qa_engineer', inputs: ['SPEC-M1@1', 'TEST-PLAN-M1@1'], baseSha: baseSha ?? (await revParse(e.repoPath)), ...(worktree ? { worktree } : {}) });
   const verify = async (output: Parameters<typeof qaCtx>[0], worktree?: string, baseSha?: string) => applyOutput(await qaCtx(output, worktree, baseSha));
   const baseWorktree = (ctx: Awaited<ReturnType<typeof qaCtx>>) => worktreePath(e.paths, 'p', `${ctx.task.ticket_id}-base`, ctx.attempt.k);
+  const headWorktree = (ctx: Awaited<ReturnType<typeof qaCtx>>) => worktreePath(e.paths, 'p', `${ctx.task.ticket_id}-verify`, ctx.attempt.k);
+  const headBranch = (ctx: Awaited<ReturnType<typeof qaCtx>>) => run(e.repoPath, 'branch', '--list', `aiteam/verify/${ctx.task.ticket_id}-a${ctx.attempt.k}`).trim();
   const baseBranch = (ctx: Awaited<ReturnType<typeof qaCtx>>) => run(e.repoPath, 'branch', '--list', `aiteam/verify/${ctx.task.ticket_id}-a${ctx.attempt.k}-base`).trim();
   const criterion = async (ac: string) => {
     const found = (await e.store.listCriteria((await projectOf(e)).id, 1)).find((c) => c.ac_id === ac);
@@ -700,6 +702,12 @@ describe('qa_verify applier', () => {
         expect(run).toMatchObject({ exitCode: 1, timedOut: false, outputTail: 'expect: window.ok was false\nconsole: boom\nloaded\npressed Space' });
       });
 
+      // A red run with nothing in it would give an Engineer, and the stakeholder, nothing to read.
+      it('says so when the play failed and named no problem', () => {
+        const run = playRun(PLAY, { ok: false, problems: [], durationMs: 5, log: ['loaded'] });
+        expect(run).toMatchObject({ exitCode: 1, timedOut: false, outputTail: 'load: The play run failed and named no problem\nloaded' });
+      });
+
       it('has timed out when a problem says so', () => {
         expect(playRun(PLAY, result([{ kind: 'timeout', detail: 'The script ran past 20 s' }]))).toMatchObject({ exitCode: 1, timedOut: true });
       });
@@ -806,6 +814,76 @@ describe('qa_verify applier', () => {
       expect(evidenceOf(await verify({ results }, undefined, await onHead()))).toContain('Chrome is not at /nowhere/chrome');
       expect(player.calls).toHaveLength(0);
       await nothingRecorded();
+    });
+
+    // QA can raise a request with nothing but text, and a blank text is refused, so an entry with no commands cannot ask for "the same commands".
+    describe('that passes on the base too', () => {
+      const route = (text: string) => ({ ...disputes('AC-1'), proposed_text: text });
+
+      it('names the route that works for an entry with no commands: the expect of its script', async () => {
+        await start([scripted('AC-1'), covers('AC-2', 'true')]);
+        await withSite();
+        e.player = fakePlayer(playResult());
+
+        const text = evidenceOf(await verify({ results }, undefined, await onHead()));
+
+        expect(text).toMatch(/AC-1's Test Plan checks pass on the base too/);
+        expect(text).toMatch(/AC-1 has a play script and no commands/);
+        expect(text).toMatch(/proposed_text is the script's expect, word for word, which asks the stakeholder to make the entry a regression guard/);
+        expect(text).not.toMatch(/proposes the same commands/);
+      });
+
+      it('takes a request that proposes that expect as a dispute, and files no Bug', async () => {
+        await start([scripted('AC-1'), covers('AC-2', 'true')]);
+        await withSite();
+        e.player = fakePlayer(playResult());
+
+        await publish(e, await verify({ results, change_requests: [route(PLAY.expect)] }, undefined, await onHead()));
+
+        expect(await criterion('AC-1')).toMatchObject({ status: 'failing' });
+        expect(await ids()).not.toContain('BUG-M1-1');
+        expect(await evidence('AC-1')).toContain('CR-1');
+      });
+
+      it('keeps the commands route for an entry that has commands as well', async () => {
+        await start([scripted('AC-1', 'true'), covers('AC-2', 'true')]);
+        await withSite();
+        e.player = fakePlayer(playResult());
+
+        const text = evidenceOf(await verify({ results: [pass('AC-1'), pass('AC-2')] }, undefined, await onHead()));
+
+        expect(text).toMatch(/AC-1's Test Plan checks pass on the base too/);
+        expect(text).toMatch(/proposes the same commands, which asks the stakeholder to make the entry a regression guard/);
+        expect(text).not.toMatch(/no commands/);
+      });
+    });
+
+    it('names a single criterion in the singular when the profile has no play block', async () => {
+      await start([scripted('AC-1'), covers('AC-2', 'true')]);
+      await withSite({ play: null });
+      e.player = fakePlayer(playResult());
+
+      expect(evidenceOf(await verify({ results }, undefined, await onHead()))).toMatch(/^AC-1 has a play script in the Test Plan/);
+    });
+
+    it('names several criteria in the plural when the profile has no play block', async () => {
+      await start([scripted('AC-1'), scripted('AC-2')]);
+      await withSite({ play: null });
+      e.player = fakePlayer(playResult());
+
+      expect(evidenceOf(await verify({ results: [pass('AC-1', []), pass('AC-2', [])] }, undefined, await onHead()))).toMatch(/^AC-1 and AC-2 have play scripts in the Test Plan/);
+    });
+
+    it('removes the verified commit\'s checkout and its branch when a browser problem on it sends QA back', async () => {
+      await start([scripted('AC-1'), covers('AC-2', 'true')]);
+      await withSite();
+      e.player = fakePlayer(playResult([{ kind: 'browser', detail: 'Chrome closed' }]));
+      const ctx = await qaCtx({ results }, undefined, await onHead());
+
+      expect(evidenceOf(await applyOutput(ctx))).toContain('Chrome closed');
+
+      expect(existsSync(headWorktree(ctx))).toBe(false);
+      expect(headBranch(ctx)).toBe('');
     });
 
     it('does not ask for a browser when no entry has a script', async () => {
