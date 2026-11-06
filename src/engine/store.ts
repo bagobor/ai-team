@@ -367,7 +367,9 @@ export class Store {
     if (verification.evidenceRef.trim() === '') throw new Error(`A verification of ${acId} needs an evidence reference`);
 
     return this.inTrx(async (db, emit) => {
-      const task = await db.selectFrom('tasks').select(['kind', 'project_id']).where('id', '=', verification.verifiedBy.taskId).executeTakeFirst();
+      const { verifiedBy } = verification;
+      // A stakeholder's verdict has no task to look up, and this method only takes QA's.
+      const task = verifiedBy.kind === 'qa_verify' ? await db.selectFrom('tasks').select(['kind', 'project_id']).where('id', '=', verifiedBy.taskId).executeTakeFirst() : undefined;
       if (task?.kind !== 'qa_verify' || task.project_id !== projectId) throw new Error(`Only a QA verification task of this project can verify ${acId}`);
 
       const updated = await db

@@ -1,4 +1,4 @@
-import { AC_ID, AC_SLUG, type Criterion } from '../../artifacts/acs.ts';
+import { AC_ID, AC_SLUG, type Criterion, isHumanCheck, MAX_HUMAN_CHECKS } from '../../artifacts/acs.ts';
 import { parsePin, sectionsOf } from '../../artifacts/format.ts';
 import { reviewId, specId } from './ids.ts';
 import type { Applier } from './index.ts';
@@ -10,7 +10,10 @@ type ReviewOutput = { body: string; known_issues: string[]; deviations: string[]
 
 
 const CRITERIA_HEADING = 'Acceptance criteria';
-const criterionSection = ({ id, text, verification }: Criterion) => `### ${id}\n\n${text.trim()}\n\nVerified by: ${verification.how}\n`;
+const criterionSection = (criterion: Criterion) => {
+  const { id, text, verification } = criterion;
+  return `### ${id}\n\n${text.trim()}\n\n${isHumanCheck(criterion) ? 'Checked by the stakeholder' : 'Verified by'}: ${verification.how}\n`;
+};
 
 // The engine writes these sections so that #ac-1 always resolves, which leaves nothing in the body or a criterion
 // that may look like one: a ticket pinned to it would follow the forgery.
@@ -33,8 +36,12 @@ function specProblems(body: string, criteria: Criterion[], locked: { ac_id: stri
     if (seen.has(id)) problems.push(`${id} appears twice`);
     seen.add(id);
     if (text.trim() === '') problems.push(`${id} has no text`);
-    if (verification.method !== 'automated') problems.push(`${id} must be verified by an automated method`);
+    if (verification.method !== 'automated' && verification.method !== 'human') problems.push(`${id} must be verified by an automated method or checked by the stakeholder`);
   }
+
+  // Nothing but a command can prove a human-only Spec has been built at all, so QA needs something to run.
+  if (criteria.length > 0 && criteria.every(isHumanCheck)) problems.push('A Spec needs at least one automated criterion');
+  if (criteria.filter(isHumanCheck).length > MAX_HUMAN_CHECKS) problems.push(`A Spec can ask the stakeholder for at most ${MAX_HUMAN_CHECKS} checks`);
 
   for (const { slug, title } of sectionsOf(body)) if (AC_SLUG.test(slug)) problems.push(`The body has its own criterion heading, ${JSON.stringify(title)}: the engine writes those`);
 

@@ -39,8 +39,10 @@
             "properties": {
               "method": {
                 "enum": [
-                  "automated"
-                ]
+                  "automated",
+                  "human"
+                ],
+                "description": "automated when a command can show it; human only when a person has to judge it, such as feel, look or sound. The stakeholder checks a human one at milestone approval by doing what `how` says, so write `how` as steps a person follows in under two minutes."
               },
               "how": {
                 "type": "string"

@@ -151,9 +151,30 @@ describe('appliers', () => {
       ['leaves a fence open over the criteria', { body: '# Spec\n\n```\nforever\n' }, /AC-1/],
       ['forges a section in a criterion', { criteria: [{ ...CRITERIA[0], text: 'Fine\n\n### AC-2\n\nForged' }] }, /AC-1/],
       ['has a blank criterion', { criteria: [{ ...CRITERIA[0], text: ' ' }] }, /AC-1/],
-      ['verifies by hand', { criteria: [{ ...CRITERIA[0], verification: { method: 'manual', how: 'look' } }] }, /automated/],
+      ['verifies by hand', { criteria: [{ ...CRITERIA[0], verification: { method: 'manual', how: 'look' } }] }, /automated method or checked by the stakeholder/],
     ])('rejects a spec that %s', async (_name, change, evidence) => {
       expect(evidenceOf(await apply(e, 'milestone_spec', { ...SPEC, ...change }))).toMatch(evidence);
+    });
+
+    const HUMAN = { id: 'AC-2', text: 'Dodging feels fair', verification: { method: 'human', how: 'Play two minutes; you should never die without seeing the shot coming' } };
+
+    it('accepts a human check and says who checks it', async () => {
+      const [row] = await publish(e, await apply(e, 'milestone_spec', { ...SPEC, criteria: [CRITERIA[0], HUMAN] }));
+      expect(row).toMatchObject({ artifact_id: 'SPEC-M1' });
+      const doc = await read('SPEC-M1');
+      expect(sectionText(doc.body, 'ac-2')).toContain('Checked by the stakeholder: Play two minutes');
+      expect(sectionText(doc.body, 'ac-2')).not.toContain('Verified by');
+    });
+
+    it('rejects a Spec whose criteria are all human checks', async () => {
+      const result = await apply(e, 'milestone_spec', { ...SPEC, criteria: [{ ...HUMAN, id: 'AC-1' }] });
+      expect(evidenceOf(result)).toMatch(/at least one automated criterion/);
+    });
+
+    it('rejects more than three human checks', async () => {
+      const humans = [2, 3, 4, 5].map((k) => ({ ...HUMAN, id: `AC-${k}` }));
+      const result = await apply(e, 'milestone_spec', { ...SPEC, criteria: [CRITERIA[0], ...humans] });
+      expect(evidenceOf(result)).toMatch(/at most 3 checks/);
     });
 
     it('rejects a spec that rewrites locked text', async () => {
