@@ -6,7 +6,7 @@ import type { AddressInfo, Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { connectCdp } from '../src/checks/cdp.ts';
-import { chromePath, chromePlayer, keyProblem, scriptProblems, type PlayResult } from '../src/checks/play.ts';
+import { chromePath, chromePlayer, keyProblem, scriptProblems, type PlayResult, type PlayScript } from '../src/checks/play.ts';
 import { serveStatic } from '../src/checks/static-server.ts';
 import { DEFAULT_CONFIG } from '../src/config.ts';
 import { groupAlive } from '../src/proc.ts';
@@ -57,6 +57,8 @@ describe('keys and scripts', () => {
     );
     expect(scriptProblems({ steps: [{ key: 'Fire' }], expect: 'true' })).toContainEqual(expect.stringMatching(/Fire is not a key/));
     expect(scriptProblems({ steps: [], expect: '  ' })).toContainEqual(expect.stringMatching(/expect/));
+    // A script is parsed from an agent's output, so it may not be a mapping at all.
+    expect(scriptProblems(null as unknown as PlayScript)).toEqual([expect.stringMatching(/steps.*expect/)]);
   });
 });
 

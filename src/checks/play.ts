@@ -47,6 +47,7 @@ function totalWait(script: PlayScript): number {
 
 // Scripts come from an agent's output, so nothing about their shape is taken on trust.
 export function scriptProblems(script: PlayScript): string[] {
+  if (typeof script !== 'object' || script === null) return ['A play script is a mapping with steps and an expect'];
   if (!Array.isArray(script.steps)) return ['steps must be a list'];
   const problems: string[] = [];
   if (script.steps.length > MAX_STEPS) problems.push(`A play script has at most ${MAX_STEPS} steps, not ${script.steps.length}`);
