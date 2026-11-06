@@ -24,6 +24,7 @@ const PROFILE = {
   stakeholder_note: 'Note',
 };
 const SPEC = { body: '# Milestone one\n', criteria: CRITERIA, stakeholder_note: 'Note' };
+const HUMAN = { id: 'AC-2', text: 'Dodging feels fair', verification: { method: 'human' as const, how: 'Play two minutes; you should never die without seeing the shot coming' } };
 const draft = (key: string, ac_refs: string[], overrides: Record<string, unknown> = {}) => ({
   key,
   title: key,
@@ -156,8 +157,6 @@ describe('appliers', () => {
       expect(evidenceOf(await apply(e, 'milestone_spec', { ...SPEC, ...change }))).toMatch(evidence);
     });
 
-    const HUMAN = { id: 'AC-2', text: 'Dodging feels fair', verification: { method: 'human' as const, how: 'Play two minutes; you should never die without seeing the shot coming' } };
-
     it('accepts a human check and says who checks it', async () => {
       const [row] = await publish(e, await apply(e, 'milestone_spec', { ...SPEC, criteria: [CRITERIA[0], HUMAN] }));
       expect(row).toMatchObject({ artifact_id: 'SPEC-M1' });
@@ -267,6 +266,30 @@ describe('appliers', () => {
 
     it('wants Q keys from a Test Plan', async () => {
       expect(evidenceOf(await apply(e, 'test_plan', { ...TEST_PLAN, harness_tickets: [draft('T-1', ['AC-1'])] }))).toMatch(/key/);
+    });
+  });
+
+  describe('test_plan with a human check', () => {
+    beforeEach(() => lockSpec(e, [CRITERIA[0]!, HUMAN]));
+
+    it('needs no coverage for a human check', async () => {
+      const [row] = await publish(e, await apply(e, 'test_plan', { ...TEST_PLAN, coverage: [coverage('AC-1')] }));
+      expect(row).toMatchObject({ artifact_id: 'TEST-PLAN-M1', status: 'approved' });
+      expect((await read('TEST-PLAN-M1')).fields.data).toEqual({ coverage: [coverage('AC-1')] });
+    });
+
+    it('rejects coverage for a human check', async () => {
+      expect(evidenceOf(await apply(e, 'test_plan', TEST_PLAN))).toMatch(/AC-2 is checked by the stakeholder/);
+    });
+
+    it('holds a revised Test Plan to the same rule', async () => {
+      await publish(e, await apply(e, 'test_plan', { ...TEST_PLAN, coverage: [coverage('AC-1')] }, { inputs: ['SPEC-M1@1'] }));
+      const output = { unaffected: false, rationale: 'r', body: '# Plan two\n', ticket_decisions: [], tickets: [] };
+
+      expect(evidenceOf(await apply(e, 'revise_test_plan', { ...output, coverage: TEST_PLAN.coverage }))).toMatch(/AC-2 is checked by the stakeholder/);
+
+      await publish(e, await apply(e, 'revise_test_plan', { ...output, coverage: [coverage('AC-1', ['npm run lint'])] }, { inputs: ['SPEC-M1@1', 'TEST-PLAN-M1@1'] }));
+      expect(await latest('TEST-PLAN-M1')).toMatchObject({ version: 2, status: 'approved' });
     });
   });
 

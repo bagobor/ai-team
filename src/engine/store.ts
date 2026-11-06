@@ -1,5 +1,5 @@
 import { sql, type Kysely, type Selectable, type Updateable } from 'kysely';
-import { AC_ID, type Criterion, type CriterionStatus, type Verification } from '../artifacts/acs.ts';
+import { AC_ID, type Criterion, type CriterionStatus, isHumanCheck, type Verification } from '../artifacts/acs.ts';
 import type { ArtifactStatus, ArtifactType } from '../artifacts/format.ts';
 import type { AcceptanceCriteriaTable, ArtifactDepsTable, ArtifactVersionsTable, AttemptsTable, DB, InboxItemsTable, MilestonesTable, ProjectsTable, TasksTable, VendorPausesTable } from '../db/schema.ts';
 import type { EventLog, EventRow, EventType } from '../events.ts';
@@ -371,6 +371,10 @@ export class Store {
       // A stakeholder's verdict has no task to look up, and this method only takes QA's.
       const task = verifiedBy.kind === 'qa_verify' ? await db.selectFrom('tasks').select(['kind', 'project_id']).where('id', '=', verifiedBy.taskId).executeTakeFirst() : undefined;
       if (task?.kind !== 'qa_verify' || task.project_id !== projectId) throw new Error(`Only a QA verification task of this project can verify ${acId}`);
+
+      // QA never runs a human check, so a verdict of its own on one would claim a proof nobody made. A criterion that isn't locked falls through to the update's own error.
+      const locked = await db.selectFrom('acceptance_criteria').select('verification').where('project_id', '=', projectId).where('milestone', '=', milestone).where('ac_id', '=', acId).executeTakeFirst();
+      if (locked && isHumanCheck({ verification: JSON.parse(locked.verification) as Criterion['verification'] })) throw new Error(`${acId} is checked by the stakeholder, so QA can't verify it`);
 
       const updated = await db
         .updateTable('acceptance_criteria')

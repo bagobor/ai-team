@@ -1,3 +1,4 @@
+import { isHumanCheck } from '../../artifacts/acs.ts';
 import type { NewVersion } from '../../artifacts/store.ts';
 import { runSandboxed, type CheckRun } from '../../checks/run-checks.ts';
 import { requestOf } from '../change-requests.ts';
@@ -27,18 +28,21 @@ const COMMAND_NOT_FOUND = 127;
 const failedCommands = (runs: CheckRun[]) => runs.filter((run) => run.exitCode !== 0).map((run) => run.command);
 const nonBlank = (commands: string[]) => commands.map((command) => command.trim()).filter((command) => command !== '');
 
-function outputProblems({ results, bugs }: QaOutput, acIds: string[]): string[] {
+// A human check is the stakeholder's to judge at milestone approval, so QA reports on the automated criteria alone, and neither a result nor a Bug may name one.
+function outputProblems({ results, bugs }: QaOutput, acIds: string[], humanIds: string[]): string[] {
   const problems: string[] = [];
   const seen = new Set<string>();
   for (const { ac } of results) {
-    if (!acIds.includes(ac)) problems.push(`${ac} is not a criterion of this milestone`);
+    if (humanIds.includes(ac)) problems.push(`${ac} is checked by the stakeholder at milestone approval; leave it out`);
+    else if (!acIds.includes(ac)) problems.push(`${ac} is not a criterion of this milestone`);
     if (seen.has(ac)) problems.push(`${ac} appears twice in the results`);
     seen.add(ac);
   }
   for (const ac of acIds) if (!seen.has(ac)) problems.push(`${ac} has no result`);
 
   for (const { ac, title, touches } of bugs) {
-    if (!acIds.includes(ac)) problems.push(`A Bug names ${ac}, which is not a criterion of this milestone`);
+    if (humanIds.includes(ac)) problems.push(`A Bug names ${ac}, which is checked by the stakeholder at milestone approval; leave it out`);
+    else if (!acIds.includes(ac)) problems.push(`A Bug names ${ac}, which is not a criterion of this milestone`);
     if (title.trim() === '') problems.push(`A Bug against ${ac} has a blank title`);
     for (const glob of touches) {
       const problem = touchesProblem(glob);
@@ -188,7 +192,11 @@ export const applyQaVerify: Applier = async (ctx) => {
   const { milestone } = task;
 
   const criteria = await store.listCriteria(project.id, milestone);
-  const problems = outputProblems(output, criteria.map(({ ac_id }) => ac_id));
+  const problems = outputProblems(
+    output,
+    criteria.filter((criterion) => !isHumanCheck(criterion)).map(({ ac_id }) => ac_id),
+    criteria.filter(isHumanCheck).map(({ ac_id }) => ac_id),
+  );
   if (problems.length > 0) return { ok: false, evidence: problems.join('\n') };
 
   const round = (await store.getMilestone(project.id, milestone))?.verify_round;

@@ -29,6 +29,7 @@ const DISCOVERY = {
 const ONE_MILESTONE = { ...DISCOVERY, roadmap: { body: '# Roadmap\n', milestones: [{ n: 1, title: 'Only', goal: 'All of it' }] } };
 const PROFILE = { body: '# Environment\n', commands: { build: 'true', test: 'true', lint: 'true', smoke: 'echo smoke-ok' }, toolchains: ['node 22'], network_allow: [], setup: null, stakeholder_note: 'The toolchain is ready' };
 const SPEC = { body: '# Milestone one\n\n## Scope\n\nSmall.\n', criteria: CRITERIA, stakeholder_note: 'The spec is small' };
+const HUMAN = { id: 'AC-2', text: 'Dodging feels fair', verification: { method: 'human' as const, how: 'Play two minutes; you should never die without seeing the shot coming' } };
 const draft = (key: string, ac_refs: string[]) => ({ key, title: key, specialty: 'engineer', ac_refs, touches: ['src/**'], depends_on: [], definition_of_done: ['true'], inputs: [], size: 'S', body: 'Do it.\n' });
 const ONE_TICKET = { body: '# Design\n', tickets: [draft('T-1', ['AC-1', 'AC-2'])] };
 const TWO_TICKETS = { body: '# Design\n', tickets: [draft('T-1', ['AC-1']), draft('T-2', ['AC-2'])] };
@@ -175,7 +176,11 @@ async function addBrief(h: Harness): Promise<void> {
   await h.artifacts.commit(h.project, { message: 'brief', publish: [{ id: 'BRIEF', type: 'brief', status: 'approved', approvedBy: 'stakeholder', ownerRole: 'stakeholder', derivedFrom: [], body: '# Brief\n' }] });
 }
 
-type Flow = { discovery?: unknown; profile?: unknown; design?: unknown; plan?: unknown };
+type Flow = { discovery?: unknown; profile?: unknown; spec?: unknown; design?: unknown; plan?: unknown };
+
+// AC-2 is built like any criterion, but the Test Plan skips it and QA reports on AC-1 alone.
+const HUMAN_FLOW: Flow = { spec: { ...SPEC, criteria: [CRITERIA[0], HUMAN] }, plan: { ...TEST_PLAN, coverage: TEST_PLAN.coverage.slice(0, 1) } };
+const AUTOMATED_PASS = { ...PASS, results: PASS.results.slice(0, 1) };
 
 async function toCp1(h: Harness, flow: Flow = {}): Promise<InboxRow> {
   await addBrief(h);
@@ -190,7 +195,7 @@ async function toCp2(h: Harness, flow: Flow = {}): Promise<InboxRow> {
   const cp1 = await toCp1(h, flow);
   await h.store.answerInbox(cp1.id, { action: 'approve' });
   await h.conductor.tick();
-  await finish(h, 'M1-SPEC', SPEC);
+  await finish(h, 'M1-SPEC', flow.spec ?? SPEC);
   await h.conductor.tick();
   return pending(h, 'cp2');
 }
@@ -563,6 +568,28 @@ describe('flow', () => {
     const qa = await byTicket(h, 'M1-QA-1');
     expect([qa.role_id, qa.kind, qa.purpose, orderOf(qa).base, orderOf(qa).inputs]).toEqual(['qa_engineer', 'qa_verify', 'qa_verify', { kind: 'integration' }, ['SPEC-M1@1', 'TECH-M1@1', 'TEST-PLAN-M1@1']]);
     expect((await h.store.getMilestone(h.project.id, 1))!).toMatchObject({ phase: 'verify', verify_round: 1 });
+  });
+
+  it('moves to milestone review when every automated criterion passes', async () => {
+    const h = await harness();
+    await toVerify(h, HUMAN_FLOW);
+    await finish(h, 'M1-QA-1', AUTOMATED_PASS);
+    await h.conductor.tick();
+
+    expect(await milestonePhase(h)).toBe('milestone_review');
+    expect((await h.store.listCriteria(h.project.id, 1)).map(({ ac_id, status }) => [ac_id, status])).toEqual([['AC-1', 'passing'], ['AC-2', 'unverified']]);
+    expect(await taskIds(h)).toContain('M1-REVIEW-1');
+  });
+
+  it('tells the stakeholder at milestone approval that the automated criteria passed QA', async () => {
+    const h = await harness();
+    await toVerify(h, HUMAN_FLOW);
+    await finish(h, 'M1-QA-1', AUTOMATED_PASS);
+    await h.conductor.tick();
+    await finish(h, 'M1-REVIEW-1', REVIEW);
+    await h.conductor.tick();
+
+    expect((await pending(h, 'cp4')).why).toMatch(/^Every automated criterion passed QA\./);
   });
 
   it('gives the Milestone Review the Tech Design as well as the Spec, the Test Plan and the QA report', async () => {

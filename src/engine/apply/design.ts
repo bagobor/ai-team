@@ -1,3 +1,4 @@
+import { isHumanCheck } from '../../artifacts/acs.ts';
 import { ArtifactError, parsePin, sectionText, formatPin, type ArtifactStatus } from '../../artifacts/format.ts';
 import type { NewVersion, StatusChange } from '../../artifacts/store.ts';
 import type { EngineDeps } from '../runner.ts';
@@ -30,7 +31,11 @@ async function knownTickets(ctx: ApplyCtx): Promise<string[]> {
 
 const uncovered = (acIds: string[], covered: string[]) => acIds.filter((ac) => !covered.includes(ac)).map((ac) => `${ac} has no ticket`);
 
-function coverageProblems(acIds: string[], coverage: Coverage[]): string[] {
+// A human check has no command, so the Test Plan covers the automated criteria only and leaves the rest to the stakeholder.
+const automatedIds = (criteria: CriterionRow[]) => criteria.filter((criterion) => !isHumanCheck(criterion)).map(({ ac_id }) => ac_id);
+const humanCheckIds = (criteria: CriterionRow[]) => criteria.filter(isHumanCheck).map(({ ac_id }) => ac_id);
+
+function coverageProblems(acIds: string[], coverage: Coverage[], humanIds: string[]): string[] {
   const problems: string[] = [];
   for (const ac of acIds) {
     const rows = coverage.filter((row) => row.ac === ac);
@@ -38,7 +43,10 @@ function coverageProblems(acIds: string[], coverage: Coverage[]): string[] {
     if (rows.length > 1) problems.push(`${ac} is in the coverage more than once`);
     if (rows.some((row) => row.commands.length === 0 || row.commands.some((command) => command.trim() === ''))) problems.push(`${ac} needs at least one command, and no blank ones`);
   }
-  for (const { ac } of coverage) if (!acIds.includes(ac)) problems.push(`${ac} is in the coverage, but this milestone does not have it`);
+  for (const { ac } of coverage) {
+    if (humanIds.includes(ac)) problems.push(`${ac} is checked by the stakeholder, so it has no place in the coverage`);
+    else if (!acIds.includes(ac)) problems.push(`${ac} is in the coverage, but this milestone does not have it`);
+  }
   return problems;
 }
 
@@ -80,10 +88,11 @@ export const applyTechDesign: Applier = async (ctx) => {
 export const applyTestPlan: Applier = async (ctx) => {
   const { body, coverage, harness_tickets } = ctx.output as TestPlanOutput;
   const { milestone } = ctx.task;
-  const acIds = (await lockedCriteria(ctx)).map(({ ac_id }) => ac_id);
+  const criteria = await lockedCriteria(ctx);
+  const acIds = automatedIds(criteria);
 
   const validated = await validateTickets(ctx, milestone, harness_tickets, acIds, await knownTickets(ctx), 'Q', body);
-  const problems = [...(validated.ok ? [] : [validated.evidence]), ...coverageProblems(acIds, coverage)];
+  const problems = [...(validated.ok ? [] : [validated.evidence]), ...coverageProblems(acIds, coverage, humanCheckIds(criteria))];
   if (!validated.ok || problems.length > 0) return { ok: false, evidence: problems.join('\n') };
 
   return withRaised(ctx, { message: `milestone ${milestone}: test plan`, publish: [testPlanDoc(ctx, body, coverage), ...validated.docs] });
@@ -160,7 +169,9 @@ const applyRevise =
   async (ctx) => {
     const output = ctx.output as ReviseOutput;
     const { milestone } = ctx.task;
-    const acIds = (await lockedCriteria(ctx)).map(({ ac_id }) => ac_id);
+    const criteria = await lockedCriteria(ctx);
+    // The Tech Design builds a human check like any other criterion, but only the Test Plan skips it.
+    const acIds = prefix === 'T' ? criteria.map(({ ac_id }) => ac_id) : automatedIds(criteria);
     const docId = prefix === 'T' ? techId(milestone) : testPlanId(milestone);
     const body = output.unaffected ? null : output.body;
 
@@ -168,7 +179,7 @@ const applyRevise =
     if (!output.unaffected && (body === null || body.trim() === '')) problems.push('An affected document needs a new body');
     if (prefix === 'Q' && body !== null) {
       if (output.coverage === null) problems.push('A new Test Plan needs its full coverage');
-      else problems.push(...coverageProblems(acIds, output.coverage));
+      else problems.push(...coverageProblems(acIds, output.coverage, humanCheckIds(criteria)));
     }
 
     const tickets = await ticketsOfDoc(ctx.deps, ctx.project, milestone, prefix);

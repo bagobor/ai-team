@@ -3,13 +3,14 @@ import { writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { join } from 'node:path';
+import type { Criterion } from '../src/artifacts/acs.ts';
 import { renderArtifact, sectionsOf, sectionText } from '../src/artifacts/format.ts';
 import { applyOutput } from '../src/engine/apply/index.ts';
 import { worktreePath } from '../src/paths.ts';
 import { parseTicket } from '../src/tickets/ticket.ts';
 import { addAttemptWorktree } from '../src/git/workspace.ts';
 import { commitAll, revParse, run, tempDir } from './helpers/repo.ts';
-import { ctxFor, evidenceOf, lockSpec, projectOf, publish } from './helpers/apply.ts';
+import { CRITERIA, ctxFor, evidenceOf, lockSpec, projectOf, publish } from './helpers/apply.ts';
 import { makeEngine, type TestEngine } from './helpers/engine.ts';
 
 type Result = { ac: string; status: 'passing' | 'failing'; commands: string[]; notes: string };
@@ -26,9 +27,9 @@ const disputes = (ac: string) => ({ target_artifact: 'TEST-PLAN-M1@1', target_se
 describe('qa_verify applier', () => {
   let e: TestEngine;
 
-  async function setUp(engine: TestEngine, coverage: Coverage[], round = 1): Promise<void> {
+  async function setUp(engine: TestEngine, coverage: Coverage[], round = 1, criteria: Criterion[] = CRITERIA): Promise<void> {
     e = engine;
-    await lockSpec(e);
+    await lockSpec(e, criteria);
     const project = await projectOf(e);
     await e.store.createMilestone({ project_id: project.id, n: 1, title: 'First', goal: 'Goal', phase: 'pending' });
     await e.store.patchMilestone(project.id, 1, { verify_round: round });
@@ -207,6 +208,31 @@ describe('qa_verify applier', () => {
   it('rejects output that repeats a criterion', async () => {
     await start();
     expect(evidenceOf(await verify({ results: [pass('AC-1'), pass('AC-1'), pass('AC-2')] }))).toMatch(/AC-1.*twice/);
+  });
+
+  describe('with a human check', () => {
+    const HUMAN: Criterion = { id: 'AC-2', text: 'Dodging feels fair', verification: { method: 'human', how: 'Play two minutes; you should never die without seeing the shot coming' } };
+    const startWithHuman = async (): Promise<void> => setUp(await makeEngine({ steps: [] }), [covers('AC-1', 'true')], 1, [CRITERIA[0]!, HUMAN]);
+
+    it('needs no result for a human check', async () => {
+      await startWithHuman();
+
+      await publish(e, await verify({ results: [pass('AC-1')] }));
+
+      expect(await criterion('AC-1')).toMatchObject({ status: 'passing' });
+      expect(await criterion('AC-2')).toMatchObject({ status: 'unverified', evidence_ref: null });
+      expect(sectionText((await e.artifacts.read(await projectOf(e), 'QA-REPORT-M1-1')).body, 'ac-2')).toBeUndefined();
+    });
+
+    it('rejects a result for a human check', async () => {
+      await startWithHuman();
+      expect(evidenceOf(await verify({ results: [pass('AC-1'), pass('AC-2')] }))).toMatch(/AC-2 is checked by the stakeholder at milestone approval/);
+    });
+
+    it('rejects a Bug against a human check', async () => {
+      await startWithHuman();
+      expect(evidenceOf(await verify({ results: [pass('AC-1')], bugs: [bug('AC-2')] }))).toMatch(/A Bug names AC-2, which is checked by the stakeholder at milestone approval/);
+    });
   });
 
   it('rejects output that names a criterion the milestone does not have', async () => {

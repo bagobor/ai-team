@@ -1,10 +1,12 @@
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync } from 'node:fs';
 import { join } from 'node:path';
+import type { Criterion } from '../src/artifacts/acs.ts';
 import { ensureTask, qaTask, recommendationTask, reviseInputs, reviseTask, specTask, techTask, testPlanTask, type TaskSpec } from '../src/engine/conductor/tasks.ts';
 import type { AttemptRow, ProjectRow } from '../src/engine/store.ts';
 import type { TaskManifest } from '../src/manifest/build.ts';
 import { manifestDir } from '../src/paths.ts';
-import { apply, publish } from './helpers/apply.ts';
+import { roleInputs } from '../src/engine/role-inputs.ts';
+import { apply, CRITERIA, projectOf, publish } from './helpers/apply.ts';
 import { makeEngine, okStep, resultStep, runOnce, ticket, type TestEngine } from './helpers/engine.ts';
 import { command, ids, largeCoverage, largeDesign, largeTestPlan, largeTickets, noteOf, planNoteOf, pmRowOf, proseDesign, publishLargeDesign, publishLargeSpec, publishProfile, ROOM_BEFORE_M4, textOf } from './helpers/large-milestone.ts';
 import { commitAll, porcelain, run, tempDir } from './helpers/repo.ts';
@@ -348,5 +350,43 @@ describe('what a role reads on a milestone of 10 tickets and 30 criteria', () =>
       expect(attempt).toMatchObject({ failure_kind: null });
       expect(taskText('H-1')).toContain(`Verified by: ${command('AC-1')}`);
     });
+  });
+});
+
+describe('a Spec with a human check', () => {
+  let e: TestEngine;
+  const HUMAN: Criterion = { id: 'AC-2', text: 'Dodging feels fair', verification: { method: 'human', how: 'Play two minutes; you should never die without seeing the shot coming' } };
+  const MARKER = 'Checked by the stakeholder at milestone approval; QA leaves it alone';
+
+  async function read() {
+    e = await makeEngine({ steps: [] });
+    const project = await projectOf(e);
+    const [spec] = await publish(e, await apply(e, 'milestone_spec', { body: '# Goal\n', criteria: [CRITERIA[0], HUMAN] }));
+    await e.store.lockCriteria(project.id, 1, spec!.version, [CRITERIA[0]!, HUMAN]);
+    const planned = [{ ac: 'AC-1', commands: [CRITERIA[0]!.verification.how], notes: '' }];
+    await publish(e, await apply(e, 'test_plan', { body: '# Plan\n', coverage: planned, harness_tickets: [] }, { inputs: ['SPEC-M1@1'], role: 'qa_engineer' }));
+    return roleInputs(e, project, ['SPEC-M1@1', 'TEST-PLAN-M1@1']);
+  }
+
+  afterEach(async () => {
+    await e.cleanup();
+  });
+
+  it('marks a human check in the Spec view', async () => {
+    const { inputs } = await read();
+
+    const spec = inputs[0]!.content;
+    expect(spec).toContain('AC-2');
+    expect(spec).toContain(MARKER);
+    expect(spec.split(MARKER)).toHaveLength(2);
+  });
+
+  it('does not offer a human check in the reference file as a command to run', async () => {
+    const { reference } = await read();
+
+    const text = reference!['verification.md']!;
+    expect(text).toContain(`## AC-2\n\n${MARKER}`);
+    expect(text).not.toContain(HUMAN.verification.how);
+    expect(text).toContain(CRITERIA[0]!.verification.how);
   });
 });

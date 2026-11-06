@@ -1,6 +1,6 @@
 import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import type { Criterion } from '../artifacts/acs.ts';
+import { isHumanCheck, type Criterion } from '../artifacts/acs.ts';
 import { parsePin, replaceSection, sectionsOf, type ArtifactDoc } from '../artifacts/format.ts';
 import type { ManifestInput } from '../manifest/build.ts';
 import type { Coverage } from './apply/design.ts';
@@ -19,11 +19,14 @@ const DESIGN_POINTER = `The whole Tech Design is in \`${REFERENCE_DIR}/${DESIGN_
 // The files the engine writes beside the worktree's code for the worker to read, by name.
 export type Reference = Record<string, string>;
 
+// Said in the Spec view and the reference file alike, so no worker takes a human check for a command to run or a result to report.
+const HUMAN_MARKER = 'Checked by the stakeholder at milestone approval; QA leaves it alone';
+
 const criteriaOf = (doc: ArtifactDoc) => (doc.type === 'spec' ? (doc.fields.data as { criteria?: Criterion[] } | undefined)?.criteria : undefined);
 const coverageOf = (doc: ArtifactDoc) => (doc.type === 'test_plan' ? (doc.fields.data as { coverage?: Coverage[] } | undefined)?.coverage : undefined);
 
 function specView(doc: ArtifactDoc, criteria: Criterion[]): string {
-  const sections = criteria.map(({ id, text }) => `### ${id}\n\n${text.trim()}\n`).join('\n');
+  const sections = criteria.map((criterion) => [`### ${criterion.id}`, '', criterion.text.trim(), '', ...(isHumanCheck(criterion) ? [HUMAN_MARKER, ''] : [])].join('\n')).join('\n');
   const slug = criteriaSlug(doc.body);
   return (slug === undefined ? undefined : replaceSection(doc.body, slug, `${POINTER}\n\n${sections}`)) ?? doc.body;
 }
@@ -47,8 +50,10 @@ export function designReference(doc: ArtifactDoc): { content: string; reference:
 function referenceText(criteria: Criterion[], coverage: Coverage[]): string {
   const acs = [...new Set([...criteria.map(({ id }) => id), ...coverage.map(({ ac }) => ac)])];
   const sections = acs.flatMap((ac) => {
+    const criterion = criteria.find(({ id }) => id === ac);
+    if (criterion && isHumanCheck(criterion)) return [`## ${ac}`, '', HUMAN_MARKER, ''];
     const planned = coverage.filter((row) => row.ac === ac).flatMap(({ commands }) => commands);
-    const how = criteria.find(({ id }) => id === ac)?.verification.how;
+    const how = criterion?.verification.how;
     const plan = planned.length === 0 ? [] : ['The Test Plan runs:', '', ...planned.flatMap((command) => [fenced(command), ''])];
     if (how === undefined || planned.includes(how)) return [`## ${ac}`, '', ...plan];
     if (planned.length === 0) return [`## ${ac}`, '', 'The Spec says:', '', fenced(how), ''];

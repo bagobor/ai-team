@@ -98,6 +98,15 @@ describe('acceptance-criteria registry', () => {
     expect((await s.listCriteria(p.id, 1))[0]?.status).toBe('unverified');
   });
 
+  it('refuses a QA verification of a human check', async () => {
+    const human: Criterion = { id: 'AC-2', text: 'Dodging feels fair', verification: { method: 'human', how: 'Play two minutes' } };
+    await s.lockCriteria(p.id, 1, 1, [criterion(1), human]);
+
+    await expect(s.recordVerification(p.id, 1, 'AC-2', verified('passing', qaTask.id, 'QA-REPORT-M1-1@1#ac-2'))).rejects.toThrow(/checked by the stakeholder/);
+
+    expect((await s.listCriteria(p.id, 1)).map((c) => c.status)).toEqual(['unverified', 'unverified']);
+  });
+
   it('takes no verification from a qa_verify task in another project', async () => {
     const other = await s.createProject({ name: 'other', repo_path: '/o', base_branch: 'main' });
     const foreign = await s.createTask({ ...task('QA-9', 'qa_verify'), project_id: other.id });

@@ -1,4 +1,5 @@
 import { homedir } from 'node:os';
+import { isHumanCheck } from '../../artifacts/acs.ts';
 import { runSandboxed } from '../../checks/run-checks.ts';
 import { advanceBaseBranch, snapshotState, syncBaseIntoIntegration } from '../../git/merge.ts';
 import { addAttemptWorktree, ensureIntegrationBranch, removeAttemptWorktree } from '../../git/workspace.ts';
@@ -177,7 +178,8 @@ async function verify(deps: EngineDeps, project: ProjectRow, m: MilestoneRow, ta
   }
   if (qa?.state !== 'done') return;
 
-  const criteria = await store.listCriteria(project.id, n);
+  // QA never verifies a human check, which stays unverified until the stakeholder judges it at milestone approval. Counting it would hold the milestone here for ever.
+  const criteria = (await store.listCriteria(project.id, n)).filter((criterion) => !isHumanCheck(criterion));
   if (criteria.every(({ status }) => status === 'passing' || status === 'waived')) {
     const inputs = [await latestPin(deps, project, specId(n)), await latestPin(deps, project, techId(n)), await latestPin(deps, project, testPlanId(n)), await latestPin(deps, project, `QA-REPORT-M${n}-${round}`)];
     await store.atomically(async (s) => {
@@ -228,6 +230,7 @@ async function afterMilestoneReview(deps: EngineDeps, project: ProjectRow, m: Mi
   if (!review) throw new Error(`${task.ticket_id} finished without ${reviewId(n)}`);
   const pins = [pinOf(review), await latestPin(deps, project, specId(n)), await latestPin(deps, project, `QA-REPORT-M${n}-${round}`)];
   const recommendation = await noteOf(store, task.id);
+  const hasHumanChecks = (await store.listCriteria(project.id, n)).some(isHumanCheck);
   await store.atomically(async (s) => {
     await s.raiseInbox({
       project_id: project.id,
@@ -237,7 +240,7 @@ async function afterMilestoneReview(deps: EngineDeps, project: ProjectRow, m: Mi
       ref: { kind: 'cp4', milestone: n },
       title: `Approve milestone ${n} to merge into ${project.base_branch}`,
       asked_by: 'pm',
-      why: `Every acceptance criterion passed QA. Nothing reaches ${project.base_branch} until you approve.`,
+      why: `${hasHumanChecks ? 'Every automated criterion passed QA.' : 'Every acceptance criterion passed QA.'} Nothing reaches ${project.base_branch} until you approve.`,
       blocks: [`Merging milestone ${n}`],
       evidence: pins.map((pin) => ({ label: pin.split('@')[0]!, value: pin, pin })),
       recommendation,
