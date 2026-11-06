@@ -1225,9 +1225,17 @@ describe('the play gate', () => {
     expect(player.calls).toHaveLength(1);
     expect(player.calls[0]!.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/index\.html$/);
     expect(player.calls[0]!.body).toBe(PAGE);
-    expect(smoke).toHaveBeenCalledWith(player.calls[0]!.url, ['Space']);
+    expect(smoke).toHaveBeenCalledWith(player.calls[0]!.url, ['Space'], { animated: undefined });
     expect(await taskIds(h)).toContain('M1-QA-1');
     expect(await milestonePhase(h)).toBe('verify');
+  });
+
+  it('tells the player when the page has no animation loop', async () => {
+    const { h, player } = await playing(playResult(), { profile: { ...PLAY_PROFILE, play: { ...PLAY, animated: false } } });
+    const smoke = vi.spyOn(player, 'smoke');
+    await mergeGame(h);
+
+    expect(smoke).toHaveBeenCalledWith(player.calls[0]!.url, ['Space'], { animated: false });
   });
 
   it('files a Bug when the game does not run', async () => {

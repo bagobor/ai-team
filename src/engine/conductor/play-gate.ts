@@ -121,7 +121,7 @@ async function playHead(deps: EngineDeps, project: ProjectRow, n: number, profil
     if (!prepared.ok) return { kind: 'unavailable', cause: 'setup', why: prepared.why };
     const site = await buildSite(env, profile, { setup: false });
     if (!site.ok) return { kind: 'failed', headSha, profile, problems: [{ kind: 'load', detail: site.why }] };
-    const served = await servePage(site.root, play, (page) => player.smoke(page, play.keys));
+    const served = await servePage(site.root, play, (page) => player.smoke(page, play.keys, { animated: play.animated }));
     if (!served.ok) return { kind: 'failed', headSha, profile, problems: [{ kind: 'load', detail: served.why }] };
     return judged(headSha, served.value.problems, served.value.ok, profile);
   });

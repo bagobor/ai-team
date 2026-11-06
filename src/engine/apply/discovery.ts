@@ -13,7 +13,8 @@ type DiscoveryOutput = {
   human_requirements: { body: string };
 };
 
-export type PlayBlock = { root: string; entry: string; keys: string[] };
+// `animated` is false for a page with no animation loop; a profile that leaves it out is played as a game.
+export type PlayBlock = { root: string; entry: string; keys: string[]; animated?: boolean };
 
 // What a published Environment Profile holds as data, for everything that builds or plays the product.
 // A profile published before the play gate has no play at all, which its readers take as null.
@@ -74,11 +75,12 @@ function playProblems(play: PlayBlock | null | undefined): string[] {
   if (play === undefined) return ['play is missing: give the root, entry and keys a person plays the product with, or null when nothing runs in a browser'];
   if (play === null) return [];
   const problems: string[] = [];
-  const { root, entry, keys } = play;
+  const { root, entry, keys, animated } = play;
   if (typeof root !== 'string' || root.trim() === '' || climbs(root)) problems.push(`play.root must be a directory inside the repo, such as . or dist, not ${JSON.stringify(root)}`);
   if (typeof entry !== 'string' || !entry.endsWith('.html') || climbs(entry)) problems.push(`play.entry must be an .html page under play.root, not ${JSON.stringify(entry)}`);
   if (!Array.isArray(keys) || keys.length === 0) problems.push('play.keys needs at least one key the game reads');
   else problems.push(...keys.flatMap((key) => keyProblem(key) ?? []).map((problem) => `play.keys: ${problem}`));
+  if (animated !== undefined && typeof animated !== 'boolean') problems.push(`play.animated must be true or false, or left out for a page with an animation loop, not ${JSON.stringify(animated)}`);
   return problems;
 }
 

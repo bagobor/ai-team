@@ -305,8 +305,25 @@ describe.skipIf(!chrome && process.env.AITEAM_REQUIRE_CHROME !== '1')('chromePla
     }
   }
 
-  const smoke = (name: string): Promise<PlayResult> => served(name, (url) => player.smoke(url + 'index.html', ['ArrowLeft', 'Space']));
+  const smoke = (name: string, opts?: { animated?: boolean }): Promise<PlayResult> => served(name, (url) => player.smoke(url + 'index.html', ['ArrowLeft', 'Space'], opts));
   const kinds = (result: PlayResult) => result.problems.map((problem) => problem.kind);
+
+  it('passes a page with no animation loop when the profile says it has none', async () => {
+    const result = await smoke('static', { animated: false });
+    expect(result).toMatchObject({ ok: true, problems: [] });
+    expect(result.log).toContainEqual(expect.stringMatching(/^\d+ colors, 0 frames$/));
+  });
+
+  it('fails the same page as frozen and still when the profile says nothing', async () => {
+    const result = await smoke('static');
+    expect(result.ok).toBe(false);
+    expect(kinds(result).sort()).toEqual(['frozen', 'still']);
+  });
+
+  it('still catches a page with no animation loop that draws nothing', async () => {
+    const result = await smoke('blank', { animated: false });
+    expect(kinds(result)).toEqual(['blank']);
+  });
 
   it('passes a page that paints, animates and takes keys', async () => {
     const result = await smoke('ok');

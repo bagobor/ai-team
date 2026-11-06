@@ -83,6 +83,10 @@
           "items": {
             "type": "string"
           }
+        },
+        "animated": {
+          "type": "boolean",
+          "description": "false for a page with no animation loop, such as a form or a turn-based board; the engine then doesn't require frames or a change on keys. Leave it out for a game."
         }
       }
     },

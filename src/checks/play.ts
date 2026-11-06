@@ -109,9 +109,11 @@ export type PlayProblem = {
   detail: string;
 };
 export type PlayResult = { ok: boolean; problems: PlayProblem[]; durationMs: number; log: string[] };
+// `animated` is the play block's: false for a page with no animation loop, true when it doesn't say, as a game's does.
+export type SmokeOptions = { animated?: boolean };
 export type Player = {
   unavailable(): string | undefined;
-  smoke(url: string, keys: string[]): Promise<PlayResult>;
+  smoke(url: string, keys: string[], opts?: SmokeOptions): Promise<PlayResult>;
   script(url: string, script: PlayScript): Promise<PlayResult>;
 };
 
@@ -392,7 +394,7 @@ async function evaluate(run: Run, page: Session, expression: string): Promise<{ 
   }
 }
 
-async function smokeSteps(run: Run, cdp: Cdp, context: string, page: Session, keys: string[]): Promise<void> {
+async function smokeSteps(run: Run, cdp: Cdp, context: string, page: Session, keys: string[], animated: boolean): Promise<void> {
   const frames = async () => Number((await evaluate(run, page, 'window.__aiteamFrames')).value) || 0;
   const screenshot = async () => (await page.send<{ data: string }>('Page.captureScreenshot', { format: 'png' })).data;
 
@@ -413,11 +415,12 @@ async function smokeSteps(run: Run, cdp: Cdp, context: string, page: Session, ke
   if (counted.threw) throw new Error(`could not read the screenshot: ${counted.threw}`);
   const blank = blankProblem(counted.value);
   if (blank) run.problem('blank', blank);
-  if (ran < MIN_FRAMES) {
+  // A page with no animation loop, such as a form or a turn-based board, is right to run no frames and to look the same after the keys.
+  if (animated && ran < MIN_FRAMES) {
     const expected = `at least ${MIN_FRAMES} were expected`;
     run.problem('frozen', `The page ran ${ran} animation frames in ${seconds} s after load; ${expected}`);
   }
-  if (before === after) {
+  if (animated && before === after) {
     run.problem('still', 'The screen did not change from a second after load to a second after the keys');
   }
   run.note(`${shown(counted.value)} colors, ${ran} frames`);
@@ -500,8 +503,8 @@ export function chromePlayer(config: Config, opts: { timeoutMs?: number } = {}):
 
   return {
     unavailable,
-    smoke: async (url, keys) => {
-      const steps: Steps = (run, cdp, context, page) => smokeSteps(run, cdp, context, page, keys);
+    smoke: async (url, keys, { animated = true } = {}) => {
+      const steps: Steps = (run, cdp, context, page) => smokeSteps(run, cdp, context, page, keys, animated);
       return missing() ?? play(chromePath(config)!, timeoutMs, true, url, steps);
     },
     script: async (url, script) => {

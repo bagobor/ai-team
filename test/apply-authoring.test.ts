@@ -116,7 +116,15 @@ describe('appliers', () => {
       expect((await read('ENV-PROFILE')).fields.data).toMatchObject({ play });
     });
 
+    it('takes a play block that says its page has no animation loop', async () => {
+      const play = { root: '.', entry: 'index.html', keys: ['Enter'], animated: false };
+      await publish(e, await apply(e, 'environment_profile', { ...PROFILE, play }, { worktree: tempDir() }));
+
+      expect((await read('ENV-PROFILE')).fields.data).toMatchObject({ play });
+    });
+
     it.each([
+      ['animated that is not true or false', { play: { root: '.', entry: 'index.html', keys: ['Space'], animated: 'no' } }, /play.animated/],
       ['a root outside the repo', { play: { root: '../x', entry: 'index.html', keys: ['Space'] } }, /play.root/],
       ['an absolute root', { play: { root: '/tmp', entry: 'index.html', keys: ['Space'] } }, /play.root/],
       ['an entry that is not a page', { play: { root: '.', entry: 'index.txt', keys: ['Space'] } }, /play.entry/],
