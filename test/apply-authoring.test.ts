@@ -291,6 +291,40 @@ describe('appliers', () => {
       expect((await read('TEST-PLAN-M1')).fields.data).toEqual({ coverage: revision.coverage, protected: ['acceptance/**'] });
     });
 
+    // The model is shown the Test Plan without its flags, so a revision that leaves regression out is not asking for it to go.
+    describe('a revision and the regression flag', () => {
+      const flagged = [{ ...coverage('AC-1'), regression: true }, coverage('AC-2')];
+      const revise = async (rows: unknown[]) => {
+        await publish(e, await apply(e, 'test_plan', { ...TEST_PLAN, coverage: flagged }, { inputs: ['SPEC-M1@1'] }));
+        const revision = { unaffected: false, rationale: 'r', body: '# Plan two\n', coverage: rows, ticket_decisions: [], tickets: [] };
+        await publish(e, await apply(e, 'revise_test_plan', revision, { inputs: ['SPEC-M1@1', 'TEST-PLAN-M1@1'] }));
+        expect(await latest('TEST-PLAN-M1')).toMatchObject({ version: 2 });
+        return ((await read('TEST-PLAN-M1')).fields.data as { coverage: unknown[] }).coverage;
+      };
+
+      it('keeps the flag of an entry that leaves it out, whatever else the entry changes', async () => {
+        expect(await revise([coverage('AC-1', ['npm run lint']), coverage('AC-2')])).toEqual([{ ...coverage('AC-1', ['npm run lint']), regression: true }, coverage('AC-2')]);
+      });
+
+      it('clears the flag of an entry that says false', async () => {
+        expect(await revise([{ ...coverage('AC-1'), regression: false }, coverage('AC-2')])).toEqual([{ ...coverage('AC-1'), regression: false }, coverage('AC-2')]);
+      });
+
+      it('sets the flag of an entry that says true, and leaves the others as they were', async () => {
+        expect(await revise([coverage('AC-1'), { ...coverage('AC-2'), regression: true }])).toEqual([{ ...coverage('AC-1'), regression: true }, { ...coverage('AC-2'), regression: true }]);
+      });
+
+      it('gives an entry for a criterion the replaced version did not cover no flag', async () => {
+        // Written by hand: the applier would refuse a plan that leaves AC-2 out, but a version from before a criterion moved can.
+        await e.artifacts.commit(await projectOf(e), { message: 'an older plan', publish: [{ id: 'TEST-PLAN-M1', type: 'test_plan', status: 'approved', ownerRole: 'qa_engineer', derivedFrom: ['SPEC-M1@1'], milestone: 1, body: '# Plan\n', fields: { data: { coverage: [flagged[0]], protected: [] } } }] });
+        const revision = { unaffected: false, rationale: 'r', body: '# Plan two\n', coverage: [coverage('AC-1'), coverage('AC-2')], ticket_decisions: [], tickets: [] };
+
+        await publish(e, await apply(e, 'revise_test_plan', revision, { inputs: ['SPEC-M1@1', 'TEST-PLAN-M1@1'] }));
+
+        expect(((await read('TEST-PLAN-M1')).fields.data as { coverage: unknown[] }).coverage).toEqual([flagged[0], coverage('AC-2')]);
+      });
+    });
+
     it('wants Q keys from a Test Plan', async () => {
       expect(evidenceOf(await apply(e, 'test_plan', { ...TEST_PLAN, harness_tickets: [draft('T-1', ['AC-1'])] }))).toMatch(/key/);
     });

@@ -137,12 +137,17 @@ const coverageIn = (doc: ArtifactDoc): Coverage[] => {
 };
 
 // What QA verify runs is the coverage, not the prose, so a Test Plan criterion takes new commands, one per line.
+// QA verify has no way to set the entry's regression flag, so asking for the commands the entry already has is how a criterion that held before the work gets it.
 function commandsReplacement(doc: ArtifactDoc, ac: string, proposed: string): Replacement {
   const coverage = coverageIn(doc);
-  if (!coverage.some((row) => row.ac === ac)) throw new ChangeRequestError(`${doc.id} has no commands for ${ac}. It covers ${coverage.map((row) => row.ac).join(', ')}`);
+  const entry = coverage.find((row) => row.ac === ac);
+  if (!entry) throw new ChangeRequestError(`${doc.id} has no commands for ${ac}. It covers ${coverage.map((row) => row.ac).join(', ')}`);
   const commands = proposed.split('\n').map((line) => line.trim()).filter((line) => line !== '');
+  const has = entry.commands.map((command) => command.trim());
+  const unchanged = commands.length === has.length && commands.every((command, i) => command === has[i]);
   const data = doc.fields.data as Record<string, unknown>;
-  return { body: doc.body, fields: { ...doc.fields, data: { ...data, coverage: coverage.map((row) => (row.ac === ac ? { ...row, commands } : row)) } } };
+  const replaced = unchanged ? { ...entry, regression: true } : { ...entry, commands };
+  return { body: doc.body, fields: { ...doc.fields, data: { ...data, coverage: coverage.map((row) => (row.ac === ac ? replaced : row)) } } };
 }
 
 async function criterionReplacement(deps: Deps, project: ProjectRow, target: ArtifactVersionRow, doc: ArtifactDoc, ac: string, proposed: string, how?: string): Promise<Replacement> {

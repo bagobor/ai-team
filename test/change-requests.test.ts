@@ -324,6 +324,41 @@ describe('Change Requests', () => {
       expect(await read('TEST-PLAN-M1')).toMatchObject({ version: 2, status: 'approved', body: '# Plan\n\nRun the checks.\n' });
     });
 
+    // QA cannot set the flag itself, so asking for the commands an entry already has is how it says the criterion holds before the work.
+    it('makes the entry a regression guard when it proposes the commands the entry has, however they are spaced', async () => {
+      const plan = await testPlan();
+      await fileChangeRequest(e, p, onCommands({ proposed_text: '  npm test -- old\n\n' }));
+
+      await applyChangeRequest(e, p, 'CR-1');
+
+      expect(await coverageOf()).toEqual([{ ...COVERAGE[0], regression: true }, COVERAGE[1]]);
+      // The new version differs from the old in its data alone, and it is a version: nothing treats the approval as having changed nothing.
+      expect(await read('TEST-PLAN-M1')).toMatchObject({ version: plan.version + 1, status: 'approved', body: '# Plan\n\nRun the checks.\n' });
+      expect(await latest('CR-1')).toMatchObject({ status: 'approved' });
+    });
+
+    it('makes a regression guard of an entry whose commands several lines long are all proposed again', async () => {
+      await testPlan([{ ac: 'AC-1', commands: ['npm test -- first', 'npm run lint'], notes: 'The first check' }, COVERAGE[1]!]);
+      await fileChangeRequest(e, p, onCommands());
+
+      await applyChangeRequest(e, p, 'CR-1');
+
+      expect((await coverageOf())[0]).toEqual({ ac: 'AC-1', commands: ['npm test -- first', 'npm run lint'], notes: 'The first check', regression: true });
+    });
+
+    it.each([
+      ['fewer commands', 'npm test -- first'],
+      ['more commands', 'npm test -- first\nnpm run lint\nnpm run build'],
+      ['the same commands in another order', 'npm run lint\nnpm test -- first'],
+    ])('does not flag the entry when it proposes %s', async (_name, proposed_text) => {
+      await testPlan([{ ac: 'AC-1', commands: ['npm test -- first', 'npm run lint'], notes: 'The first check' }, COVERAGE[1]!]);
+      await fileChangeRequest(e, p, onCommands({ proposed_text }));
+
+      await applyChangeRequest(e, p, 'CR-1');
+
+      expect((await coverageOf())[0]).not.toHaveProperty('regression');
+    });
+
     it('refuses a criterion the plan does not cover', async () => {
       await testPlan();
 

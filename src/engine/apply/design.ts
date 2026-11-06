@@ -1,5 +1,5 @@
 import { isHumanCheck } from '../../artifacts/acs.ts';
-import { ArtifactError, parsePin, sectionText, formatPin, type ArtifactStatus } from '../../artifacts/format.ts';
+import { ArtifactError, parsePin, sectionText, formatPin, type ArtifactDoc, type ArtifactStatus } from '../../artifacts/format.ts';
 import type { NewVersion, StatusChange } from '../../artifacts/store.ts';
 import { isHarnessTicket, protectedGlobs, protectedProblems } from '../protected.ts';
 import type { EngineDeps } from '../runner.ts';
@@ -165,6 +165,16 @@ async function inputsMoved(ctx: ApplyCtx, docId: string): Promise<boolean> {
   return false;
 }
 
+// An entry the revision writes without the flag takes the one the replaced Test Plan gave that criterion.
+function keepingFlags(revised: Coverage[], replaced: ArtifactDoc): Coverage[] {
+  const was = (replaced.fields.data as { coverage?: Coverage[] } | undefined)?.coverage;
+  const flagOf = (ac: string) => (Array.isArray(was) ? was : []).find((row) => row.ac === ac)?.regression;
+  return revised.map((row) => {
+    const flag = row.regression === undefined ? flagOf(row.ac) : undefined;
+    return flag === undefined ? row : { ...row, regression: flag };
+  });
+}
+
 const applyRevise =
   (prefix: Prefix): Applier =>
   async (ctx) => {
@@ -223,8 +233,11 @@ const applyRevise =
     }
 
     // A revision has no way to name protected paths, so the new Test Plan keeps those of the version it replaces.
-    const carried = prefix === 'Q' && body !== null ? protectedGlobs(await ctx.deps.artifacts.read(ctx.project, docId)) : [];
-    const publish = [...(body === null ? [] : [prefix === 'T' ? designDoc(ctx, body, settled) : testPlanDoc(ctx, body, output.coverage!, carried, settled)]), ...newDocs];
+    const replaced = prefix === 'Q' && body !== null ? await ctx.deps.artifacts.read(ctx.project, docId) : undefined;
+    const carried = replaced === undefined ? [] : protectedGlobs(replaced);
+    // The revising model is shown the plan without its regression flags, so an entry that leaves one out keeps the replaced version's, and only an explicit false clears it.
+    const coverage = replaced === undefined ? [] : keepingFlags(output.coverage!, replaced);
+    const publish = [...(body === null ? [] : [prefix === 'T' ? designDoc(ctx, body, settled) : testPlanDoc(ctx, body, coverage, carried, settled)]), ...newDocs];
     return withRaised(ctx, { message: `milestone ${milestone}: revise ${docId}`, publish, status }, async (s) => {
       for (const id of superseded) {
         const task = await s.getTaskByTicket(ctx.project.id, id);
