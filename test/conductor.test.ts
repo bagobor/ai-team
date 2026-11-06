@@ -1,12 +1,14 @@
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { sectionText } from '../src/artifacts/format.ts';
 import { ArtifactStore } from '../src/artifacts/store.ts';
 import { openDb } from '../src/db/open.ts';
 import { applyOutput } from '../src/engine/apply/index.ts';
 import { fileChangeRequest } from '../src/engine/change-requests.ts';
 import { applyAnswers } from '../src/engine/conductor/answers.ts';
 import { Conductor, haltProject } from '../src/engine/conductor/index.ts';
+import { ensureTryWorktree, removeTryWorktree, tryWorktree } from '../src/engine/conductor/try.ts';
 import { addProject } from '../src/engine/intake.ts';
 import { AlreadyAnswered, type InboxRef, type InboxRow } from '../src/engine/inbox.ts';
 import { Runner } from '../src/engine/runner.ts';
@@ -14,7 +16,7 @@ import { Store, type ProjectRow, type TaskRow } from '../src/engine/store.ts';
 import type { WorkOrder } from '../src/engine/workorder.ts';
 import { EventLog } from '../src/events.ts';
 import { mergeIntoBranch } from '../src/git/merge.ts';
-import { addAttemptWorktree, snapshotAttempt } from '../src/git/workspace.ts';
+import { addAttemptWorktree, ensureIntegrationBranch, snapshotAttempt } from '../src/git/workspace.ts';
 import { worktreePath } from '../src/paths.ts';
 import { CRITERIA, projectOf } from './helpers/apply.ts';
 import { eventTypes, makeEngine, ticket, type TestEngine } from './helpers/engine.ts';
@@ -176,11 +178,11 @@ async function addBrief(h: Harness): Promise<void> {
   await h.artifacts.commit(h.project, { message: 'brief', publish: [{ id: 'BRIEF', type: 'brief', status: 'approved', approvedBy: 'stakeholder', ownerRole: 'stakeholder', derivedFrom: [], body: '# Brief\n' }] });
 }
 
-type Flow = { discovery?: unknown; profile?: unknown; spec?: unknown; design?: unknown; plan?: unknown };
+type Flow = { discovery?: unknown; profile?: unknown; spec?: unknown; design?: unknown; plan?: unknown; qa?: unknown };
 
 // AC-2 is built like any criterion, but the Test Plan skips it and QA reports on AC-1 alone.
-const HUMAN_FLOW: Flow = { spec: { ...SPEC, criteria: [CRITERIA[0], HUMAN] }, plan: { ...TEST_PLAN, coverage: TEST_PLAN.coverage.slice(0, 1) } };
 const AUTOMATED_PASS = { ...PASS, results: PASS.results.slice(0, 1) };
+const HUMAN_FLOW: Flow = { spec: { ...SPEC, criteria: [CRITERIA[0], HUMAN] }, plan: { ...TEST_PLAN, coverage: TEST_PLAN.coverage.slice(0, 1) }, qa: AUTOMATED_PASS };
 
 async function toCp1(h: Harness, flow: Flow = {}): Promise<InboxRow> {
   await addBrief(h);
@@ -230,7 +232,7 @@ async function toCp4(h: Harness, flow: Flow = {}, files?: Record<string, string>
   await toBuild(h, flow);
   await mergeTicket(h, 'M1-T-1', files);
   await h.conductor.tick();
-  await finish(h, 'M1-QA-1', PASS);
+  await finish(h, 'M1-QA-1', flow.qa ?? PASS);
   await h.conductor.tick();
   await finish(h, 'M1-REVIEW-1', REVIEW);
   await h.conductor.tick();
@@ -603,6 +605,123 @@ describe('flow', () => {
     expect((await pending(h, 'cp4')).why).toMatch(/^Every automated criterion passed QA\./);
   });
 
+  it('asks the stakeholder for each human check at CP4', async () => {
+    const h = await harness();
+    const cp4 = await toCp4(h, HUMAN_FLOW);
+
+    expect(cp4.checks).toEqual([{ ac: 'AC-2', text: HUMAN.text, how: HUMAN.verification.how }]);
+    expect(cp4.why).toMatch(/Every automated criterion passed QA/);
+    expect(cp4.why).toMatch(/Check the 1 item below/);
+
+    const plain = await harness();
+    const none = await toCp4(plain);
+    expect(none.checks).toEqual([]);
+    expect(none.why).not.toMatch(/Check the/);
+  });
+
+  it('names the branch and gives a checkout to try', async () => {
+    const h = await harness();
+    const cp4 = await toCp4(h);
+    const tryPath = worktreePath(h.paths, 'p', 'M1-try', 1);
+
+    expect(cp4.evidence).toContainEqual({ label: 'Branch', value: expect.stringMatching(/^aiteam\/m1 at [0-9a-f]{7}$/) });
+    expect(cp4.evidence).toContainEqual({ label: 'Try it', value: tryPath });
+    expect(existsSync(join(tryPath, '.git'))).toBe(true);
+    expect(await revParse(tryPath, 'HEAD')).toBe(await revParse(h.repoPath, 'refs/heads/aiteam/m1'));
+    expect(cp4.evidence.find(({ label }) => label === 'Branch')!.value).toContain((await revParse(h.repoPath, 'refs/heads/aiteam/m1')).slice(0, 7));
+  });
+
+  it('records approved checks as the stakeholder\'s evidence', async () => {
+    const h = await harness();
+    const cp4 = await toCp4(h, HUMAN_FLOW);
+    await h.store.answerInbox(cp4.id, { action: 'approve', checks: [{ ac: 'AC-2', status: 'passing', note: 'Feels fair' }] });
+    await applyAnswers(h, h.runner, await projectOf(h));
+
+    const [, human] = await h.store.listCriteria(h.project.id, 1);
+    expect(human).toMatchObject({ ac_id: 'AC-2', status: 'passing', evidence_ref: `DEC-${cp4.id}@1#ac-2` });
+    const decision = await h.artifacts.read(h.project, `DEC-${cp4.id}`);
+    expect(sectionText(decision.body, 'ac-2')).toContain('Feels fair');
+    expect(await milestonePhase(h)).toBe('merging');
+
+    await h.conductor.tick();
+    expect(await milestonePhase(h)).toBe('merged');
+  });
+
+  it('sends failed checks back with the request', async () => {
+    const h = await harness();
+    const cp4 = await toCp4(h, HUMAN_FLOW);
+    await h.store.answerInbox(cp4.id, { action: 'request_changes', comment: 'Mostly fine', checks: [{ ac: 'AC-2', status: 'failing', note: 'Shots come from off-screen' }] });
+    await h.conductor.tick();
+
+    const [, human] = await h.store.listCriteria(h.project.id, 1);
+    expect(human).toMatchObject({ ac_id: 'AC-2', status: 'failing', evidence_ref: `DEC-${cp4.id}@1#ac-2` });
+    const comment = orderOf(await byTicket(h, 'M1-REPLAN-1')).comment!;
+    expect(comment).toContain('Mostly fine');
+    expect(comment).toContain('Failed checks:');
+    expect(comment).toContain('- AC-2: Shots come from off-screen');
+    expect(await milestonePhase(h)).toBe('build');
+  });
+
+  it('removes the try checkout once the milestone merges', async () => {
+    const h = await harness();
+    const cp4 = await toCp4(h);
+    const tryPath = worktreePath(h.paths, 'p', 'M1-try', 1);
+    expect(existsSync(tryPath)).toBe(true);
+
+    await h.store.answerInbox(cp4.id, { action: 'approve' });
+    await h.conductor.tick();
+
+    expect(await milestonePhase(h)).toBe('merged');
+    expect(existsSync(tryPath)).toBe(false);
+    expect(run(h.repoPath, 'branch', '--list', 'aiteam/try/M1')).toBe('');
+  });
+
+  it('removes the try checkout when the stakeholder rejects the milestone', async () => {
+    const h = await harness();
+    const cp4 = await toCp4(h);
+    const tryPath = worktreePath(h.paths, 'p', 'M1-try', 1);
+    expect(existsSync(tryPath)).toBe(true);
+
+    await h.store.answerInbox(cp4.id, { action: 'reject' });
+    await h.conductor.tick();
+
+    expect(existsSync(tryPath)).toBe(false);
+  });
+
+  it('leaves the try checkout alone for the same head and replaces it for a new one', async () => {
+    const h = await harness();
+    const { headSha } = await ensureIntegrationBranch(h.repoPath, 1, 'main');
+    const tryPath = await ensureTryWorktree(h, h.project, 1, headSha);
+    expect(tryPath).toBe(tryWorktree(h, h.project, 1).worktree);
+    writeFileSync(join(tryPath, 'notes.txt'), 'the stakeholder was here\n');
+
+    await ensureTryWorktree(h, h.project, 1, headSha);
+    expect(existsSync(join(tryPath, 'notes.txt'))).toBe(true);
+
+    commitOn(h, 'aiteam/m1', { 'later.txt': 'later\n' });
+    const later = await revParse(h.repoPath, 'refs/heads/aiteam/m1');
+    await ensureTryWorktree(h, h.project, 1, later);
+    expect(await revParse(tryPath, 'HEAD')).toBe(later);
+    expect(existsSync(join(tryPath, 'notes.txt'))).toBe(false);
+    expect(existsSync(join(tryPath, 'later.txt'))).toBe(true);
+
+    await removeTryWorktree(h, h.project, 1);
+    expect(existsSync(tryPath)).toBe(false);
+    await removeTryWorktree(h, h.project, 1);
+  });
+
+  it('does not merge while a criterion is unverified', async () => {
+    const h = await harness();
+    await toCp4(h, HUMAN_FLOW);
+    const mainBefore = await revParse(h.repoPath, 'refs/heads/main');
+    await h.store.setMilestonePhase(h.project.id, 1, 'merging');
+    await h.conductor.tick();
+
+    expect(await milestonePhase(h)).not.toBe('merged');
+    expect((await pending(h, 'engine_error')).why).toContain('AC-2');
+    expect(await revParse(h.repoPath, 'refs/heads/main')).toBe(mainBefore);
+  });
+
   it('gives the Milestone Review the Tech Design as well as the Spec, the Test Plan and the QA report', async () => {
     const h = await harness();
     await toVerify(h);
@@ -657,7 +776,7 @@ describe('flow', () => {
     const clean = await harness();
     const cp4 = await toCp4(clean);
     expect(cp4).toMatchObject({ dedupe_key: 'cp4:M1:1', milestone: 1, recommendation: 'Ship it' });
-    expect(cp4.evidence.map(({ pin }) => pin)).toEqual(['MILESTONE-REVIEW-M1@1', 'SPEC-M1@1', 'QA-REPORT-M1-1@1']);
+    expect(cp4.evidence.flatMap(({ pin }) => (pin ? [pin] : []))).toEqual(['MILESTONE-REVIEW-M1@1', 'SPEC-M1@1', 'QA-REPORT-M1-1@1']);
     expect(await milestonePhase(clean)).toBe('cp4');
 
     const h = await harness();

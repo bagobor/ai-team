@@ -5,10 +5,11 @@ import { openTickets } from '../apply/design.ts';
 import { ENV_PROFILE, reviewId, specId, techId } from '../apply/ids.ts';
 import { oneLine, quoted } from '../apply/text.ts';
 import { rejectChangeRequest } from '../change-requests.ts';
-import type { InboxAnswer, InboxRow } from '../inbox.ts';
+import type { CheckMark, InboxAnswer, InboxRow } from '../inbox.ts';
 import type { EngineDeps, Runner } from '../runner.ts';
 import type { ProjectRow, Store } from '../store.ts';
 import { applyRequest } from './change-requests.ts';
+import { removeTryWorktree } from './try.ts';
 import { DISCOVERY_DOCS, discoveryInputs, discoveryTask, ensureTask, isClosed, isTerminal, latestPin, markHalted, profileTask, replanTask, reviseInputs, roundOf, specTask, stopProjectWork } from './tasks.ts';
 
 // What an answer does once the work outside SQLite is finished. It never holds a key named then: Effect comes out of async functions, and a promise would take it for a thenable.
@@ -27,6 +28,9 @@ function wordsOf(answer: InboxAnswer): string | undefined {
   if ('comment' in answer) return answer.comment;
   return 'text' in answer ? answer.text : undefined;
 }
+
+// Only an approval of a milestone carries marks, and the inbox has already checked each one against that item's checks.
+const marksOf = (answer: InboxAnswer): CheckMark[] => ('checks' in answer ? (answer.checks ?? []) : []);
 
 const approved = (id: string): StatusChange => ({ id, status: 'approved', approvedBy: 'stakeholder' });
 
@@ -82,22 +86,43 @@ async function answerCp2(deps: EngineDeps, runner: Runner, project: ProjectRow, 
   };
 }
 
-async function answerCp4(deps: EngineDeps, runner: Runner, project: ProjectRow, item: InboxRow, n: number, choice: string, words?: string): Promise<Effect> {
-  if (choice === 'reject') return halt(deps, runner, project, item);
+// A mark is the stakeholder's own word on a check, so the criterion points at the Decision Record section that holds it.
+const recordMarks = (project: ProjectRow, item: InboxRow, n: number, marks: CheckMark[]) => async (s: Store): Promise<void> => {
+  for (const { ac, status } of marks) {
+    await s.recordVerification(project.id, n, ac, { status, evidenceRef: `DEC-${item.id}@1#${ac.toLowerCase()}`, verifiedBy: { kind: 'stakeholder', inboxId: item.id } });
+  }
+};
+
+async function answerCp4(deps: EngineDeps, runner: Runner, project: ProjectRow, item: InboxRow, n: number, choice: string, words: string | undefined, marks: CheckMark[]): Promise<Effect> {
+  if (choice === 'reject') {
+    await removeTryWorktree(deps, project, n);
+    return halt(deps, runner, project, item);
+  }
+  const record = recordMarks(project, item, n, marks);
   if (choice === 'request_changes') {
     const k = (await deps.store.listTasks(project.id)).filter(({ ticket_id }) => ticket_id.startsWith(`M${n}-REPLAN-`)).length + 1;
     const tech = await deps.artifacts.latest(project.id, techId(n));
     if (!tech) throw new Error(`Milestone ${n} has no Tech Design to replan`);
     const inputs = await reviseInputs(deps, project, tech);
     const open = await openTickets(deps, project, n, 'T');
+    // The replan reads only this comment, so what failed has to be in it.
+    const failed = marks.filter(({ status }) => status === 'failing');
+    const comment = [words ?? '', ...(failed.length === 0 ? [] : ['', 'Failed checks:', ...failed.map(({ ac, note }) => `- ${ac}: ${oneLine(note)}`)])].join('\n');
     return {
       after: async (s) => {
-        await ensureTask(s, replanTask(project, n, k, inputs, words ?? '', open));
+        await record(s);
+        await ensureTask(s, replanTask(project, n, k, inputs, comment, open));
         await s.setMilestonePhase(project.id, n, 'build');
       },
     };
   }
-  return { status: [approved(reviewId(n))], after: async (s) => { await s.setMilestonePhase(project.id, n, 'merging'); } };
+  return {
+    status: [approved(reviewId(n))],
+    after: async (s) => {
+      await record(s);
+      await s.setMilestonePhase(project.id, n, 'merging');
+    },
+  };
 }
 
 async function answerEscalation(deps: EngineDeps, runner: Runner, project: ProjectRow, item: InboxRow, taskId: number, choice: string): Promise<Effect> {
@@ -124,7 +149,7 @@ async function effectOf(deps: EngineDeps, runner: Runner, project: ProjectRow, i
     case 'cp2':
       return answerCp2(deps, runner, project, item, ref.milestone, choice, words);
     case 'cp4':
-      return answerCp4(deps, runner, project, item, ref.milestone, choice, words);
+      return answerCp4(deps, runner, project, item, ref.milestone, choice, words, marksOf(answer));
     case 'cr':
       if (choice === 'approve') await applyRequest(deps, project, ref.cr, item);
       else await rejectChangeRequest(deps, project, ref.cr, words ?? 'The stakeholder rejected it');
@@ -150,6 +175,8 @@ function decisionRecord(item: InboxRow, answer: InboxAnswer): NewVersion {
   const choice = choiceOf(item, answer);
   const label = LABELS[choice] ?? item.options.find(({ id }) => id === choice)?.label ?? choice;
   const words = wordsOf(answer);
+  // A reject isn't held to its marks, so none of them is a verdict worth recording.
+  const marks = choice === 'reject' ? [] : marksOf(answer);
   return {
     id: `DEC-${item.id}`,
     type: 'decision_record',
@@ -159,7 +186,15 @@ function decisionRecord(item: InboxRow, answer: InboxAnswer): NewVersion {
     derivedFrom: item.evidence.flatMap(({ pin }) => (pin ? [pin] : [])),
     ...(item.milestone === null ? {} : { milestone: item.milestone }),
     fields: { data: { ref: item.ref, answer } },
-    body: [`# ${oneLine(item.title)}`, '', `Decision: ${label}`, '', ...(words === undefined ? [] : [quoted(words), ''])].join('\n'),
+    // One section per mark, named for its criterion, so that the #ac-n anchor in the criterion's evidence resolves.
+    body: [
+      `# ${oneLine(item.title)}`,
+      '',
+      `Decision: ${label}`,
+      '',
+      ...(words === undefined ? [] : [quoted(words), '']),
+      ...marks.flatMap(({ ac, status, note }) => [`## ${ac}`, '', status === 'passing' ? 'Passing.' : 'Failing.', '', ...(note.trim() === '' ? [] : [quoted(note), ''])]),
+    ].join('\n'),
   };
 }
 

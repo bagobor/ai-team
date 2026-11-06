@@ -8,6 +8,7 @@ import { ENV_PROFILE, reviewId, specId, techId, testPlanId } from '../apply/ids.
 import type { EngineDeps, Runner } from '../runner.ts';
 import type { MilestoneRow, ProjectRow, Store, TaskRow } from '../store.ts';
 import { ensureTask, isClosed, latestPin, milestoneReviewTask, noteOf, pinOf, qaTask, raiseHold, RETRY_OR_HALT, roundId, roundOf, specTask, techTask, testPlanTask, ticketTask, openHold, type TaskSpec, type TicketFields } from './tasks.ts';
+import { ensureTryWorktree, removeTryWorktree } from './try.ts';
 
 type HoldKind = 'smoke' | 'base_conflict' | 'base_refused';
 
@@ -230,7 +231,11 @@ async function afterMilestoneReview(deps: EngineDeps, project: ProjectRow, m: Mi
   if (!review) throw new Error(`${task.ticket_id} finished without ${reviewId(n)}`);
   const pins = [pinOf(review), await latestPin(deps, project, specId(n)), await latestPin(deps, project, `QA-REPORT-M${n}-${round}`)];
   const recommendation = await noteOf(store, task.id);
-  const hasHumanChecks = (await store.listCriteria(project.id, n)).some(isHumanCheck);
+  const checks = (await store.listCriteria(project.id, n)).filter(isHumanCheck).map(({ ac_id, text, verification }) => ({ ac: ac_id, text, how: verification.how }));
+  // The stakeholder tries the milestone as it stands, not as the base was when they last looked, so the checkout is made after the sync.
+  const { headSha } = await ensureIntegrationBranch(project.repo_path, n, project.base_branch);
+  const worktree = await ensureTryWorktree(deps, project, n, headSha);
+  const k = checks.length;
   await store.atomically(async (s) => {
     await s.raiseInbox({
       project_id: project.id,
@@ -240,11 +245,16 @@ async function afterMilestoneReview(deps: EngineDeps, project: ProjectRow, m: Mi
       ref: { kind: 'cp4', milestone: n },
       title: `Approve milestone ${n} to merge into ${project.base_branch}`,
       asked_by: 'pm',
-      why: `${hasHumanChecks ? 'Every automated criterion passed QA.' : 'Every acceptance criterion passed QA.'} Nothing reaches ${project.base_branch} until you approve.`,
+      why: `${k > 0 ? 'Every automated criterion passed QA.' : 'Every acceptance criterion passed QA.'} Nothing reaches ${project.base_branch} until you approve.${k > 0 ? ` Check the ${k} item${k === 1 ? '' : 's'} below yourself before approving.` : ''}`,
       blocks: [`Merging milestone ${n}`],
-      evidence: pins.map((pin) => ({ label: pin.split('@')[0]!, value: pin, pin })),
+      evidence: [
+        ...pins.map((pin) => ({ label: pin.split('@')[0]!, value: pin, pin })),
+        { label: 'Branch', value: `aiteam/m${n} at ${headSha.slice(0, 7)}` },
+        { label: 'Try it', value: worktree },
+      ],
       recommendation,
       options: [],
+      checks,
     });
     await s.setMilestonePhase(project.id, n, 'cp4');
   });
@@ -253,6 +263,9 @@ async function afterMilestoneReview(deps: EngineDeps, project: ProjectRow, m: Mi
 async function merging(deps: EngineDeps, project: ProjectRow, { n }: MilestoneRow): Promise<void> {
   const { store, paths } = deps;
   if (await requestOpen(deps, project)) return;
+  // Approval only gets here with every criterion judged, by QA or by the stakeholder at CP4. A milestone pushed to this phase any other way would put unchecked work on the base branch.
+  const unverified = (await store.listCriteria(project.id, n)).filter(({ status }) => status !== 'passing' && status !== 'waived').map(({ ac_id }) => ac_id);
+  if (unverified.length > 0) throw new Error(`Milestone ${n} can't merge: ${unverified.join(', ')} not verified`);
   const synced = await syncBaseIntoIntegration(project.repo_path, n, project.base_branch);
   if (!synced.ok) {
     await holdBaseConflict(store, project, n, synced.conflicts);
@@ -266,6 +279,8 @@ async function merging(deps: EngineDeps, project: ProjectRow, { n }: MilestoneRo
     await hold(store, project, n, 'base_refused', `Git refused to move ${project.base_branch} to milestone ${n}`, advanced.detail, `Commit or stash your changes in ${project.repo_path}, then retry. Nothing is half done.`);
     return;
   }
+  // What was tried is now on the base branch, so the checkout has nothing left to show.
+  await removeTryWorktree(deps, project, n);
   await store.atomically(async (s) => {
     await s.setMilestonePhase(project.id, n, 'merged');
     const others = await s.listMilestones(project.id);
