@@ -36,15 +36,23 @@ const PROFILE = {
   stakeholder_note: 'Node is all this needs',
 };
 
-const SPEC = { body: '# Convert temperatures\n\n## Scope\n\nCelsius and Fahrenheit, one file.\n', criteria: CRITERIA, stakeholder_note: 'A small first milestone' };
+// The Spec and the Tech Design carry this one. The Test Plan and QA cover the automated criteria only, because nothing but the stakeholder can judge it.
+const HUMAN_CHECK = {
+  id: 'AC-3',
+  text: 'The output reads naturally',
+  verification: { method: 'human', how: 'Run node tempconv.mjs c2f 100 and read the line it prints; it should say 212 with a unit, in plain words' },
+};
 
-const TECH = {
+const spec = (humanCheck: boolean) => ({ body: '# Convert temperatures\n\n## Scope\n\nCelsius and Fahrenheit, one file.\n', criteria: humanCheck ? [...CRITERIA, HUMAN_CHECK] : CRITERIA, stakeholder_note: 'A small first milestone' });
+
+// A Tech Design has to give every criterion a ticket, the stakeholder's included, so the first ticket takes the human check when the Spec has one.
+const tech = (humanCheck: boolean) => ({
   body: '# Design\n\n## Conversion\n\nFahrenheit is Celsius times nine fifths plus thirty two.\n\n## Arguments\n\nThe first argument names the direction and the second is the value.\n',
   tickets: [
-    { key: 'T-1', title: 'Convert Celsius to Fahrenheit', specialty: 'engineer', ac_refs: ['AC-1'], touches: ['tempconv.mjs'], depends_on: [], definition_of_done: [C2F_COMMAND], inputs: ['TECH-M1#conversion'], size: 'S', body: 'Add c2f and its command.\n' },
+    { key: 'T-1', title: 'Convert Celsius to Fahrenheit', specialty: 'engineer', ac_refs: humanCheck ? ['AC-1', 'AC-3'] : ['AC-1'], touches: ['tempconv.mjs'], depends_on: [], definition_of_done: [C2F_COMMAND], inputs: ['TECH-M1#conversion'], size: 'S', body: 'Add c2f and its command.\n' },
     { key: 'T-2', title: 'Convert Fahrenheit to Celsius', specialty: 'engineer', ac_refs: ['AC-2'], touches: ['tempconv.mjs'], depends_on: ['T-1'], definition_of_done: ['node tempconv.mjs f2c 212'], inputs: ['TECH-M1#arguments'], size: 'S', body: 'Add f2c and its command.\n' },
   ],
-};
+});
 
 const TEST_PLAN = {
   body: '# Test plan\n\nRun the commands, and the harness for the first one.\n',
@@ -72,12 +80,12 @@ const unaffected = (tickets: string[]) => ({ unaffected: true, rationale: 'The c
 const ROUNDS = [1, 2, 3];
 const TICKETS = ['M1-T-1', 'M1-T-2', 'M1-Q-1', 'M1-B-1'];
 
-export function m2Script(opts: { failFirstQa?: boolean } = {}): { byTask: Record<string, Record<string, unknown>> } {
+export function m2Script(opts: { failFirstQa?: boolean; humanCheck?: boolean } = {}): { byTask: Record<string, Record<string, unknown>> } {
   const byTask: Record<string, Record<string, unknown>> = {
     'DISCOVERY-PM': resultStep(DISCOVERY),
     'DISCOVERY-TL': resultStep(PROFILE),
-    'M1-SPEC': resultStep(SPEC),
-    'M1-TECH': resultStep(TECH),
+    'M1-SPEC': resultStep(spec(opts.humanCheck === true)),
+    'M1-TECH': resultStep(tech(opts.humanCheck === true)),
     'M1-TESTPLAN': resultStep(TEST_PLAN),
     'M1-T-1': okStep({ 'tempconv.mjs': ONE_WAY }, { summary: 'Added c2f', files_changed: ['tempconv.mjs'] }),
     'M1-T-2': okStep({ 'tempconv.mjs': opts.failFirstQa ? WRONG : RIGHT }, { summary: 'Added f2c', files_changed: ['tempconv.mjs'] }),

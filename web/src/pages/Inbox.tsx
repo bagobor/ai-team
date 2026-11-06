@@ -1,8 +1,8 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
-import type { InboxAnswer } from '../../../src/engine/inbox.ts';
+import type { InboxAnswer, InboxCheck } from '../../../src/engine/inbox.ts';
 import { answerInbox, ApiError, useInbox, useProjectEvents } from '../api.ts';
-import { ageLabel, documentLink, groupInbox, inboxLabel, projectPath, type InboxItem } from '../lib/inbox.ts';
+import { ageLabel, canApprove, canRequestChanges, checkMarks, documentLink, failedChecksComment, groupInbox, inboxLabel, projectPath, type InboxItem, type Marks } from '../lib/inbox.ts';
 import { Link } from '../router.tsx';
 
 const hasNotifications = () => 'Notification' in window;
@@ -20,10 +20,12 @@ function NotifyMe() {
   );
 }
 
-function Actions({ item, onAnswer, busy }: { item: InboxItem; onAnswer: (answer: InboxAnswer) => void; busy: boolean }) {
+function Actions({ item, marks, onAnswer, busy }: { item: InboxItem; marks: Marks; onAnswer: (answer: InboxAnswer) => void; busy: boolean }) {
   const [mode, setMode] = useState<'choose' | 'changes' | 'reject'>('choose');
   const [text, setText] = useState('');
   const blank = text.trim() === '';
+  const approvable = canApprove(item.checks, marks);
+  const changeable = canRequestChanges(item.checks, marks);
 
   if (item.type === 'question' && item.options.length > 0) {
     return (
@@ -61,10 +63,16 @@ function Actions({ item, onAnswer, busy }: { item: InboxItem; onAnswer: (answer:
           <textarea value={text} onChange={(event) => setText(event.target.value)} autoFocus />
         </label>
         <div className="acts">
+          {!changeable && <span className="muted">Say what was wrong with each failing check</span>}
           <button type="button" className="btn" onClick={() => setMode('choose')}>
             Back
           </button>
-          <button type="button" className="btn primary" disabled={busy || blank} onClick={() => onAnswer({ action: 'request_changes', comment: text.trim() })}>
+          <button
+            type="button"
+            className="btn primary"
+            disabled={busy || blank || !changeable}
+            onClick={() => onAnswer({ action: 'request_changes', comment: text.trim(), checks: checkMarks(item.checks, marks) })}
+          >
             Send changes
           </button>
         </div>
@@ -88,21 +96,68 @@ function Actions({ item, onAnswer, busy }: { item: InboxItem; onAnswer: (answer:
 
   return (
     <div className="acts">
+      {!changeable && <span className="muted">Say what was wrong with each failing check</span>}
+      {!approvable && <span className="muted">Mark every check passing to approve</span>}
       <button type="button" className="btn danger" disabled={busy} onClick={() => setMode('reject')}>
         Reject
       </button>
-      <button type="button" className="btn" disabled={busy} onClick={() => setMode('changes')}>
+      <button
+        type="button"
+        className="btn"
+        disabled={busy || !changeable}
+        onClick={() => {
+          // The words of the failed checks are a start for the comment, but never replace what the stakeholder already wrote.
+          if (blank) setText(failedChecksComment(item.checks, marks));
+          setMode('changes');
+        }}
+      >
         Request changes
       </button>
-      <button type="button" className="btn primary" disabled={busy} onClick={() => onAnswer({ action: 'approve' })}>
+      <button type="button" className="btn primary" disabled={busy || !approvable} onClick={() => onAnswer({ action: 'approve', checks: checkMarks(item.checks, marks) })}>
         Approve
       </button>
     </div>
   );
 }
 
+// The team can't judge these, so each one gets the stakeholder's verdict, and a failing one gets the reason.
+function Checks({ checks, marks, busy, onMark }: { checks: InboxCheck[]; marks: Marks; busy: boolean; onMark: (ac: string, mark: Marks[string]) => void }) {
+  return (
+    <div className="d-sec">
+      <h3>Checks for you</h3>
+      <ul className="d-checks">
+        {checks.map(({ ac, text, how }) => {
+          const mark = marks[ac] ?? { note: '' };
+          const failing = mark.status === 'failing';
+          return (
+            <li key={ac} className="d-check">
+              <span>
+                <span className="mono">{ac}</span> <b>{text}</b>
+              </span>
+              <span className="how">{how}</span>
+              <span className="acts" role="radiogroup" aria-label={`Result of ${ac}`}>
+                {(['passing', 'failing'] as const).map((status) => (
+                  <label key={status}>
+                    <input type="radio" name={`check-${ac}`} checked={mark.status === status} disabled={busy} onChange={() => onMark(ac, { ...mark, status })} />
+                    {status === 'passing' ? 'Passing' : 'Failing'}
+                  </label>
+                ))}
+              </span>
+              <label className="field">
+                {failing ? 'What was wrong? (required)' : 'Note (optional)'}
+                <input type="text" value={mark.note} required={failing} disabled={busy} onChange={(event) => onMark(ac, { ...mark, note: event.target.value })} />
+              </label>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
 function Detail({ item, onSettled }: { item: InboxItem; onSettled: (message: string) => void }) {
   const queryClient = useQueryClient();
+  const [marks, setMarks] = useState<Marks>({});
   const answer = useMutation({
     mutationFn: (body: InboxAnswer) => answerInbox(item.id, body),
     onSuccess: () => onSettled('Answer saved. Pick the next item from the list.'),
@@ -150,12 +205,13 @@ function Detail({ item, onSettled }: { item: InboxItem; onSettled: (message: str
           ))}
         </dl>
       </div>
+      {item.checks.length > 0 && <Checks checks={item.checks} marks={marks} busy={answer.isPending} onMark={(ac, mark) => setMarks((prev) => ({ ...prev, [ac]: mark }))} />}
       <div className="d-foot">
         <div className="d-note">
           {item.type === 'question' && <span className="muted">Team recommends: {item.recommendation}</span>}
           {answer.error && !(answer.error instanceof ApiError && answer.error.status === 409) && <p className="err">{answer.error.message}</p>}
         </div>
-        <Actions item={item} busy={answer.isPending} onAnswer={(body) => answer.mutate(body)} />
+        <Actions item={item} marks={marks} busy={answer.isPending} onAnswer={(body) => answer.mutate(body)} />
       </div>
     </div>
   );

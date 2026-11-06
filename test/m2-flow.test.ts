@@ -92,6 +92,25 @@ describe('the whole M2 flow', () => {
     expect((await project()).phase).toBe('closed');
   });
 
+  // The demo shows this CP4, so the script it uses has to take a human check all the way to a merge.
+  it('asks for a human check at CP4 when the script has one, and merges once it is marked passing', async () => {
+    expect(JSON.stringify(m2Script())).not.toContain('AC-3');
+    await start(m2Script({ humanCheck: true }));
+    await toCp4();
+
+    const cp4 = (await inbox()).find(({ ref }) => ref.kind === 'cp4');
+    expect(cp4?.checks).toEqual([{ ac: 'AC-3', text: 'The output reads naturally', how: expect.stringContaining('node tempconv.mjs c2f 100') }]);
+
+    await answer('cp4', { action: 'approve', checks: [{ ac: 'AC-3', status: 'passing', note: '' }] });
+    await e.drive(() => phaseIs('merged'));
+
+    expect((await criteria()).map(({ ac_id, status }) => [ac_id, status])).toEqual([
+      ['AC-1', 'passing'],
+      ['AC-2', 'passing'],
+      ['AC-3', 'passing'],
+    ]);
+  });
+
   it('holds main at its old commit until CP4 is approved', async () => {
     await start();
     const before = await revParse(repo, 'main');

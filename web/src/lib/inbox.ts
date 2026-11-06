@@ -1,4 +1,4 @@
-import type { InboxRef, InboxRow, InboxType } from '../../../src/engine/inbox.ts';
+import type { CheckMark, InboxCheck, InboxRef, InboxRow, InboxType } from '../../../src/engine/inbox.ts';
 
 export type InboxItem = InboxRow & { project: string; ageS: number };
 export type InboxGroup = { type: InboxType; label: string; items: InboxItem[] };
@@ -49,4 +49,34 @@ export function documentPin(hash: string): DocumentPin | null {
   } catch {
     return null;
   }
+}
+
+// A mark starts without a status: the stakeholder can type a note before choosing, and that isn't a verdict yet.
+export type Marks = Record<string, { status?: 'passing' | 'failing'; note: string }>;
+
+const noteOf = (marks: Marks, ac: string) => marks[ac]?.note.trim() ?? '';
+const failed = (checks: InboxCheck[], marks: Marks) => checks.filter(({ ac }) => marks[ac]?.status === 'failing');
+
+// The server only takes a verdict on a check, in the order the item lists them.
+export function checkMarks(checks: InboxCheck[], marks: Marks): CheckMark[] {
+  return checks.flatMap(({ ac }) => {
+    const status = marks[ac]?.status;
+    return status === undefined ? [] : [{ ac, status, note: noteOf(marks, ac) }];
+  });
+}
+
+// Approving would put a check nobody has judged, or one that failed, into the milestone as passing.
+export function canApprove(checks: InboxCheck[], marks: Marks): boolean {
+  return checks.every(({ ac }) => marks[ac]?.status === 'passing');
+}
+
+// The server refuses a failing mark without a note, so the page holds the request back until each one says what was wrong.
+export function canRequestChanges(checks: InboxCheck[], marks: Marks): boolean {
+  return failed(checks, marks).every(({ ac }) => noteOf(marks, ac) !== '');
+}
+
+// The engine lists the failed checks from the marks as well. This gives the stakeholder their words to edit rather than an empty box.
+export function failedChecksComment(checks: InboxCheck[], marks: Marks): string {
+  const lines = failed(checks, marks).map(({ ac, text }) => (noteOf(marks, ac) === '' ? `- ${ac} (${text})` : `- ${ac} (${text}): ${noteOf(marks, ac)}`));
+  return lines.length === 0 ? '' : ['Failed checks:', ...lines].join('\n');
 }

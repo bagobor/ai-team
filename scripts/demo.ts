@@ -10,7 +10,9 @@ import { resolvePaths } from '../src/paths.ts';
 import { runSetup } from '../src/setup/setup.ts';
 import { M2_BRIEF, m2Script } from '../test/fixtures/m2-script.ts';
 
-const PORT = 4780;
+// The stakeholder's own daemon sits on 4780, so a demo that has to run beside it takes another port.
+const PORT = Number(process.env.AITEAM_DEMO_PORT ?? 4780);
+if (!Number.isInteger(PORT) || PORT < 1 || PORT > 65_535) throw new Error(`AITEAM_DEMO_PORT must be a port number, not ${JSON.stringify(process.env.AITEAM_DEMO_PORT)}`);
 const FAKE_CLAUDE = fileURLToPath(new URL('../test/fixtures/fake-claude.mjs', import.meta.url));
 const WEB_INDEX = fileURLToPath(new URL('../web/dist/index.html', import.meta.url));
 const SLOW_LINE_MS = 1500;
@@ -59,7 +61,8 @@ writeFileSync(
   script,
   json({
     byTask: {
-      ...m2Script().byTask,
+      // CP4 asks for one check, so the Inbox has something to mark.
+      ...m2Script({ humanCheck: true }).byTask,
       'T-DEMO-1': { writeFiles: { 'src/slow.txt': 'slow' }, lines: slowLines(), lineDelayMs: SLOW_LINE_MS },
       'T-DEMO-1-R1': review,
       'T-DEMO-2': { writeFiles: { 'src/quick.txt': 'quick' }, lines: [INIT, say('A small change.'), result(0.03)] },

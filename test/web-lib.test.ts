@@ -2,7 +2,20 @@ import type { LineageGraph } from '../src/artifacts/lineage.ts';
 import type { ArtifactSummary, TaskSummary } from '../web/src/api.ts';
 import { BOARD_COLUMNS, boardColumns, boardSummary, currentMilestone, diffLines, selectTasks } from '../web/src/lib/board.ts';
 import { groupDocuments } from '../web/src/lib/documents.ts';
-import { ageLabel, documentLink, documentPin, groupInbox, inboxLabel, newPendingIds, pinParts, type InboxItem } from '../web/src/lib/inbox.ts';
+import {
+  ageLabel,
+  canApprove,
+  canRequestChanges,
+  checkMarks,
+  documentLink,
+  documentPin,
+  failedChecksComment,
+  groupInbox,
+  inboxLabel,
+  newPendingIds,
+  pinParts,
+  type InboxItem,
+} from '../web/src/lib/inbox.ts';
 import { layoutLineage, staleNotes } from '../web/src/lib/lineageLayout.ts';
 
 const item = (id: number, type: InboxItem['type']): InboxItem => ({ id, type, title: `Item ${id}` }) as InboxItem;
@@ -51,6 +64,63 @@ describe('inboxLabel', () => {
     [{ kind: 'qa_cap', milestone: 1 }, 8, 'Q-8'],
   ] as const)('names %j, item %i, as %s', (ref, id, label) => {
     expect(inboxLabel({ id, ref })).toBe(label);
+  });
+});
+
+describe('the checks the stakeholder marks', () => {
+  const checks = [
+    { ac: 'AC-2', text: 'Dodging feels fair', how: 'Play' },
+    { ac: 'AC-3', text: 'Sounds right', how: 'Listen' },
+  ];
+  const passing = { status: 'passing', note: '' } as const;
+
+  it('approves only when every check is marked passing', () => {
+    expect(canApprove(checks, { 'AC-2': passing })).toBe(false);
+    expect(canApprove(checks, { 'AC-2': passing, 'AC-3': { status: 'failing', note: 'quiet' } })).toBe(false);
+    expect(canApprove(checks, { 'AC-2': passing, 'AC-3': { note: 'half typed' } })).toBe(false);
+    expect(canApprove(checks, { 'AC-2': passing, 'AC-3': passing })).toBe(true);
+    expect(canApprove([], {})).toBe(true);
+  });
+
+  it('turns failed checks into the request comment', () => {
+    expect(failedChecksComment(checks, { 'AC-3': { status: 'failing', note: 'Too quiet' } })).toBe('Failed checks:\n- AC-3 (Sounds right): Too quiet');
+    expect(failedChecksComment(checks, {})).toBe('');
+  });
+
+  it('lists every failed check in the order of the checks, and skips the passing ones', () => {
+    const marks = { 'AC-3': { status: 'failing', note: ' Too quiet ' }, 'AC-2': { status: 'failing', note: 'Unfair' } } as const;
+
+    expect(failedChecksComment(checks, marks)).toBe('Failed checks:\n- AC-2 (Dodging feels fair): Unfair\n- AC-3 (Sounds right): Too quiet');
+    expect(failedChecksComment(checks, { 'AC-2': passing, 'AC-3': { status: 'failing', note: 'quiet' } })).toBe('Failed checks:\n- AC-3 (Sounds right): quiet');
+    expect(failedChecksComment(checks, { 'AC-2': passing })).toBe('');
+  });
+
+  it('leaves the colon off a failed check that has no note yet', () => {
+    expect(failedChecksComment(checks, { 'AC-3': { status: 'failing', note: '  ' } })).toBe('Failed checks:\n- AC-3 (Sounds right)');
+  });
+
+  it('sends only marked checks', () => {
+    expect(checkMarks(checks, { 'AC-3': { status: 'passing', note: '' } })).toEqual([{ ac: 'AC-3', status: 'passing', note: '' }]);
+    expect(checkMarks(checks, { 'AC-3': { note: 'typed before choosing' } })).toEqual([]);
+    expect(checkMarks([], {})).toEqual([]);
+  });
+
+  it('sends the marks in the order of the checks, with trimmed notes', () => {
+    const marks = { 'AC-3': { status: 'failing', note: ' Too quiet ' }, 'AC-2': passing } as const;
+
+    expect(checkMarks(checks, marks)).toEqual([
+      { ac: 'AC-2', status: 'passing', note: '' },
+      { ac: 'AC-3', status: 'failing', note: 'Too quiet' },
+    ]);
+  });
+
+  it('holds back a request for changes while a failed check has no note', () => {
+    expect(canRequestChanges(checks, {})).toBe(true);
+    expect(canRequestChanges(checks, { 'AC-2': passing, 'AC-3': { status: 'failing', note: 'quiet' } })).toBe(true);
+    expect(canRequestChanges(checks, { 'AC-3': { status: 'failing', note: '' } })).toBe(false);
+    expect(canRequestChanges(checks, { 'AC-3': { status: 'failing', note: '   ' } })).toBe(false);
+    expect(canRequestChanges(checks, { 'AC-2': { status: 'failing', note: 'unfair' }, 'AC-3': { status: 'failing', note: '' } })).toBe(false);
+    expect(canRequestChanges(checks, { 'AC-3': passing })).toBe(true);
   });
 });
 
