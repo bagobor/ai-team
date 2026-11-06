@@ -7,6 +7,9 @@ import { Link } from '../router.tsx';
 
 const hasNotifications = () => 'Notification' in window;
 
+// The engine's try server serves CP4's build on this machine, so only an address here is linked. Any other one stays text.
+const TRY_LINK = 'http://127.0.0.1:';
+
 function NotifyMe() {
   const [permission, setPermission] = useState(() => (hasNotifications() ? Notification.permission : 'denied'));
 
@@ -200,7 +203,18 @@ function Detail({ item, onSettled }: { item: InboxItem; onSettled: (message: str
           {item.evidence.map(({ label, value, pin }) => (
             <div key={`${label}:${value}`}>
               <dt className="mono">{label}</dt>
-              <dd>{pin === undefined ? value : <Link to={documentLink(item.project, pin)}>{value}</Link>}</dd>
+              <dd>
+                {pin !== undefined ? (
+                  <Link to={documentLink(item.project, pin)}>{value}</Link>
+                ) : value.startsWith(TRY_LINK) ? (
+                  // A tab of its own, so playing the build leaves the Inbox where it was.
+                  <a href={value} target="_blank" rel="noopener">
+                    {value}
+                  </a>
+                ) : (
+                  value
+                )}
+              </dd>
             </div>
           ))}
         </dl>

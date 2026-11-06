@@ -41,8 +41,8 @@ async function runSetup(env: SiteEnv, profile: ProfileData): Promise<{ ok: true 
 const missingRoot = (root: string) => `play.root ${root} does not exist after the build`;
 
 // The build ran code a worker wrote, which can leave the root as a link out of the checkout. The server only keeps
-// what it serves inside the root it is given, so the root itself is checked here.
-async function siteRoot(worktree: string, root: string): Promise<Built> {
+// what it serves inside the root it is given, so the root itself is checked here, and again before a build is served anew.
+export async function siteRoot(worktree: string, root: string): Promise<Built> {
   let real: string;
   try {
     const base = await realpath(worktree);
@@ -84,6 +84,9 @@ function judged(headSha: string, problems: PlayProblem[], ok: boolean, profile: 
   return { kind: 'failed', headSha, profile, problems: problems.length > 0 ? problems : [{ kind: 'load', detail: 'The play run failed and named no problem' }] };
 }
 
+// A file name may hold a space, # or %, which a URL reads as something else.
+export const entryPath = (play: PlayBlock): string => play.entry.split('/').map(encodeURIComponent).join('/');
+
 // Serves a built site for as long as `use` runs, and hands it the address of the entry page. The play gate and QA verify
 // both play a checkout this way, so what makes the root safe to serve is checked in one place.
 export async function servePage<T>(root: string, play: PlayBlock, use: (page: string) => Promise<T>): Promise<{ ok: true; value: T } | { ok: false; why: string }> {
@@ -99,9 +102,7 @@ export async function servePage<T>(root: string, play: PlayBlock, use: (page: st
   try {
     // The root was checked before the server resolved it, and a process the sandbox can't stop may have swapped it in between.
     if (server.root !== root) return { ok: false, why: `play.root ${play.root} changed while the engine began serving it` };
-    // A file name may hold a space, # or %, which a URL reads as something else.
-    const page = play.entry.split('/').map(encodeURIComponent).join('/');
-    return { ok: true, value: await use(server.url + page) };
+    return { ok: true, value: await use(server.url + entryPath(play)) };
   } finally {
     await server.close();
   }
@@ -126,11 +127,15 @@ async function playHead(deps: EngineDeps, project: ProjectRow, n: number, profil
   });
 }
 
+// A profile published before the play gate has no play block at all, and is played no more than one with null.
+export async function playProfile(deps: EngineDeps, project: ProjectRow): Promise<{ profile: ProfileData; play: PlayBlock | null }> {
+  const profile = (await deps.artifacts.read(project, ENV_PROFILE)).fields.data as ProfileData;
+  return { profile, play: profile.play ?? null };
+}
+
 // Builds, serves and smoke-plays the integration head before a QA round, so a game that never starts doesn't reach QA.
 export async function runPlayGate(deps: EngineDeps, project: ProjectRow, n: number): Promise<PlayGateResult> {
-  const profile = (await deps.artifacts.read(project, ENV_PROFILE)).fields.data as ProfileData;
-  // A profile published before the play gate has no play block at all, and is played no more than one with null.
-  const play = profile.play ?? null;
+  const { profile, play } = await playProfile(deps, project);
   if (play === null) return { kind: 'skipped' };
   const result = await playHead(deps, project, n, profile, play);
   await deps.store.logEvent(project.id, 'play.result', {

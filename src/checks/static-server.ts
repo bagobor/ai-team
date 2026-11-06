@@ -10,7 +10,8 @@ export type StaticServer = {
   port: number;
   // The path every request is held to, resolved once at start. Empty with mounts, which each have their own.
   root: string;
-  mount(prefix: string, root: string): void;
+  // Returns the path it resolved the root to, which is what it serves the prefix from.
+  mount(prefix: string, root: string): string;
   unmount(prefix: string): void;
   close(): Promise<void>;
 };
@@ -153,7 +154,9 @@ export async function serveStatic(root: string, opts: { port?: number; mounts?: 
           if (!opts.mounts) throw new Error('This server was started without mounts');
           const key = trimSlashes(prefix);
           if (key === '') throw new Error('A mount needs a prefix');
-          mounts.set(key, realpathSync(dir));
+          const real = realpathSync(dir);
+          mounts.set(key, real);
+          return real;
         },
         unmount(prefix) {
           mounts.delete(trimSlashes(prefix));

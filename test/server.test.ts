@@ -596,6 +596,27 @@ describe('the API', () => {
       expect(res.status).toBe(403);
       expect((await e.store.getInbox(id))!.state).toBe('pending');
     });
+
+    // The try server, on the port after this one, serves what an agent built. A page it serves must not be able to answer the Inbox.
+    const TRY_ORIGIN = `http://127.0.0.1:${PORT + 1}`;
+
+    it('refuses an answer posted from the try origin', async () => {
+      const { id } = await approval();
+
+      const res = await answer(id, { action: 'approve' }, { origin: TRY_ORIGIN });
+
+      expect(res.status).toBe(403);
+      expect((await e.store.getInbox(id))!.state).toBe('pending');
+    });
+
+    it('sends no CORS header to the try origin', async () => {
+      await approval();
+
+      const res = await req('/api/inbox', { headers: { origin: TRY_ORIGIN } });
+
+      expect(res.headers.get('access-control-allow-origin')).toBeNull();
+      expect(res.status).toBe(403);
+    });
   });
 
   describe('documents', () => {

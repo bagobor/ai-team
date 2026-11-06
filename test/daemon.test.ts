@@ -19,7 +19,7 @@ import { Store, type TaskRow } from '../src/engine/store.ts';
 import { EventLog } from '../src/events.ts';
 import { resolvePaths, type Paths } from '../src/paths.ts';
 import { runSetup } from '../src/setup/setup.ts';
-import { okStep, resultLine, ticket, until } from './helpers/engine.ts';
+import { freePort, okStep, resultLine, ticket, until } from './helpers/engine.ts';
 import { makeRepo, tempDir } from './helpers/repo.ts';
 
 const CLI = fileURLToPath(new URL('../src/cli.ts', import.meta.url));
@@ -36,16 +36,6 @@ function isAlive(pid: number): boolean {
   } catch {
     return false;
   }
-}
-
-async function freePort(): Promise<number> {
-  const probe = createServer();
-  probe.listen(0, '127.0.0.1');
-  await once(probe, 'listening');
-  const { port } = probe.address() as { port: number };
-  probe.close();
-  await once(probe, 'close');
-  return port;
 }
 
 async function statusOf(port: number): Promise<number | null> {
@@ -434,11 +424,46 @@ describe('the daemon', () => {
 
       await expect(startDaemon({ paths: broken, config: config() })).rejects.toThrow();
 
+      // The try server's port too.
+      for (const held of [port, port + 1]) {
+        const again = createServer();
+        again.listen(held, '127.0.0.1');
+        await once(again, 'listening');
+        again.close();
+        await once(again, 'close');
+      }
+    });
+
+    it('serves CP4 builds on the port after its own, and stops serving with it', async () => {
+      const daemon = await startDaemon({ paths, config: config() });
+
+      // Nothing is mounted until a milestone reaches CP4, so the try server answers, but with nothing to serve.
+      expect(await statusOf(port + 1)).toBe(404);
+      await daemon.stop();
+      expect(await statusOf(port + 1)).toBeNull();
+    });
+
+    it('refuses to start without the try port, names it, and touches nothing', async () => {
+      const holder = createServer();
+      holder.listen(port + 1, '127.0.0.1');
+      await once(holder, 'listening');
+      const t = await addTask();
+      await store.setTaskState(t.id, 'ready');
+      await store.setTaskState(t.id, 'running');
+      const before = (await db.selectFrom('events').selectAll().execute()).length;
+
+      await expect(startDaemon({ paths, config: config() })).rejects.toThrow(`port ${port + 1}`);
+
+      expect(await stateOf(t)).toBe('running');
+      expect((await db.selectFrom('events').selectAll().execute()).length).toBe(before);
+      // The API's own port is let go, so the daemon can start once the try port is free.
       const again = createServer();
       again.listen(port, '127.0.0.1');
       await once(again, 'listening');
       again.close();
       await once(again, 'close');
+      holder.close();
+      await once(holder, 'close');
     });
   });
 });

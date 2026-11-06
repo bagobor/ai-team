@@ -1,7 +1,6 @@
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { rmSync, writeFileSync } from 'node:fs';
-import { createServer } from 'node:net';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { stringify } from 'yaml';
@@ -9,7 +8,7 @@ import { loadConfig } from '../src/config.ts';
 import { startDaemon } from '../src/daemon.ts';
 import { resolvePaths, type Paths } from '../src/paths.ts';
 import { runSetup } from '../src/setup/setup.ts';
-import { ticket } from './helpers/engine.ts';
+import { freePort, ticket } from './helpers/engine.ts';
 import { makeRepo, tempDir } from './helpers/repo.ts';
 
 const CLI = fileURLToPath(new URL('../src/cli.ts', import.meta.url));
@@ -17,16 +16,6 @@ const FAKE_CLAUDE = fileURLToPath(new URL('./fixtures/fake-claude.mjs', import.m
 const PROJECT_ROOT = fileURLToPath(new URL('..', import.meta.url));
 
 type Outcome = { code: number | null; stdout: string; stderr: string };
-
-async function freePort(): Promise<number> {
-  const probe = createServer();
-  probe.listen(0, '127.0.0.1');
-  await once(probe, 'listening');
-  const { port } = probe.address() as { port: number };
-  probe.close();
-  await once(probe, 'close');
-  return port;
-}
 
 describe('the aiteam command', () => {
   let root: string;

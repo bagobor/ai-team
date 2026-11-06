@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { sectionText } from '../src/artifacts/format.ts';
@@ -16,6 +16,7 @@ import { addProject } from '../src/engine/intake.ts';
 import { AlreadyAnswered, type InboxRef, type InboxRow } from '../src/engine/inbox.ts';
 import { Runner } from '../src/engine/runner.ts';
 import { Store, type ProjectRow, type TaskRow } from '../src/engine/store.ts';
+import { TryServer } from '../src/engine/try-server.ts';
 import type { WorkOrder } from '../src/engine/workorder.ts';
 import { EventLog } from '../src/events.ts';
 import { mergeIntoBranch } from '../src/git/merge.ts';
@@ -60,15 +61,17 @@ const failing = (ac: string) => ({
   summary: 'One failure',
 });
 const REVIEW = { body: '# How it went\n', known_issues: [], deviations: [], stakeholder_note: 'Ship it' };
+// What CP4 says when Try it is a checkout, which the next CP4 replaces.
+const DISPOSABLE = 'The checkout is replaced at the next CP4 and removed when the milestone merges or is rejected, so edits there are lost.';
 const revised = (ticket_decisions: { ticket: string; decision: string; rationale: string }[] = [], tickets: unknown[] = []) => ({ unaffected: true, rationale: 'Still right', body: null, coverage: null, ticket_decisions, tickets });
 const stillValid = (ticket: string) => ({ ticket, decision: 'still_valid', rationale: 'Still right' });
 const criterionChange = { target_artifact: 'SPEC-M1', target_ac: 'AC-1', proposed_text: 'The first thing works faster', rationale: 'It was too slow', evidence: 'A timing run', raised_by: 'engineer' };
 const scopeChange = { target_artifact: 'SPEC-M1', target_section: 'scope', proposed_text: 'Smaller.', rationale: 'Less to do', evidence: 'A look at the code', raised_by: 'engineer' };
 
-type Harness = TestEngine & { conductor: Conductor; project: ProjectRow };
+type Harness = TestEngine & { conductor: Conductor; project: ProjectRow; tryServer: TryServer };
 type Restarted = Harness;
 
-const open: TestEngine[] = [];
+const open: { cleanup(): Promise<void> }[] = [];
 const reopened: { destroy(): Promise<void> }[] = [];
 
 afterEach(async () => {
@@ -80,7 +83,9 @@ afterEach(async () => {
 async function harness(): Promise<Harness> {
   const e = await makeEngine({ steps: [] });
   open.push(e);
-  return Object.assign(e, { conductor: new Conductor(e, e.runner), project: await projectOf(e) });
+  const tryServer = await TryServer.start(0);
+  open.push({ cleanup: () => tryServer.close() });
+  return Object.assign(e, { tryServer, conductor: new Conductor(e, e.runner), project: await projectOf(e) });
 }
 
 // What a restart leaves: the same files and database, and nothing in memory. No tick has run yet.
@@ -642,6 +647,9 @@ describe('flow', () => {
 
     expect(cp4.evidence).toContainEqual({ label: 'Branch', value: expect.stringMatching(/^aiteam\/m1 at [0-9a-f]{7}$/) });
     expect(cp4.evidence).toContainEqual({ label: 'Try it', value: tryPath });
+    expect(cp4.why.endsWith(` ${DISPOSABLE}`)).toBe(true);
+    // Without a play block there is nothing to serve, though the engine has a try server.
+    expect(h.tryServer.mounted('p', 1)).toBe(false);
     expect(existsSync(join(tryPath, '.git'))).toBe(true);
     expect(await revParse(tryPath, 'HEAD')).toBe(await revParse(h.repoPath, 'refs/heads/aiteam/m1'));
     expect(cp4.evidence.find(({ label }) => label === 'Branch')!.value).toContain((await revParse(h.repoPath, 'refs/heads/aiteam/m1')).slice(0, 7));
@@ -1438,6 +1446,174 @@ describe('the play gate', () => {
 
     expect(existsSync(worktreePath(h.paths, 'p', 'M1-play', 1))).toBe(false);
     expect(run(h.repoPath, 'branch', '--list', 'aiteam/play/*')).toBe('');
+  });
+
+  describe('trying the build at CP4', () => {
+    // Each build leaves a line in built.log, so a test can count the builds in a checkout.
+    const BUILT = { ...PLAY_PROFILE, commands: { ...PLAY_PROFILE.commands, build: 'mkdir -p dist && cp index.html dist/ && echo built >> built.log' }, play: { ...PLAY, root: 'dist' } };
+    // Only the try checkout is named M1-try-a1, so the play gate's build passes and CP4's fails.
+    const onlyInTry = (command: string) => ({ ...PLAY_PROFILE, commands: { ...PLAY_PROFILE.commands, build: `case "$(pwd -P)" in */M1-try-a1) ${command};; esac` } });
+
+    const tryIt = (cp4: InboxRow) => cp4.evidence.find(({ label }) => label === 'Try it')!.value;
+    const linkOf = (h: Harness) => `${h.tryServer.url}${h.project.name}/m1/index.html`;
+    const tryPathOf = (h: Harness) => worktreePath(h.paths, 'p', 'M1-try', 1);
+    const buildsIn = (dir: string) => (existsSync(join(dir, 'built.log')) ? readFileSync(join(dir, 'built.log'), 'utf8').split('\n').filter(Boolean).length : 0);
+    const fetched = async (url: string) => {
+      const res = await fetch(url);
+      return { status: res.status, body: await res.text() };
+    };
+
+    // The play gate passes, so the milestone reaches CP4 with the game merged.
+    async function toPlayableCp4(h: Harness, profile: unknown = PLAY_PROFILE): Promise<InboxRow> {
+      h.player = fakePlayer(playResult());
+      return toCp4(h, { profile }, { 'index.html': PAGE });
+    }
+
+    // Requests changes, lands `page` on the integration branch, and goes round to the next CP4.
+    async function toNextCp4(h: Harness, cp4: InboxRow, page: string): Promise<InboxRow> {
+      await h.store.answerInbox(cp4.id, { action: 'request_changes', comment: 'Make it better' });
+      await h.conductor.tick();
+      commitOn(h, 'aiteam/m1', { 'index.html': page });
+      await finish(h, 'M1-REPLAN-1', revised());
+      await h.conductor.tick();
+      await finish(h, 'M1-QA-2', PASS);
+      await h.conductor.tick();
+      await finish(h, 'M1-REVIEW-2', REVIEW);
+      await h.conductor.tick();
+      return pending(h, 'cp4');
+    }
+
+    it('links the playable build at CP4', async () => {
+      const h = await harness();
+      const cp4 = await toPlayableCp4(h);
+
+      expect(tryIt(cp4)).toBe(`${h.tryServer.url}${h.project.name}/m1/index.html`);
+      expect(await fetched(tryIt(cp4))).toEqual({ status: 200, body: PAGE });
+      expect(cp4.why).not.toContain(DISPOSABLE);
+    });
+
+    it('links the entry under the build output, escaped as the play gate escapes it', async () => {
+      const h = await harness();
+      const cp4 = await toPlayableCp4(h, { ...BUILT, commands: { ...BUILT.commands, build: 'mkdir -p dist && cp index.html "dist/play #1.html"' }, play: { ...BUILT.play, entry: 'play #1.html' } });
+
+      expect(tryIt(cp4)).toBe(`${h.tryServer.url}p/m1/play%20%231.html`);
+      expect(await fetched(tryIt(cp4))).toEqual({ status: 200, body: PAGE });
+    });
+
+    it('serves the CP4 build again after a restart', async () => {
+      const h = await harness();
+      const cp4 = await toPlayableCp4(h, BUILT);
+      // What a restart leaves: a try server with nothing mounted.
+      h.tryServer.unmount(h.project.name, 1);
+      expect((await fetched(tryIt(cp4))).status).toBe(404);
+
+      await h.conductor.tick();
+
+      expect(await milestonePhase(h)).toBe('cp4');
+      expect(await fetched(tryIt(cp4))).toEqual({ status: 200, body: PAGE });
+      expect(buildsIn(tryPathOf(h))).toBe(1);
+    });
+
+    it('serves nothing, and builds nothing, when the try root fails its check after a restart', async () => {
+      const h = await harness();
+      const cp4 = await toPlayableCp4(h, BUILT);
+      h.tryServer.unmount(h.project.name, 1);
+      const outside = tempDir('aiteam-outside-');
+      writeFileSync(join(outside, 'secret.txt'), 'outside-secret');
+      rmSync(join(tryPathOf(h), 'dist'), { recursive: true });
+      symlinkSync(outside, join(tryPathOf(h), 'dist'));
+
+      await h.conductor.tick();
+      await h.conductor.tick();
+
+      expect(h.tryServer.mounted(h.project.name, 1)).toBe(false);
+      expect((await fetched(tryIt(cp4).replace('index.html', 'secret.txt'))).status).toBe(404);
+      expect(buildsIn(tryPathOf(h))).toBe(1);
+      expect(await inboxOf(h, 'engine_error')).toEqual([]);
+      expect(await milestonePhase(h)).toBe('cp4');
+      rmSync(outside, { recursive: true, force: true });
+    });
+
+    it('stops serving once the milestone merges', async () => {
+      const h = await harness();
+      const cp4 = await toPlayableCp4(h);
+      await h.store.answerInbox(cp4.id, { action: 'approve' });
+      await h.conductor.tick();
+
+      expect(await milestonePhase(h)).toBe('merged');
+      expect(h.tryServer.mounted(h.project.name, 1)).toBe(false);
+      expect((await fetched(tryIt(cp4))).status).toBe(404);
+    });
+
+    it('stops serving once the stakeholder rejects the milestone', async () => {
+      const h = await harness();
+      const cp4 = await toPlayableCp4(h);
+      await h.store.answerInbox(cp4.id, { action: 'reject' });
+      await h.conductor.tick();
+
+      expect(h.tryServer.mounted(h.project.name, 1)).toBe(false);
+      expect((await fetched(tryIt(cp4))).status).toBe(404);
+    });
+
+    it('still asks at CP4 when the build fails there, and offers the checkout instead', async () => {
+      const h = await harness();
+      const cp4 = await toPlayableCp4(h, onlyInTry('echo try-broke; exit 5'));
+
+      expect(tryIt(cp4)).toMatch(/^The build failed here: The build command failed, so there was nothing to play\.\n/);
+      expect(tryIt(cp4)).toContain('try-broke');
+      expect(tryIt(cp4).endsWith(`. The checkout is at ${tryPathOf(h)}.`)).toBe(true);
+      expect(cp4.why.endsWith(` ${DISPOSABLE}`)).toBe(true);
+      expect(await milestonePhase(h)).toBe('cp4');
+
+      // The checkout is play.root here and passes the root check, but CP4 linked to no build, so a later tick serves none.
+      await h.conductor.tick();
+      expect(h.tryServer.mounted(h.project.name, 1)).toBe(false);
+      expect((await fetched(linkOf(h))).status).toBe(404);
+    });
+
+    it('still asks at CP4 when the build cannot be served, and offers the checkout instead', async () => {
+      const h = await harness();
+      vi.spyOn(h.tryServer, 'mount').mockImplementation(() => {
+        throw new Error('the root went away');
+      });
+      const cp4 = await toPlayableCp4(h);
+
+      expect(tryIt(cp4)).toMatch(/^The build failed here: .*the root went away/);
+      expect(tryIt(cp4).endsWith(`. The checkout is at ${tryPathOf(h)}.`)).toBe(true);
+      expect(cp4.why.endsWith(` ${DISPOSABLE}`)).toBe(true);
+    });
+
+    it('serves the new build at the next CP4', async () => {
+      const h = await harness();
+      const first = await toPlayableCp4(h);
+      const second = await toNextCp4(h, first, FIXED);
+
+      expect(tryIt(second)).toBe(tryIt(first));
+      expect(await fetched(tryIt(second))).toEqual({ status: 200, body: FIXED });
+    });
+
+    it('stops serving the last build when the next CP4 fails to build', async () => {
+      const h = await harness();
+      const first = await toPlayableCp4(h, onlyInTry('! grep -q fixed index.html'));
+      expect(await fetched(tryIt(first))).toEqual({ status: 200, body: PAGE });
+
+      const second = await toNextCp4(h, first, FIXED);
+
+      expect(tryIt(second)).toMatch(/^The build failed here: /);
+      expect((await fetched(tryIt(first))).status).toBe(404);
+    });
+
+    it('offers the checkout, and builds nothing, on an engine without a try server', async () => {
+      const h = await harness();
+      delete (h as Partial<Harness>).tryServer;
+      const cp4 = await toPlayableCp4(h, BUILT);
+
+      expect(tryIt(cp4)).toBe(tryPathOf(h));
+      expect(buildsIn(tryPathOf(h))).toBe(0);
+      expect(cp4.why.endsWith(` ${DISPOSABLE}`)).toBe(true);
+      await h.conductor.tick();
+      expect(await inboxOf(h, 'engine_error')).toEqual([]);
+    });
   });
 });
 

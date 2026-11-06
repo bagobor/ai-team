@@ -24,6 +24,7 @@ import { isHarnessTicket, protectedPaths, type ProtectedPath } from './protected
 import { reviewInputs } from './review-inputs.ts';
 import { roleInputs, writeReference, type Reference } from './role-inputs.ts';
 import type { AttemptPatch, AttemptRow, ProjectRow, Store, TaskRow } from './store.ts';
+import type { TryServer } from './try-server.ts';
 import type { WorkOrder } from './workorder.ts';
 
 export type EngineDeps = {
@@ -36,6 +37,8 @@ export type EngineDeps = {
   artifacts: ArtifactStore;
   // Plays the built product in a browser. Without one, a project with something to play holds instead of passing unplayed.
   player?: Player;
+  // Serves each milestone's build at CP4 for the stakeholder to play. Without one, CP4 offers the checkout instead.
+  tryServer?: TryServer;
   now?: () => Date;
 };
 

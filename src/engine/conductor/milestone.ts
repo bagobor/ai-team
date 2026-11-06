@@ -10,7 +10,7 @@ import type { MilestoneRow, ProjectRow, Store, TaskRow } from '../store.ts';
 import { withHeadWorktree } from './head-worktree.ts';
 import { playBug, problemLine, runPlayGate } from './play-gate.ts';
 import { ensureTask, isClosed, latestPin, milestoneReviewTask, noteOf, pinOf, qaTask, raiseHold, RETRY_OR_HALT, roundId, roundOf, specTask, techTask, testPlanTask, ticketTask, openHold, type TaskSpec, type TicketFields } from './tasks.ts';
-import { ensureTryWorktree, removeTryWorktree } from './try.ts';
+import { offerTry, removeTryWorktree, serveTryAgain } from './try.ts';
 
 type HoldKind = 'smoke' | 'base_conflict' | 'base_refused' | 'play';
 
@@ -18,6 +18,9 @@ const HOLD_KINDS = ['smoke', 'base_conflict', 'base_refused', 'qa_cap', 'play'] 
 const STALE_BLOCKS: readonly string[] = ['tech_design', 'test_plan', 'ticket'];
 
 const byId = (tasks: TaskRow[], id: string) => tasks.find(({ ticket_id }) => ticket_id === id);
+
+// A checkout offered at CP4 is the engine's, not the stakeholder's, so they are told not to keep work in it.
+const DISPOSABLE = 'The checkout is replaced at the next CP4 and removed when the milestone merges or is rejected, so edits there are lost.';
 
 // A problem's own text may already end a sentence, and a second full stop would read as a typo.
 const sentence = (text: string) => (/[.!?]$/.test(text) ? text : `${text}.`);
@@ -265,7 +268,7 @@ async function afterMilestoneReview(deps: EngineDeps, project: ProjectRow, m: Mi
   const checks = (await store.listCriteria(project.id, n)).filter(isHumanCheck).map(({ ac_id, text, verification }) => ({ ac: ac_id, text, how: verification.how }));
   // The stakeholder tries the milestone as it stands, not as the base was when they last looked, so the checkout is made after the sync.
   const { headSha } = await ensureIntegrationBranch(project.repo_path, n, project.base_branch);
-  const worktree = await ensureTryWorktree(deps, project, n, headSha);
+  const tryIt = await offerTry(deps, project, n, headSha);
   const k = checks.length;
   await store.atomically(async (s) => {
     await s.raiseInbox({
@@ -276,12 +279,12 @@ async function afterMilestoneReview(deps: EngineDeps, project: ProjectRow, m: Mi
       ref: { kind: 'cp4', milestone: n },
       title: `Approve milestone ${n} to merge into ${project.base_branch}`,
       asked_by: 'pm',
-      why: `${k > 0 ? 'Every automated criterion passed QA.' : 'Every acceptance criterion passed QA.'} Nothing reaches ${project.base_branch} until you approve.${k > 0 ? ` Check the ${k} item${k === 1 ? '' : 's'} below yourself before approving.` : ''}`,
+      why: `${k > 0 ? 'Every automated criterion passed QA.' : 'Every acceptance criterion passed QA.'} Nothing reaches ${project.base_branch} until you approve.${k > 0 ? ` Check the ${k} item${k === 1 ? '' : 's'} below yourself before approving.` : ''}${tryIt.link ? '' : ` ${DISPOSABLE}`}`,
       blocks: [`Merging milestone ${n}`],
       evidence: [
         ...pins.map((pin) => ({ label: pin.split('@')[0]!, value: pin, pin })),
         { label: 'Branch', value: `aiteam/m${n} at ${headSha.slice(0, 7)}` },
-        { label: 'Try it', value: worktree },
+        { label: 'Try it', value: tryIt.value },
       ],
       recommendation,
       options: [],
@@ -342,6 +345,8 @@ export async function advanceMilestone(deps: EngineDeps, runner: Runner, project
       return verify(deps, project, m, own);
     case 'milestone_review':
       return afterMilestoneReview(deps, project, m, own);
+    case 'cp4':
+      return serveTryAgain(deps, project, m.n);
     case 'merging':
       return merging(deps, project, m);
     default:

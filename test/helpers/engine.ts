@@ -1,4 +1,6 @@
+import { once } from 'node:events';
 import { chmodSync, existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { createServer } from 'node:net';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -169,6 +171,30 @@ export async function until<T>(condition: () => Promise<T | undefined | false | 
     if (value) return value;
     if (Date.now() > deadline) throw new Error('condition not met in time');
     await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+}
+
+// Listens on the port and lets it go, so it says whether something else holds the port.
+async function isFree(port: number): Promise<boolean> {
+  const probe = createServer();
+  try {
+    // once() rejects on the 'error' a port in use emits.
+    await once(probe.listen(port, '127.0.0.1'), 'listening');
+  } catch {
+    return false;
+  }
+  probe.close();
+  await once(probe, 'close');
+  return true;
+}
+
+// A daemon takes the port after its own for the try server, so a test daemon needs both free. macOS hands out port 0's
+// ports in order from 49152, so the port after one taken that way is the next that any server started on port 0 gets.
+// These come from far below that range, at random, and nowhere near the 4780 a real daemon uses.
+export async function freePort(): Promise<number> {
+  for (;;) {
+    const port = 20_000 + Math.floor(Math.random() * 20_000);
+    if ((await isFree(port)) && (await isFree(port + 1))) return port;
   }
 }
 
