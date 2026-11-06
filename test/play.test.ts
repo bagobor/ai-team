@@ -1,12 +1,13 @@
 import { execFileSync, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { once } from 'node:events';
-import { chmodSync, existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo, Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { connectCdp } from '../src/checks/cdp.ts';
+import { liveGroups } from '../src/checks/chrome.ts';
 import {
   blankProblem,
   chromePath,
@@ -22,6 +23,14 @@ import { DEFAULT_CONFIG } from '../src/config.ts';
 import { groupAlive, killGroupNow } from '../src/proc.ts';
 import { until } from './helpers/engine.ts';
 import { tempDir } from './helpers/repo.ts';
+
+// No process can be made to survive SIGKILL, so to play out a group that will not die, a test has every group read
+// as alive for a while.
+const stuck = vi.hoisted(() => ({ on: false }));
+vi.mock('../src/proc.ts', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../src/proc.ts')>();
+  return { ...real, groupAlive: (pid: number) => stuck.on || real.groupAlive(pid) };
+});
 
 const config = DEFAULT_CONFIG;
 const chrome = chromePath(config);
@@ -87,6 +96,15 @@ describe('keys and scripts', () => {
         expect.stringMatching(/Step 1 needs a key, a wait_ms or an eval/),
       ]);
     }
+    // A step that is two kinds at once would be counted as one and played as the other.
+    const both = { key: 'Space', hold_ms: 60_000, wait_ms: 0 } as unknown as PlayStep;
+    const twice = scriptProblems({ steps: [both], expect: 'true' });
+    expect(twice).toContainEqual('Step 1 has more than one of key, wait_ms and eval');
+    expect(twice).toContainEqual(expect.stringMatching(/at most 20000 ms in all, not 60000 ms/));
+    const withEval = { wait_ms: 10, eval: 'go()' } as unknown as PlayStep;
+    expect(scriptProblems({ steps: [{ wait_ms: 1 }, withEval], expect: 'true' })).toEqual([
+      'Step 2 has more than one of key, wait_ms and eval',
+    ]);
   });
 
   it('counts a screenshot whose colors could not be read as blank', () => {
@@ -187,7 +205,8 @@ describe('chromePlayer without a working Chrome', () => {
     const fake = fakeChrome(
       'for j in 1 2 3 4; do (i=0; while [ $i -lt 40 ]; do sleep 60 & i=$((i+1)); done; wait) & done; wait',
     );
-    const script = join(tempDir('aiteam-play-exit-'), 'run.mts');
+    const scratch = tempDir('aiteam-play-exit-');
+    const script = join(scratch, 'run.mts');
     writeFileSync(
       script,
       [
@@ -207,19 +226,40 @@ describe('chromePlayer without a working Chrome', () => {
       cwd: PROJECT,
       stdio: 'ignore',
     });
-    const [code] = await once(child, 'exit');
-
-    expect(code).toBe(0);
-    const pid = fake.pid();
-    // Signalling group 0 would mean the test's own.
-    expect(pid).toBeGreaterThan(1);
+    // Signalling group 0 would mean the test's own, so a pid that was never written reads as none.
+    const pid = () => (existsSync(join(fake.dir, 'pid')) ? fake.pid() || 0 : 0);
     try {
-      await until(async () => !groupAlive(pid), 3_000);
+      // A child that never exits fails the test rather than hanging it.
+      const [code] = await once(child, 'exit', { signal: AbortSignal.timeout(10_000) });
+
+      expect(code).toBe(0);
+      expect(pid()).toBeGreaterThan(1);
+      await until(async () => !groupAlive(pid()), 3_000);
+      expect(existsSync(fake.profile())).toBe(false);
     } finally {
-      // Whatever the outcome, the fake must not outlive the test.
-      killGroupNow(pid);
+      // Whatever the outcome, neither the child nor the fake may outlive the test.
+      child.kill('SIGKILL');
+      if (pid() > 1) killGroupNow(pid());
+      rmSync(scratch, { recursive: true, force: true });
     }
-  });
+  }, 20_000);
+
+  it('gives up on a group that will not die, says so, and stops tracking it', async () => {
+    const fake = fakeChrome('exit 3');
+    const player = chromePlayer({ ...config, chrome: { binary: fake.binary } });
+    let result: PlayResult;
+    stuck.on = true;
+    try {
+      result = await player.smoke(NOWHERE, []);
+    } finally {
+      stuck.on = false;
+    }
+
+    expect(result.log).toContainEqual(expect.stringMatching(new RegExp(`group ${fake.pid()} could not be stopped`)));
+    // A pid the system hands out again must never be signalled on the engine's behalf.
+    expect(liveGroups()).not.toContain(fake.pid());
+    expect(existsSync(fake.profile())).toBe(false);
+  }, 20_000);
 
   it('fails, naming the path, when Chrome exits before DevTools opens, and removes the profile', async () => {
     const fake = fakeChrome('exit 3');

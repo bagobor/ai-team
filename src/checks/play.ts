@@ -42,13 +42,15 @@ const DEFAULT_HOLD_MS = 50;
 const isMs = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v) && v >= 0;
 
 // A key's hold counts as waiting, since the run spends that time too. A step that isn't even an object is reported
-// by scriptProblems, so here it waits nothing.
+// by scriptProblems, so here it waits nothing. A key comes before a wait here, as it does in scriptSteps.
 function waitOf(step: unknown): number {
   if (typeof step !== 'object' || step === null) return 0;
   const { wait_ms, hold_ms } = step as { wait_ms?: unknown; hold_ms?: unknown };
-  const ms = 'wait_ms' in step ? wait_ms : 'key' in step ? (hold_ms ?? DEFAULT_HOLD_MS) : 0;
+  const ms = 'key' in step ? (hold_ms ?? DEFAULT_HOLD_MS) : 'wait_ms' in step ? wait_ms : 0;
   return isMs(ms) ? ms : 0;
 }
+
+const STEP_KINDS = ['key', 'wait_ms', 'eval'];
 
 function totalWait(script: PlayScript): number {
   return script.steps.reduce((sum, step) => sum + waitOf(step), 0);
@@ -66,6 +68,9 @@ export function scriptProblems(script: PlayScript): string[] {
     const at = `Step ${i + 1}`;
     if (typeof step !== 'object' || step === null) {
       problems.push(`${at} needs a key, a wait_ms or an eval`);
+    } else if (STEP_KINDS.filter((kind) => kind in step).length > 1) {
+      // Otherwise it would be validated as one kind and played as another.
+      problems.push(`${at} has more than one of key, wait_ms and eval`);
     } else if ('key' in step) {
       const problem = keyProblem(step.key);
       if (problem) problems.push(`${at}: ${problem}`);
@@ -262,8 +267,7 @@ class Run {
 
   async cleanUp(): Promise<void> {
     this.stop(new Error('the run is over'));
-    const left = await this.chrome?.close();
-    if (left) this.note(left);
+    for (const line of (await this.chrome?.close()) ?? []) this.note(line);
   }
 
   result(started: number): PlayResult {

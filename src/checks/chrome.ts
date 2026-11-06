@@ -1,6 +1,6 @@
 import type { ChildProcess, SpawnOptions } from 'node:child_process';
 import { once } from 'node:events';
-import { statSync } from 'node:fs';
+import { rmSync, statSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -57,8 +57,8 @@ function chromeEnv(home: string): NodeJS.ProcessEnv {
 }
 
 // A detached group outlives the engine unless something kills it, and an exit handler may only do synchronous work.
-// One handler serves every run.
-const live = new Set<number>();
+// One handler serves every run. Each live group maps to its run's profile.
+const live = new Map<number, string>();
 let hooked = false;
 const EXIT_KILL_MS = 200;
 const EXIT_PAUSE_MS = 5;
@@ -69,14 +69,25 @@ const pause = new Int32Array(new SharedArrayBuffer(4));
 function killAllNow(): void {
   const deadline = Date.now() + EXIT_KILL_MS;
   for (;;) {
-    for (const group of live) killGroupNow(group);
-    if (![...live].some(groupAlive) || Date.now() > deadline) return;
+    for (const group of live.keys()) killGroupNow(group);
+    if (![...live.keys()].some(groupAlive) || Date.now() > deadline) break;
     Atomics.wait(pause, 0, 0, EXIT_PAUSE_MS);
+  }
+  // No close() will run once the engine is exiting, so the profiles go here. Nobody is left to hear of a failure.
+  for (const profile of live.values()) {
+    try {
+      rmSync(profile, { recursive: true, force: true });
+    } catch {}
   }
 }
 
-function track(pid: number): void {
-  live.add(pid);
+// The groups the exit hook would kill if the engine exited now.
+export function liveGroups(): number[] {
+  return [...live.keys()];
+}
+
+function track(pid: number, profile: string): void {
+  live.set(pid, profile);
   if (hooked) return;
   hooked = true;
   process.once('exit', killAllNow);
@@ -89,8 +100,8 @@ export type Chrome = {
   // The browser's DevTools WebSocket URL, once Chrome has written it into the profile.
   devTools(signal: AbortSignal): Promise<string>;
   kill(): void;
-  // Kills the group, waits for it, then removes the profile. Returns why the profile is still there, if it is.
-  close(): Promise<string | undefined>;
+  // Kills the group, waits for it, then removes the profile. Returns what went wrong, for the run's log.
+  close(): Promise<string[]>;
 };
 
 const messageOf = (err: unknown) => (err instanceof Error ? err.message : String(err));
@@ -127,7 +138,7 @@ export async function startChrome(
     throw err;
   }
   const pid = child.pid;
-  if (pid !== undefined) track(pid);
+  if (pid !== undefined) track(pid, profile);
   let stderr = '';
   child.stderr?.setEncoding('utf8').on('data', (chunk: string) => (stderr = (stderr + chunk).slice(-STDERR_TAIL)));
   child.once('error', (err) => onExit(new Error(`could not start: ${err.message}`)));
@@ -152,6 +163,7 @@ export async function startChrome(
     // Chrome forks helpers into its process group, so the whole group goes, and the profile only once nothing writes
     // to it.
     async close() {
+      const problems: string[] = [];
       kill();
       if (pid !== undefined) {
         const running = child.exitCode === null && child.signalCode === null;
@@ -162,18 +174,19 @@ export async function startChrome(
           // For a helper Chrome forked while the last kill went out.
           kill();
         }
-        // A group that would not die stays on the list, for the exit handler to try again.
-        if (!groupAlive(pid)) live.delete(pid);
+        if (groupAlive(pid)) problems.push(`Chrome's process group ${pid} could not be stopped`);
+        // Even a group that would not die is forgotten: once it does, its pid may go to someone else's process.
+        live.delete(pid);
       }
       // Chrome's crash reporter leaves the group on purpose and inherits this pipe, so our end is closed, not held
       // for it.
       child.stderr?.destroy();
       try {
         await rm(profile, { recursive: true, force: true, maxRetries: 5 });
-        return undefined;
       } catch (err) {
-        return `could not remove ${profile}: ${messageOf(err)}`;
+        problems.push(`could not remove ${profile}: ${messageOf(err)}`);
       }
+      return problems;
     },
   };
 }
