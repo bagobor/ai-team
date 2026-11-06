@@ -1,7 +1,7 @@
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { loadConfig } from '../src/config.ts';
+import { DEFAULT_CONFIG, loadConfig } from '../src/config.ts';
 import { resolvePaths } from '../src/paths.ts';
 
 function home(configYaml?: string) {
@@ -21,6 +21,7 @@ describe('loadConfig', () => {
       cancelGraceS: 10,
       worktreeRetentionDays: 7,
       claude: { binary: 'claude', mode: 'subscription' },
+      chrome: { binary: null },
     });
   });
 
@@ -38,6 +39,21 @@ describe('loadConfig', () => {
 
   it('rejects an empty value of the wrong type', () => {
     expect(() => loadConfig(home('max_workers: lots\n'))).toThrow(/max_workers/);
+  });
+
+  it('reads chrome.binary', () => {
+    const cfg = loadConfig(home('chrome:\n  binary: /opt/chrome/chrome\n'));
+    expect(cfg.chrome).toEqual({ binary: '/opt/chrome/chrome' });
+    // A loaded setting must not leak into the defaults the next load starts from.
+    expect(DEFAULT_CONFIG.chrome).toEqual({ binary: null });
+    expect(loadConfig(home()).chrome).toEqual({ binary: null });
+  });
+
+  it('rejects an unknown chrome key', () => {
+    expect(() => loadConfig(home('chrome:\n  path: /opt/chrome/chrome\n'))).toThrow(/unknown key chrome.path/);
+    expect(() => loadConfig(home('chrome:\n  binary: ""\n'))).toThrow(/chrome.binary/);
+    expect(() => loadConfig(home('chrome:\n  binary: 3\n'))).toThrow(/chrome.binary/);
+    expect(() => loadConfig(home('chrome: /opt/chrome\n'))).toThrow(/chrome must be a mapping/);
   });
 });
 

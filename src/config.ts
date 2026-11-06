@@ -15,6 +15,8 @@ export type Config = {
     mode: 'subscription' | 'api-key';
     extraEnv?: Record<string, string>;
   };
+  // Null means the usual install path, which the play module knows.
+  chrome: { binary: string | null };
 };
 
 const NUMERIC_KEYS = {
@@ -36,10 +38,11 @@ export const DEFAULT_CONFIG: Config = {
   cancelGraceS: 10,
   worktreeRetentionDays: 7,
   claude: { binary: 'claude', mode: 'subscription' },
+  chrome: { binary: null },
 };
 
 export function loadConfig(p: Paths): Config {
-  const config: Config = { ...DEFAULT_CONFIG, claude: { ...DEFAULT_CONFIG.claude } };
+  const config: Config = { ...DEFAULT_CONFIG, claude: { ...DEFAULT_CONFIG.claude }, chrome: { ...DEFAULT_CONFIG.chrome } };
   if (!existsSync(p.config)) return config;
 
   const raw: unknown = parse(readFileSync(p.config, 'utf8')) ?? {};
@@ -48,6 +51,8 @@ export function loadConfig(p: Paths): Config {
   for (const [key, value] of Object.entries(raw)) {
     if (key === 'claude') {
       applyClaude(config, value);
+    } else if (key === 'chrome') {
+      applyChrome(config, value);
     } else if (key in NUMERIC_KEYS) {
       if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
         throw new Error(`config.yaml: ${key} must be a non-negative number`);
@@ -71,6 +76,17 @@ function applyClaude(config: Config, raw: unknown): void {
       config.claude.extraEnv = Object.fromEntries(Object.entries(value).map(([k, v]) => [k, String(v)]));
     } else {
       throw new Error(`config.yaml: invalid or unknown key claude.${key}`);
+    }
+  }
+}
+
+function applyChrome(config: Config, raw: unknown): void {
+  if (!isRecord(raw)) throw new Error('config.yaml: chrome must be a mapping');
+  for (const [key, value] of Object.entries(raw)) {
+    if (key === 'binary' && typeof value === 'string' && value.trim() !== '') {
+      config.chrome.binary = value;
+    } else {
+      throw new Error(`config.yaml: invalid or unknown key chrome.${key}`);
     }
   }
 }
