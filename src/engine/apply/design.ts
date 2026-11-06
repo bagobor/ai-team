@@ -1,6 +1,7 @@
 import { isHumanCheck } from '../../artifacts/acs.ts';
 import { ArtifactError, parsePin, sectionText, formatPin, type ArtifactDoc, type ArtifactStatus } from '../../artifacts/format.ts';
 import type { NewVersion, StatusChange } from '../../artifacts/store.ts';
+import { proposesCurrent } from '../change-requests.ts';
 import { isHarnessTicket, protectedGlobs, protectedProblems } from '../protected.ts';
 import type { EngineDeps } from '../runner.ts';
 import type { ArtifactVersionRow, CriterionRow, ProjectRow, TaskRow } from '../store.ts';
@@ -170,11 +171,12 @@ const coverageOf = (doc: ArtifactDoc): Coverage[] => {
   return Array.isArray(coverage) ? (coverage as Coverage[]) : [];
 };
 
-// An entry the revision writes without the flag takes the one the replaced Test Plan gave that criterion.
+// An entry the revision writes without the flag takes the one the replaced Test Plan gave that criterion, but only for the commands the flag was approved on.
 function keepingFlags(revised: Coverage[], replaced: ArtifactDoc): Coverage[] {
   const was = coverageOf(replaced);
   return revised.map((row) => {
-    const flag = row.regression === undefined ? was.find(({ ac }) => ac === row.ac)?.regression : undefined;
+    const before = was.find(({ ac }) => ac === row.ac);
+    const flag = row.regression === undefined && before !== undefined && proposesCurrent(before, row.commands) ? before.regression : undefined;
     return flag === undefined ? row : { ...row, regression: flag };
   });
 }
@@ -186,6 +188,14 @@ function addedFlags(revised: Coverage[], replaced: ArtifactDoc, docId: string): 
   return revised
     .filter((row) => row.regression === true && was.some(({ ac, regression }) => ac === row.ac && regression !== true))
     .map(({ ac }) => `${ac} has no regression flag in ${docId}@${replaced.version}. A revision can keep or clear one, but not add it: raise a Change Request proposing ${ac}'s current commands, which the stakeholder decides.`);
+}
+
+// The flag was approved for the commands it was asked on, so a revision that changes them can't keep it, or QA could put vacuous commands under a guard.
+function movedFlags(revised: Coverage[], replaced: ArtifactDoc, docId: string): string[] {
+  const was = coverageOf(replaced);
+  return revised
+    .filter((row) => row.regression === true && was.some((before) => before.ac === row.ac && before.regression === true && !proposesCurrent(before, row.commands)))
+    .map(({ ac }) => `${ac}'s commands differ from ${docId}@${replaced.version}, so its regression flag can't stay. A revision that changes a guard's commands drops the flag: raise a Change Request proposing ${ac}'s new commands once they are in, which the stakeholder decides.`);
 }
 
 const applyRevise =
@@ -206,7 +216,7 @@ const applyRevise =
     if (!output.unaffected && (body === null || body.trim() === '')) problems.push('An affected document needs a new body');
     if (replaced !== undefined) {
       if (output.coverage === null) problems.push('A new Test Plan needs its full coverage');
-      else problems.push(...coverageProblems(acIds, output.coverage, humanCheckIds(criteria)), ...addedFlags(output.coverage, replaced, docId));
+      else problems.push(...coverageProblems(acIds, output.coverage, humanCheckIds(criteria)), ...addedFlags(output.coverage, replaced, docId), ...movedFlags(output.coverage, replaced, docId));
     }
 
     const tickets = await ticketsOfDoc(ctx.deps, ctx.project, milestone, prefix);
@@ -249,7 +259,7 @@ const applyRevise =
     }
 
     const carried = replaced === undefined ? [] : protectedGlobs(replaced);
-    // The revising model is shown the plan without its regression flags, so an entry that leaves one out keeps the replaced version's, and only an explicit false clears it.
+    // The revising model is shown the plan without its regression flags, so an entry that leaves one out keeps the replaced version's while its commands stay the same, and only an explicit false clears it.
     const coverage = replaced === undefined ? [] : keepingFlags(output.coverage!, replaced);
     const publish = [...(body === null ? [] : [prefix === 'T' ? designDoc(ctx, body, settled) : testPlanDoc(ctx, body, coverage, carried, settled)]), ...newDocs];
     return withRaised(ctx, { message: `milestone ${milestone}: revise ${docId}`, publish, status }, async (s) => {

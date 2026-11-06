@@ -302,12 +302,21 @@ describe('appliers', () => {
         return ((await read('TEST-PLAN-M1')).fields.data as { coverage: unknown[] }).coverage;
       };
 
-      it('keeps the flag of an entry that leaves it out, whatever else the entry changes', async () => {
-        expect(await revise([coverage('AC-1', ['npm run lint']), coverage('AC-2')])).toEqual([{ ...coverage('AC-1', ['npm run lint']), regression: true }, coverage('AC-2')]);
+      it('keeps the flag of an entry that leaves it out and keeps its commands, whatever their spacing', async () => {
+        expect(await revise([coverage('AC-1', ['  npm test ']), coverage('AC-2')])).toEqual([{ ...coverage('AC-1', ['  npm test ']), regression: true }, coverage('AC-2')]);
+      });
+
+      // The flag was approved for the commands it was asked on, so carrying it onto new ones would let QA revise vacuous commands in under a guard.
+      it('drops the flag of an entry that leaves it out and changes its commands', async () => {
+        expect(await revise([coverage('AC-1', ['npm run lint']), coverage('AC-2')])).toEqual([coverage('AC-1', ['npm run lint']), coverage('AC-2')]);
       });
 
       it('clears the flag of an entry that says false', async () => {
         expect(await revise([{ ...coverage('AC-1'), regression: false }, coverage('AC-2')])).toEqual([{ ...coverage('AC-1'), regression: false }, coverage('AC-2')]);
+      });
+
+      it('clears the flag of an entry that says false and changes its commands', async () => {
+        expect(await revise([{ ...coverage('AC-1', ['npm run lint']), regression: false }, coverage('AC-2')])).toEqual([{ ...coverage('AC-1', ['npm run lint']), regression: false }, coverage('AC-2')]);
       });
 
       it('keeps the flag of an entry that says true again', async () => {
@@ -330,6 +339,16 @@ describe('appliers', () => {
         const revision = { unaffected: false, rationale: 'r', body: '# Plan two\n', coverage: [{ ...coverage('AC-1'), regression: true }, { ...coverage('AC-2'), regression: true }], ticket_decisions: [], tickets: [] };
 
         expect(evidenceOf(await apply(e, 'revise_test_plan', revision, { inputs: ['SPEC-M1@1', 'TEST-PLAN-M1@1'] }))).toBe(`${refusal('AC-1')}\n${refusal('AC-2')}`);
+      });
+
+      it('refuses a revision that keeps the flag on an entry whose commands it changes', async () => {
+        await publish(e, await apply(e, 'test_plan', { ...TEST_PLAN, coverage: flagged }, { inputs: ['SPEC-M1@1'] }));
+        const revision = { unaffected: false, rationale: 'r', body: '# Plan two\n', coverage: [{ ...coverage('AC-1', ['npm run lint']), regression: true }, coverage('AC-2')], ticket_decisions: [], tickets: [] };
+
+        expect(evidenceOf(await apply(e, 'revise_test_plan', revision, { inputs: ['SPEC-M1@1', 'TEST-PLAN-M1@1'] }))).toBe(
+          "AC-1's commands differ from TEST-PLAN-M1@1, so its regression flag can't stay. A revision that changes a guard's commands drops the flag: raise a Change Request proposing AC-1's new commands once they are in, which the stakeholder decides.",
+        );
+        expect(await latest('TEST-PLAN-M1')).toMatchObject({ version: 1 });
       });
 
       it('gives an entry for a criterion the replaced version did not cover the flag it asks for, as at authoring', async () => {

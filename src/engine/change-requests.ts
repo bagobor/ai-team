@@ -50,12 +50,16 @@ const coverageIn = (doc: ArtifactDoc): Coverage[] => {
   return Array.isArray(coverage) ? (coverage as Coverage[]) : [];
 };
 
-const commandLines = (proposed: string): string[] => proposed.split('\n').map((line) => line.trim()).filter((line) => line !== '');
+// Spacing and blank lines don't change what QA runs, so they don't make commands different.
+const runnable = (commands: string[]): string[] => commands.map((command) => command.trim()).filter((command) => command !== '');
 
-// The same commands, in the same order, which is the request that makes an entry a regression guard.
-const proposesCurrent = (entry: Coverage, commands: string[]): boolean => {
-  const has = entry.commands.map((command) => command.trim());
-  return commands.length === has.length && commands.every((command, i) => command === has[i]);
+const commandLines = (proposed: string): string[] => runnable(proposed.split('\n'));
+
+// The same commands, in the same order, which is the request that makes an entry a regression guard, and what a Test Plan revision must keep for the entry to stay one.
+export const proposesCurrent = (entry: Coverage, commands: string[]): boolean => {
+  const has = runnable(entry.commands);
+  const asked = runnable(commands);
+  return asked.length === has.length && asked.every((command, i) => command === has[i]);
 };
 
 // A request for the commands an entry already has makes it a regression guard, which waives QA's check that the commands fail on the base.
