@@ -161,7 +161,9 @@ function commandsReplacement(doc: ArtifactDoc, ac: string, proposed: string): Re
   if (!entry) throw new ChangeRequestError(`${doc.id} has no commands for ${ac}. It covers ${coverage.map((row) => row.ac).join(', ')}`);
   const commands = commandLines(proposed);
   const data = doc.fields.data as Record<string, unknown>;
-  const replaced = proposesCurrent(entry, commands) ? { ...entry, regression: true } : { ...entry, commands };
+  // The flag was approved for the commands it was asked on. Other commands start without it, or QA could self-approve vacuous ones under a guard.
+  const { regression: _approved, ...unflagged } = entry;
+  const replaced = proposesCurrent(entry, commands) ? { ...entry, regression: true } : { ...unflagged, commands };
   return { body: doc.body, fields: { ...doc.fields, data: { ...data, coverage: coverage.map((row) => (row.ac === ac ? replaced : row)) } } };
 }
 

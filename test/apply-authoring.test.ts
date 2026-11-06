@@ -310,12 +310,39 @@ describe('appliers', () => {
         expect(await revise([{ ...coverage('AC-1'), regression: false }, coverage('AC-2')])).toEqual([{ ...coverage('AC-1'), regression: false }, coverage('AC-2')]);
       });
 
-      it('sets the flag of an entry that says true, and leaves the others as they were', async () => {
-        expect(await revise([coverage('AC-1'), { ...coverage('AC-2'), regression: true }])).toEqual([{ ...coverage('AC-1'), regression: true }, { ...coverage('AC-2'), regression: true }]);
+      it('keeps the flag of an entry that says true again', async () => {
+        expect(await revise([coverage('AC-1'), coverage('AC-2')].map((row) => (row.ac === 'AC-1' ? { ...row, regression: true } : row)))).toEqual(flagged);
       });
 
-      it('gives an entry for a criterion the replaced version did not cover no flag', async () => {
+      const refusal = (ac: string, version = 1) => `${ac} has no regression flag in TEST-PLAN-M1@${version}. A revision can keep or clear one, but not add it: raise a Change Request proposing ${ac}'s current commands, which the stakeholder decides.`;
+
+      // QA can stale its own harness tickets with a section request and so trigger its own revision, so a flag added here would be QA waiving its own base check.
+      it('refuses a revision that adds the flag to an entry the replaced version covered without it', async () => {
+        await publish(e, await apply(e, 'test_plan', { ...TEST_PLAN, coverage: flagged }, { inputs: ['SPEC-M1@1'] }));
+        const revision = { unaffected: false, rationale: 'r', body: '# Plan two\n', coverage: [coverage('AC-1'), { ...coverage('AC-2'), regression: true }], ticket_decisions: [], tickets: [] };
+
+        expect(evidenceOf(await apply(e, 'revise_test_plan', revision, { inputs: ['SPEC-M1@1', 'TEST-PLAN-M1@1'] }))).toBe(refusal('AC-2'));
+        expect(await latest('TEST-PLAN-M1')).toMatchObject({ version: 1 });
+      });
+
+      it('refuses the flag on an entry the replaced version had set false, and names each entry it refuses', async () => {
+        await publish(e, await apply(e, 'test_plan', { ...TEST_PLAN, coverage: [{ ...coverage('AC-1'), regression: false }, coverage('AC-2')] }, { inputs: ['SPEC-M1@1'] }));
+        const revision = { unaffected: false, rationale: 'r', body: '# Plan two\n', coverage: [{ ...coverage('AC-1'), regression: true }, { ...coverage('AC-2'), regression: true }], ticket_decisions: [], tickets: [] };
+
+        expect(evidenceOf(await apply(e, 'revise_test_plan', revision, { inputs: ['SPEC-M1@1', 'TEST-PLAN-M1@1'] }))).toBe(`${refusal('AC-1')}\n${refusal('AC-2')}`);
+      });
+
+      it('gives an entry for a criterion the replaced version did not cover the flag it asks for, as at authoring', async () => {
         // Written by hand: the applier would refuse a plan that leaves AC-2 out, but a version from before a criterion moved can.
+        await e.artifacts.commit(await projectOf(e), { message: 'an older plan', publish: [{ id: 'TEST-PLAN-M1', type: 'test_plan', status: 'approved', ownerRole: 'qa_engineer', derivedFrom: ['SPEC-M1@1'], milestone: 1, body: '# Plan\n', fields: { data: { coverage: [flagged[0]], protected: [] } } }] });
+        const revision = { unaffected: false, rationale: 'r', body: '# Plan two\n', coverage: [coverage('AC-1'), { ...coverage('AC-2'), regression: true }], ticket_decisions: [], tickets: [] };
+
+        await publish(e, await apply(e, 'revise_test_plan', revision, { inputs: ['SPEC-M1@1', 'TEST-PLAN-M1@1'] }));
+
+        expect(((await read('TEST-PLAN-M1')).fields.data as { coverage: unknown[] }).coverage).toEqual([flagged[0], { ...coverage('AC-2'), regression: true }]);
+      });
+
+      it('gives an entry for a criterion the replaced version did not cover no flag when it leaves it out', async () => {
         await e.artifacts.commit(await projectOf(e), { message: 'an older plan', publish: [{ id: 'TEST-PLAN-M1', type: 'test_plan', status: 'approved', ownerRole: 'qa_engineer', derivedFrom: ['SPEC-M1@1'], milestone: 1, body: '# Plan\n', fields: { data: { coverage: [flagged[0]], protected: [] } } }] });
         const revision = { unaffected: false, rationale: 'r', body: '# Plan two\n', coverage: [coverage('AC-1'), coverage('AC-2')], ticket_decisions: [], tickets: [] };
 

@@ -296,7 +296,7 @@ export const applyQaVerify: Applier = async (ctx) => {
   const refusals = judged
     .filter(vacuous)
     .filter(({ ac }) => requestOn(raised, planId, ac) === undefined)
-    .map(({ ac, onBase }) => `${ac}'s Test Plan commands pass on the base too (${onBase.sha.slice(0, 7)}), so they don't show this milestone's work. Raise a Change Request on ${ac}'s Test Plan commands with commands that fail without the work, or, if the criterion is meant to hold already, one that proposes the same commands, which makes the entry a regression guard.`);
+    .map(({ ac, onBase }) => `${ac}'s Test Plan commands pass on the base too (${onBase.sha.slice(0, 7)}), so they don't show this milestone's work. Raise a Change Request on ${ac}'s Test Plan commands with commands that fail without the work, or, if the criterion is meant to hold already, one that proposes the same commands, which asks the stakeholder to make the entry a regression guard.`);
   if (refusals.length > 0) return { ok: false, evidence: refusals.join('\n') };
   // With QA's request to change the commands on record, the criterion fails without a Bug, as one whose plan commands fail does.
   const verdicts = judged.map((verdict): Verdict => {

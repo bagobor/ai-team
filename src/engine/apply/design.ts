@@ -165,14 +165,27 @@ async function inputsMoved(ctx: ApplyCtx, docId: string): Promise<boolean> {
   return false;
 }
 
+const coverageOf = (doc: ArtifactDoc): Coverage[] => {
+  const coverage = (doc.fields.data as { coverage?: unknown } | undefined)?.coverage;
+  return Array.isArray(coverage) ? (coverage as Coverage[]) : [];
+};
+
 // An entry the revision writes without the flag takes the one the replaced Test Plan gave that criterion.
 function keepingFlags(revised: Coverage[], replaced: ArtifactDoc): Coverage[] {
-  const was = (replaced.fields.data as { coverage?: Coverage[] } | undefined)?.coverage;
-  const flagOf = (ac: string) => (Array.isArray(was) ? was : []).find((row) => row.ac === ac)?.regression;
+  const was = coverageOf(replaced);
   return revised.map((row) => {
-    const flag = row.regression === undefined ? flagOf(row.ac) : undefined;
+    const flag = row.regression === undefined ? was.find(({ ac }) => ac === row.ac)?.regression : undefined;
     return flag === undefined ? row : { ...row, regression: flag };
   });
+}
+
+// The flag waives the check that an entry's commands fail on the base. QA can stale its own harness tickets with a request and so trigger its own revision,
+// so a revision may keep or clear a flag but not add one to an entry the plan already had: that is a request the stakeholder decides.
+function addedFlags(revised: Coverage[], replaced: ArtifactDoc, docId: string): string[] {
+  const was = coverageOf(replaced);
+  return revised
+    .filter((row) => row.regression === true && was.some(({ ac, regression }) => ac === row.ac && regression !== true))
+    .map(({ ac }) => `${ac} has no regression flag in ${docId}@${replaced.version}. A revision can keep or clear one, but not add it: raise a Change Request proposing ${ac}'s current commands, which the stakeholder decides.`);
 }
 
 const applyRevise =
@@ -186,11 +199,14 @@ const applyRevise =
     const docId = prefix === 'T' ? techId(milestone) : testPlanId(milestone);
     const body = output.unaffected ? null : output.body;
 
+    // The version this one replaces is read first: its coverage limits the flags a revision may set, and, since a revision has no way to name protected paths, its globs carry over.
+    const replaced = prefix === 'Q' && body !== null ? await ctx.deps.artifacts.read(ctx.project, docId) : undefined;
+
     const problems: string[] = [];
     if (!output.unaffected && (body === null || body.trim() === '')) problems.push('An affected document needs a new body');
-    if (prefix === 'Q' && body !== null) {
+    if (replaced !== undefined) {
       if (output.coverage === null) problems.push('A new Test Plan needs its full coverage');
-      else problems.push(...coverageProblems(acIds, output.coverage, humanCheckIds(criteria)));
+      else problems.push(...coverageProblems(acIds, output.coverage, humanCheckIds(criteria)), ...addedFlags(output.coverage, replaced, docId));
     }
 
     const tickets = await ticketsOfDoc(ctx.deps, ctx.project, milestone, prefix);
@@ -232,8 +248,6 @@ const applyRevise =
       else status.push({ id: ticket.id, status: 'approved', approvedBy: 'owner:tech_lead', derivedFrom: await repinned(ctx, ticket.row, docId, body), rationale: decision?.rationale ?? `Closed before this revision of ${docId}` });
     }
 
-    // A revision has no way to name protected paths, so the new Test Plan keeps those of the version it replaces.
-    const replaced = prefix === 'Q' && body !== null ? await ctx.deps.artifacts.read(ctx.project, docId) : undefined;
     const carried = replaced === undefined ? [] : protectedGlobs(replaced);
     // The revising model is shown the plan without its regression flags, so an entry that leaves one out keeps the replaced version's, and only an explicit false clears it.
     const coverage = replaced === undefined ? [] : keepingFlags(output.coverage!, replaced);

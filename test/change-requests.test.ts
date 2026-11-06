@@ -14,7 +14,7 @@ const asked = { proposed_text: 'There are none.', rationale: 'We removed them', 
 const onSection = (overrides: Partial<ChangeRequestInput> = {}): ChangeRequestInput => ({ ...asked, target_artifact: 'TECH-M1', target_section: 'risks', ...overrides });
 const onCriterion = (overrides: Partial<ChangeRequestInput> = {}): ChangeRequestInput => ({ ...asked, target_artifact: 'SPEC-M1', target_ac: 'AC-1', proposed_text: 'The first thing works twice', ...overrides });
 const onCommands = (overrides: Partial<ChangeRequestInput> = {}): ChangeRequestInput => ({ ...asked, target_artifact: 'TEST-PLAN-M1', target_ac: 'AC-1', proposed_text: 'npm test -- first\nnpm run lint', ...overrides });
-const COVERAGE = [
+const COVERAGE: { ac: string; commands: string[]; notes: string; regression?: boolean }[] = [
   { ac: 'AC-1', commands: ['npm test -- old'], notes: 'The first check' },
   { ac: 'AC-2', commands: ['npm test -- second'], notes: '' },
 ];
@@ -337,6 +337,30 @@ describe('Change Requests', () => {
       expect(await read('TEST-PLAN-M1')).toMatchObject({ version: plan.version + 1, status: 'approved', body: '# Plan\n\nRun the checks.\n' });
       // Waiving QA's base check is the stakeholder's to allow, so the request carries their name and not the owner's.
       expect(await latest('CR-1')).toMatchObject({ status: 'approved', approved_by: 'stakeholder' });
+    });
+
+    // The flag was approved for the commands it was asked on, so other commands start without it and QA cannot self-approve vacuous ones under a guard.
+    it('drops the flag of an entry whose commands it changes, and keeps the other entries\' flags', async () => {
+      await testPlan([{ ...COVERAGE[0]!, regression: true }, { ...COVERAGE[1]!, regression: true }]);
+      await fileChangeRequest(e, p, onCommands());
+
+      await applyChangeRequest(e, p, 'CR-1');
+
+      const [first, second] = await coverageOf();
+      expect(first).toEqual({ ac: 'AC-1', commands: ['npm test -- first', 'npm run lint'], notes: 'The first check' });
+      expect(first).not.toHaveProperty('regression');
+      expect(second).toEqual({ ...COVERAGE[1], regression: true });
+      expect(await read('TEST-PLAN-M1')).toMatchObject({ version: 2, status: 'approved' });
+      expect(await latest('CR-1')).toMatchObject({ status: 'approved', approved_by: 'owner:qa_engineer' });
+    });
+
+    it('keeps the flag of an entry when the request proposes the commands it has', async () => {
+      await testPlan([{ ...COVERAGE[0]!, regression: true }, COVERAGE[1]!]);
+      await fileChangeRequest(e, p, onCommands({ proposed_text: 'npm test -- old' }));
+
+      await applyChangeRequest(e, p, 'CR-1');
+
+      expect((await coverageOf())[0]).toEqual({ ...COVERAGE[0], regression: true });
     });
 
     it('makes a regression guard of an entry whose commands several lines long are all proposed again', async () => {

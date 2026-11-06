@@ -1486,9 +1486,10 @@ describe('review focus: a change mid-flight', () => {
 
   it('holds the Bug while QA asks to change a Test Plan command, then verifies again with the new one', async () => {
     const h = await harness();
-    const plan = { ...TEST_PLAN, coverage: [{ ac: 'AC-1', commands: ['false'], notes: '', regression: true }, { ac: 'AC-2', commands: ['true'], notes: '', regression: true }] };
+    const plan = { ...TEST_PLAN, coverage: [{ ac: 'AC-1', commands: ['false'], notes: '' }, { ac: 'AC-2', commands: ['true'], notes: '', regression: true }] };
     await toVerify(h, { plan });
-    const dispute = { target_artifact: 'TEST-PLAN-M1@1', target_ac: 'AC-1', proposed_text: 'true', rationale: 'It checks the wrong thing', evidence: 'The Spec never names that file' };
+    // The new commands pass with the merged ticket's file and fail without it: a request for other commands brings no flag, so they are held to the base check.
+    const dispute = { target_artifact: 'TEST-PLAN-M1@1', target_ac: 'AC-1', proposed_text: 'test -f src/M1-T-1.txt', rationale: 'It checks the wrong thing', evidence: 'The Spec never names that file' };
 
     await finish(h, 'M1-QA-1', { ...PASS, change_requests: [dispute] });
     await h.conductor.tick();
@@ -1501,7 +1502,7 @@ describe('review focus: a change mid-flight', () => {
     await h.conductor.tick();
     await h.conductor.tick();
     const plan2 = await h.artifacts.read(h.project, 'TEST-PLAN-M1');
-    expect((plan2.fields.data as { coverage: { commands: string[] }[] }).coverage.map(({ commands }) => commands)).toEqual([['true'], ['true']]);
+    expect((plan2.fields.data as { coverage: { commands: string[] }[] }).coverage.map(({ commands }) => commands)).toEqual([['test -f src/M1-T-1.txt'], ['true']]);
     expect(orderOf(await byTicket(h, 'M1-QA-2')).inputs).toContain('TEST-PLAN-M1@2');
 
     await finish(h, 'M1-QA-2', PASS);

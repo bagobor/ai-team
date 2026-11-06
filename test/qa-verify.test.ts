@@ -442,8 +442,8 @@ describe('qa_verify applier', () => {
       const result = await verify({ results: [pass('AC-1'), pass('AC-2')] });
       expect(evidenceOf(result)).toMatch(/AC-1's Test Plan commands pass on the base too/);
       expect(evidenceOf(result)).toMatch(/Change Request/);
-      // QA verify has no way to set the flag, so the way for a criterion that already holds is named: a request for the commands the entry has.
-      expect(evidenceOf(result)).toMatch(/proposes the same commands, which makes the entry a regression guard/);
+      // QA verify has no way to set the flag, so the way for a criterion that already holds is named: a request for the commands the entry has, which the stakeholder decides.
+      expect(evidenceOf(result)).toMatch(/proposes the same commands, which asks the stakeholder to make the entry a regression guard/);
       expect(evidenceOf(result)).not.toMatch(/mark the entry regression/);
       expect((await criterion('AC-1')).status).toBe('unverified');
     });
