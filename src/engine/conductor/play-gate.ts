@@ -4,7 +4,7 @@ import { isHumanCheck } from '../../artifacts/acs.ts';
 import type { NewVersion } from '../../artifacts/store.ts';
 import type { PlayProblem } from '../../checks/play.ts';
 import { runSandboxed, type CommandEnv, type SandboxedInput } from '../../checks/run-checks.ts';
-import { serveStatic } from '../../checks/static-server.ts';
+import { serveStatic, type StaticServer } from '../../checks/static-server.ts';
 import type { PlayBlock, ProfileData } from '../apply/discovery.ts';
 import { ENV_PROFILE, specId, techId } from '../apply/ids.ts';
 import { bugTicket, nextBugNumber } from '../apply/qa.ts';
@@ -38,6 +38,8 @@ async function runSetup(env: SiteEnv, profile: ProfileData): Promise<{ ok: true 
   return prepared.ok ? { ok: true } : { ok: false, why: `The Environment Profile's setup failed, so the game could not be built.\n${prepared.evidence}` };
 }
 
+const missingRoot = (root: string) => `play.root ${root} does not exist after the build`;
+
 // The build ran code a worker wrote, which can leave the root as a link out of the checkout. The server only keeps
 // what it serves inside the root it is given, so the root itself is checked here.
 async function siteRoot(worktree: string, root: string): Promise<Built> {
@@ -48,7 +50,7 @@ async function siteRoot(worktree: string, root: string): Promise<Built> {
     if (real !== base && !real.startsWith(base + sep)) return { ok: false, why: `play.root ${root} leads outside the checkout` };
     if (!(await stat(real)).isDirectory()) return { ok: false, why: `play.root ${root} is not a directory after the build` };
   } catch {
-    return { ok: false, why: `play.root ${root} does not exist after the build` };
+    return { ok: false, why: missingRoot(root) };
   }
   // The server is given the resolved directory, so a link swapped in at play.root once this check has passed leads nowhere.
   return { ok: true, root: real };
@@ -93,7 +95,15 @@ async function playHead(deps: EngineDeps, project: ProjectRow, n: number, profil
     if (!prepared.ok) return { kind: 'unavailable', cause: 'setup', why: prepared.why };
     const site = await buildSite(env, profile, { setup: false });
     if (!site.ok) return { kind: 'failed', headSha, profile, problems: [{ kind: 'load', detail: site.why }] };
-    const server = await serveStatic(site.root);
+    let server: StaticServer;
+    try {
+      server = await serveStatic(site.root);
+    } catch (err) {
+      // What the build left running can remove the root after it was checked, and the server's realpath of it is what
+      // finds that. Any other failure to start is the engine's own, and stays an error.
+      if ((err as NodeJS.ErrnoException).syscall !== 'realpath') throw err;
+      return { kind: 'failed', headSha, profile, problems: [{ kind: 'load', detail: missingRoot(play.root) }] };
+    }
     try {
       // The root was checked before the server resolved it, and a process the sandbox can't stop may have swapped it in between.
       if (server.root !== site.root) return { kind: 'failed', headSha, profile, problems: [{ kind: 'load', detail: `play.root ${play.root} changed while the engine began serving it` }] };

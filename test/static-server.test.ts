@@ -5,6 +5,14 @@ import { join } from 'node:path';
 import { serveStatic, type StaticServer } from '../src/checks/static-server.ts';
 import { tempDir } from './helpers/repo.ts';
 
+// A swap that lands between the server's realpath and its open can't be timed from a test, so a test stands in for the
+// realpath that ran before it: given a path, it says what that realpath saw, or undefined to ask the real one.
+const resolved = vi.hoisted(() => ({ as: undefined as ((path: string) => string | undefined) | undefined }));
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>();
+  return { ...actual, realpath: async (path: string, options?: never) => resolved.as?.(String(path)) ?? actual.realpath(path, options) };
+});
+
 type Reply = { status: number; headers: Record<string, string | string[] | undefined>; body: string };
 
 // fetch() normalizes `..` and `%2e%2e` away before sending, so traversal has to go out as written.
@@ -40,6 +48,7 @@ describe('serveStatic', () => {
   });
 
   afterEach(async () => {
+    resolved.as = undefined;
     await server.close();
   });
 
@@ -79,7 +88,7 @@ describe('serveStatic', () => {
   });
 
   // A process the sandbox can't stop can still write the checkout, and swap the root for a link while the server runs.
-  it('keeps serving from the root it started with', async () => {
+  it('refuses its root once it has been swapped for a link', async () => {
     const outside = join(base, 'outside');
     mkdirSync(outside);
     writeFileSync(join(outside, 'secret.txt'), 'outside-secret');
@@ -90,6 +99,36 @@ describe('serveStatic', () => {
     const replies = [await get(server, '/secret.txt'), await get(server, '/'), await get(server, '/index.html')];
     expect(replies.map(({ status }) => status)).toEqual([404, 404, 404]);
     for (const { body } of replies) expect(body).not.toMatch(/outside-/);
+  });
+
+  // A process can swap a directory and a link back and forth, so realpath may see the directory and the open the link.
+  it('refuses a path whose component turns into a link after it was resolved', async () => {
+    const outside = join(base, 'outside');
+    mkdirSync(outside);
+    writeFileSync(join(outside, 'secret.txt'), 'outside-secret');
+    const asked = [join(site, 'sub', 'secret.txt'), join(site, 'secret.txt')];
+    resolved.as = (path) => (asked.includes(path) ? path : undefined);
+
+    renameSync(join(site, 'sub'), join(base, 'sub-moved'));
+    symlinkSync(outside, join(site, 'sub'));
+    const inside = await get(server, '/sub/secret.txt');
+    renameSync(site, join(base, 'moved'));
+    symlinkSync(outside, site);
+    const root = await get(server, '/secret.txt');
+
+    expect([inside.status, root.status]).toEqual([404, 404]);
+    expect(inside.body + root.body).not.toMatch(/outside-/);
+  });
+
+  // The open that keeps a request inside its root refuses a link in any component, and only macOS has it.
+  it('refuses to start anywhere but macOS', async () => {
+    const platform = Object.getOwnPropertyDescriptor(process, 'platform')!;
+    Object.defineProperty(process, 'platform', { ...platform, value: 'linux' });
+    try {
+      await expect(serveStatic(site)).rejects.toThrow(/macOS/);
+    } finally {
+      Object.defineProperty(process, 'platform', platform);
+    }
   });
 
   // A caller that checked the root before starting the server compares this with what it checked.
@@ -173,7 +212,7 @@ describe('serveStatic with mounts', () => {
     expect((await get(server, '/a/%2e%2e/secret.txt')).status).toBe(404);
   });
 
-  it('keeps a mount on the root it was given', async () => {
+  it('refuses a mount whose root has been swapped for a link', async () => {
     const base = tempDir();
     const dir = join(base, 'a');
     const outside = join(base, 'outside');

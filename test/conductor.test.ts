@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { sectionText } from '../src/artifacts/format.ts';
 import { ArtifactStore } from '../src/artifacts/store.ts';
 import type { PlayResult } from '../src/checks/play.ts';
+import type { StaticServer } from '../src/checks/static-server.ts';
 import { openDb } from '../src/db/open.ts';
 import { applyOutput } from '../src/engine/apply/index.ts';
 import { fileChangeRequest } from '../src/engine/change-requests.ts';
@@ -24,6 +25,17 @@ import { CRITERIA, projectOf } from './helpers/apply.ts';
 import { eventTypes, makeEngine, ticket, type TestEngine } from './helpers/engine.ts';
 import { fakePlayer, playResult } from './helpers/play.ts';
 import { commitAll, makeRepo, porcelain, revParse, run, tempDir } from './helpers/repo.ts';
+
+// What happens to the play root between the gate's check and the server's start can't be timed from a test, so a test
+// can step in there. `around` gets the real serveStatic and the root the gate asked for.
+const serving = vi.hoisted(() => ({ around: undefined as ((serve: (root: string) => Promise<StaticServer>, root: string) => Promise<StaticServer>) | undefined }));
+vi.mock('../src/checks/static-server.ts', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/checks/static-server.ts')>();
+  return {
+    ...actual,
+    serveStatic: (root: string, opts?: Parameters<typeof actual.serveStatic>[1]) => (serving.around ? serving.around((r) => actual.serveStatic(r, opts), root) : actual.serveStatic(root, opts)),
+  };
+});
 
 const DISCOVERY = {
   roadmap: { body: '# Roadmap\n', milestones: [{ n: 1, title: 'First', goal: 'Start' }, { n: 2, title: 'Second', goal: 'Finish' }] },
@@ -1388,6 +1400,36 @@ describe('the play gate', () => {
 
     expect(player.calls[0]!.url).toMatch(/\/play%20%231\.html$/);
     expect(player.calls[0]!.body).toBe(PAGE);
+  });
+
+  describe('between the root check and the server', () => {
+    afterEach(() => {
+      serving.around = undefined;
+    });
+
+    const BUILT = { ...PLAY_PROFILE, commands: { ...PLAY_PROFILE.commands, build: 'mkdir dist && cp index.html dist/' }, play: { ...PLAY, root: 'dist' } };
+
+    it('files a Bug for a root that is gone by the time it is served', async () => {
+      serving.around = (serve, root) => {
+        rmSync(root, { recursive: true, force: true });
+        return serve(root);
+      };
+      const { h, player } = await playing(playResult(), { profile: BUILT });
+      await mergeGame(h);
+
+      expect(player.calls).toEqual([]);
+      expect((await h.artifacts.read(h.project, 'BUG-M1-1')).body).toContain('- load: play.root dist does not exist after the build\n');
+      expect(await milestoneOf(h)).toMatchObject({ phase: 'build', verify_round: 1 });
+    });
+
+    it('files a Bug, and plays nothing, when the server pinned another root', async () => {
+      serving.around = async (serve, root) => ({ ...(await serve(root)), root: '/elsewhere' });
+      const { h, player } = await playing(playResult(), { profile: BUILT });
+      await mergeGame(h);
+
+      expect(player.calls).toEqual([]);
+      expect((await h.artifacts.read(h.project, 'BUG-M1-1')).body).toContain('- load: play.root dist changed while the engine began serving it\n');
+    });
   });
 
   it('leaves nothing behind after the play gate', async () => {

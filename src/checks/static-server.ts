@@ -1,5 +1,5 @@
 import { constants, realpathSync } from 'node:fs';
-import { open, realpath, stat, type FileHandle } from 'node:fs/promises';
+import { open, realpath, type FileHandle } from 'node:fs/promises';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { extname, join, sep } from 'node:path';
@@ -8,7 +8,7 @@ import { pipeline } from 'node:stream';
 export type StaticServer = {
   url: string;
   port: number;
-  // The directory every request is held to, resolved once at start. Empty with mounts, which each have their own.
+  // The path every request is held to, resolved once at start. Empty with mounts, which each have their own.
   root: string;
   mount(prefix: string, root: string): void;
   unmount(prefix: string): void;
@@ -38,19 +38,20 @@ function trimSlashes(prefix: string): string {
 
 type Opened = { handle: FileHandle; size: number; file: string };
 
-// Opens first and checks after, so a link swapped in between the check and the read can't hand out a file from outside `base`.
-// `base` is resolved once, by the caller, so a root swapped for a link while the server runs doesn't move it.
+// macOS's flag to refuse a link in any component of the path, not only the last; Node passes it through without naming it.
+// It turns a component swapped for a link after the realpath below into a failed open, never a file outside the root.
+const O_NOFOLLOW_ANY = 0x20000000;
+
+// Resolves first, and opens only a path that lies inside `base`, so nothing outside the root is ever opened.
+// `base` is resolved once, by the caller. A root, or a directory in it, swapped for a link after that is refused, not followed.
 async function openInside(base: string, target: string, index = true): Promise<Opened | undefined> {
   let handle: FileHandle | undefined;
   try {
-    // A pipe would hold the open until something wrote to it; non-blocking makes it just another non-file.
-    handle = await open(target, constants.O_RDONLY | constants.O_NONBLOCK);
-    const opened = await handle.stat();
     const real = await realpath(target);
-    // The name leads to what was opened only if both are the same inode, and only then does `real` say where it lives.
-    const named = await stat(real);
-    const same = named.dev === opened.dev && named.ino === opened.ino;
-    if (!same || (real !== base && !real.startsWith(base + sep))) return await shut(handle);
+    if (real !== base && !real.startsWith(base + sep)) return undefined;
+    // A pipe would hold the open until something wrote to it; non-blocking makes it just another non-file.
+    handle = await open(real, constants.O_RDONLY | constants.O_NONBLOCK | O_NOFOLLOW_ANY);
+    const opened = await handle.stat();
     if (opened.isDirectory() && index) {
       await shut(handle);
       return await openInside(base, join(real, 'index.html'), false);
@@ -58,7 +59,7 @@ async function openInside(base: string, target: string, index = true): Promise<O
     if (!opened.isFile()) return await shut(handle);
     return { handle, size: opened.size, file: real };
   } catch {
-    // Missing, unreadable or a broken link: all the same to a browser.
+    // Missing, unreadable, a broken link or a link swapped in: all the same to a browser.
     if (handle) await shut(handle);
     return undefined;
   }
@@ -75,8 +76,9 @@ function answer(res: ServerResponse, status: number, text: string): void {
 
 // Serves one directory, or with `mounts` several under their own prefixes, to the play browser and the stakeholder on this machine.
 export async function serveStatic(root: string, opts: { port?: number; mounts?: boolean } = {}): Promise<StaticServer> {
-  // Each root is resolved once, here or at mount(), and every request is held to that fixed path.
-  // A process the sandbox can't stop may swap a root for a link while the server runs; the server keeps serving where it started.
+  if (process.platform !== 'darwin') throw new Error('serveStatic needs macOS: it keeps each request inside its root with O_NOFOLLOW_ANY, which only macOS has');
+  // Each root is resolved once, here or at mount(), and every request is held to that path. A process the sandbox can't
+  // stop may swap a root for a link while the server runs; from then on the server answers 404 rather than follow it.
   const base = opts.mounts ? '' : await realpath(root);
   const mounts = new Map<string, string>();
   // Filled in once the port is known, which is before the first request can arrive.
