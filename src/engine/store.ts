@@ -363,7 +363,7 @@ export class Store {
     return rows.map(toCriterionRow);
   }
 
-  // Only QA moves a criterion, or the stakeholder through the CP4 they answered, and either only by pointing at its evidence (§7.5).
+  // Only QA moves a criterion, or the stakeholder through this milestone's CP4, and either only by pointing at its evidence (§7.5).
   async recordVerification(projectId: number, milestone: number, acId: string, verification: Verification): Promise<void> {
     if (verification.evidenceRef.trim() === '') throw new Error(`A verification of ${acId} needs an evidence reference`);
 
