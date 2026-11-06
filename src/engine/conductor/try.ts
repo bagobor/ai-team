@@ -11,13 +11,12 @@ export function tryWorktree({ paths }: EngineDeps, project: ProjectRow, n: numbe
   return { worktree: worktreePath(paths, project.name, `M${n}-try`, 1), branch: `aiteam/try/M${n}` };
 }
 
-// CP4 can be raised again for the same head, so a checkout already there is left as the stakeholder has it. A head that moved gets a fresh one.
+// CP4 can be raised again for the same head, so a checkout whose HEAD hasn't moved is left as it is. A commit made inside it moves its HEAD, and the next call replaces it, as it does for a head that moved.
 export async function ensureTryWorktree(deps: EngineDeps, project: ProjectRow, n: number, headSha: string): Promise<string> {
   const { worktree, branch } = tryWorktree(deps, project, n);
-  if (existsSync(join(worktree, '.git'))) {
-    const head = await git(worktree, ['rev-parse', 'HEAD']);
-    if (head.code === 0 && head.stdout.trim() === headSha) return worktree;
-  }
+  // The head comes from the repo's side: whatever builds in the checkout can rewrite its .git, and git run from there would trust it (see linkedLocation).
+  const tip = await git(project.repo_path, ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}^{commit}`]);
+  if (existsSync(join(worktree, '.git')) && tip.code === 0 && tip.stdout.trim() === headSha) return worktree;
   await removeAttemptWorktree(project.repo_path, worktree, branch);
   await addAttemptWorktree(project.repo_path, worktree, branch, headSha);
   return worktree;

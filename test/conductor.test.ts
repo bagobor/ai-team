@@ -1,4 +1,5 @@
-import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { sectionText } from '../src/artifacts/format.ts';
@@ -17,10 +18,10 @@ import type { WorkOrder } from '../src/engine/workorder.ts';
 import { EventLog } from '../src/events.ts';
 import { mergeIntoBranch } from '../src/git/merge.ts';
 import { addAttemptWorktree, ensureIntegrationBranch, snapshotAttempt } from '../src/git/workspace.ts';
-import { worktreePath } from '../src/paths.ts';
+import { isWithin, worktreePath } from '../src/paths.ts';
 import { CRITERIA, projectOf } from './helpers/apply.ts';
 import { eventTypes, makeEngine, ticket, type TestEngine } from './helpers/engine.ts';
-import { commitAll, makeRepo, porcelain, revParse, run } from './helpers/repo.ts';
+import { commitAll, makeRepo, porcelain, revParse, run, tempDir } from './helpers/repo.ts';
 
 const DISCOVERY = {
   roadmap: { body: '# Roadmap\n', milestones: [{ n: 1, title: 'First', goal: 'Start' }, { n: 2, title: 'Second', goal: 'Finish' }] },
@@ -708,6 +709,37 @@ describe('flow', () => {
     await removeTryWorktree(h, h.project, 1);
     expect(existsSync(tryPath)).toBe(false);
     await removeTryWorktree(h, h.project, 1);
+  });
+
+  // Git trusts a checkout's own .git file, and whatever builds in the try checkout can rewrite it, so a git run from inside it could be made to run a command of the build's choosing.
+  it('never runs git from inside the try checkout, whatever its .git says', async () => {
+    const h = await harness();
+    const { headSha } = await ensureIntegrationBranch(h.repoPath, 1, 'main');
+    const tryPath = await ensureTryWorktree(h, h.project, 1, headSha);
+    commitOn(h, 'aiteam/m1', { 'later.txt': 'later\n' });
+    const later = await revParse(h.repoPath, 'refs/heads/aiteam/m1');
+
+    // A stand-in for git that records the directory it was started in, then hands over to the real one.
+    const shim = tempDir('aiteam-git-shim-');
+    const log = join(shim, 'cwds.log');
+    const realGit = execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim();
+    writeFileSync(join(shim, 'git'), `#!/bin/sh\npwd -P >> '${log}'\nexec '${realGit}' "$@"\n`, { mode: 0o755 });
+    const path = process.env.PATH;
+    process.env.PATH = `${shim}:${path}`;
+    let cwds: string[];
+    try {
+      writeFileSync(join(tryPath, '.git'), 'gitdir: /nonexistent/elsewhere\n');
+      await expect(ensureTryWorktree(h, h.project, 1, headSha)).resolves.toBe(tryPath);
+      await ensureTryWorktree(h, h.project, 1, later);
+      cwds = readFileSync(log, 'utf8').split('\n').filter(Boolean);
+    } finally {
+      process.env.PATH = path;
+      rmSync(shim, { recursive: true, force: true });
+    }
+
+    expect(cwds).toContain(h.repoPath);
+    expect(cwds.filter((cwd) => isWithin(tryPath, cwd))).toEqual([]);
+    expect(await revParse(tryPath, 'HEAD')).toBe(later);
   });
 
   it('does not merge while a criterion is unverified', async () => {
