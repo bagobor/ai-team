@@ -1,4 +1,4 @@
-import { AC_ID, AC_SLUG, type Criterion, isHumanCheck, MAX_HUMAN_CHECKS } from '../../artifacts/acs.ts';
+import { AC_ID, AC_SLUG, type Criterion, isHumanCheck, MAX_HUMAN_CHECKS, verificationLabel } from '../../artifacts/acs.ts';
 import { parsePin, sectionsOf } from '../../artifacts/format.ts';
 import { reviewId, specId } from './ids.ts';
 import type { Applier } from './index.ts';
@@ -10,10 +10,7 @@ type ReviewOutput = { body: string; known_issues: string[]; deviations: string[]
 
 
 const CRITERIA_HEADING = 'Acceptance criteria';
-const criterionSection = (criterion: Criterion) => {
-  const { id, text, verification } = criterion;
-  return `### ${id}\n\n${text.trim()}\n\n${isHumanCheck(criterion) ? 'Checked by the stakeholder' : 'Verified by'}: ${verification.how}\n`;
-};
+const criterionSection = (criterion: Criterion) => `### ${criterion.id}\n\n${criterion.text.trim()}\n\n${verificationLabel(criterion)}: ${criterion.verification.how}\n`;
 
 // The engine writes these sections so that #ac-1 always resolves, which leaves nothing in the body or a criterion
 // that may look like one: a ticket pinned to it would follow the forgery.
@@ -26,7 +23,7 @@ export function criteriaSlug(body: string): string | undefined {
   return sectionsOf(body).filter(({ level, title }) => level === 2 && title === CRITERIA_HEADING).at(-1)?.slug;
 }
 
-function specProblems(body: string, criteria: Criterion[], locked: { ac_id: string; text: string }[]): string[] {
+function specProblems(body: string, criteria: Criterion[], locked: { ac_id: string; text: string; verification: Criterion['verification'] }[]): string[] {
   const problems: string[] = [];
   if (criteria.length === 0) problems.push('The spec has no acceptance criteria');
 
@@ -47,10 +44,12 @@ function specProblems(body: string, criteria: Criterion[], locked: { ac_id: stri
 
   if (locked.length > 0) {
     const byId = new Map(criteria.map((criterion) => [criterion.id, criterion]));
-    for (const { ac_id, text } of locked) {
+    for (const { ac_id, text, verification } of locked) {
       const criterion = byId.get(ac_id);
       if (!criterion) problems.push(`${ac_id} is locked, so it can't be dropped. Raise a Change Request instead`);
       else if (criterion.text !== text) problems.push(`${ac_id} is locked, so its text can't change. Raise a Change Request instead`);
+      // Locking never repeats, so the registry would keep the old method while the body says the new one: QA and the stakeholder would disagree about who checks it.
+      else if (criterion.verification.method !== verification.method) problems.push(`${ac_id} is locked, so its verification method can't change. Raise a Change Request instead`);
     }
     for (const { id } of criteria) if (!locked.some(({ ac_id }) => ac_id === id)) problems.push(`${id} is new, and this milestone's criteria are locked. Raise a Change Request instead`);
   }

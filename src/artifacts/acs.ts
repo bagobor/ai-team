@@ -9,6 +9,9 @@ export type Criterion = { id: string; text: string; verification: { method: Veri
 
 export const isHumanCheck = (c: { verification: { method: string } }): boolean => c.verification.method === 'human';
 
+// The line under a criterion that says who proves it. The engine writes it, and a Change Request that rewrites the criterion has to keep the same one.
+export const verificationLabel = (c: { verification: { method: string } }): string => (isHumanCheck(c) ? 'Checked by the stakeholder' : 'Verified by');
+
 // Each one costs the stakeholder minutes at milestone approval, so a Spec keeps them to what no command can judge.
 export const MAX_HUMAN_CHECKS = 3;
 

@@ -156,7 +156,7 @@ describe('appliers', () => {
       expect(evidenceOf(await apply(e, 'milestone_spec', { ...SPEC, ...change }))).toMatch(evidence);
     });
 
-    const HUMAN = { id: 'AC-2', text: 'Dodging feels fair', verification: { method: 'human', how: 'Play two minutes; you should never die without seeing the shot coming' } };
+    const HUMAN = { id: 'AC-2', text: 'Dodging feels fair', verification: { method: 'human' as const, how: 'Play two minutes; you should never die without seeing the shot coming' } };
 
     it('accepts a human check and says who checks it', async () => {
       const [row] = await publish(e, await apply(e, 'milestone_spec', { ...SPEC, criteria: [CRITERIA[0], HUMAN] }));
@@ -188,6 +188,18 @@ describe('appliers', () => {
       expect(evidenceOf(await apply(e, 'milestone_spec', { ...SPEC, criteria: [CRITERIA[0]] }))).toMatch(/AC-2.*locked/);
       const extra = { id: 'AC-3', text: 'More', verification: { method: 'automated', how: 'x' } };
       expect(evidenceOf(await apply(e, 'milestone_spec', { ...SPEC, criteria: [...CRITERIA, extra] }))).toMatch(/AC-3.*locked/);
+    });
+
+    it('rejects a revision that turns a locked automated criterion into a human check', async () => {
+      await lockSpec(e);
+      const flipped = [{ ...CRITERIA[0]!, verification: { method: 'human', how: CRITERIA[0]!.verification.how } }, CRITERIA[1]!];
+      expect(evidenceOf(await apply(e, 'milestone_spec', { ...SPEC, criteria: flipped }))).toMatch(/AC-1 is locked, so its verification method can't change/);
+    });
+
+    it('rejects a revision that turns a locked human check into an automated one', async () => {
+      await lockSpec(e, [CRITERIA[0]!, HUMAN]);
+      const flipped = [CRITERIA[0]!, { ...HUMAN, verification: { method: 'automated', how: HUMAN.verification.how } }];
+      expect(evidenceOf(await apply(e, 'milestone_spec', { ...SPEC, criteria: flipped }))).toMatch(/AC-2 is locked, so its verification method can't change/);
     });
 
     it('takes a new version of the spec that keeps the locked text', async () => {

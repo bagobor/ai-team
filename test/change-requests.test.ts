@@ -43,10 +43,10 @@ describe('Change Requests', () => {
   const testPlan = (coverage = COVERAGE) => document({ id: 'TEST-PLAN-M1', type: 'test_plan', ownerRole: 'qa_engineer', body: '# Plan\n\nRun the checks.\n', fields: { data: { coverage } } });
   const coverageOf = async (pin = 'TEST-PLAN-M1') => ((await read(pin)).fields.data as { coverage: typeof COVERAGE }).coverage;
   // Written as the PM writes one: a verification line under each criterion, and the criteria in its data.
-  const specByPm = async () => {
-    const [spec] = await publish(e, await apply(e, 'milestone_spec', { body: '# Milestone one\n', criteria: CRITERIA, stakeholder_note: 'Note' }));
+  const specByPm = async (criteria = CRITERIA) => {
+    const [spec] = await publish(e, await apply(e, 'milestone_spec', { body: '# Milestone one\n', criteria, stakeholder_note: 'Note' }));
     await e.artifacts.commit(p, { message: 'approve', status: [{ id: 'SPEC-M1', status: 'approved', approvedBy: 'stakeholder' }] });
-    await e.store.lockCriteria(p.id, 1, spec!.version, CRITERIA);
+    await e.store.lockCriteria(p.id, 1, spec!.version, criteria);
   };
 
   describe('filing', () => {
@@ -267,6 +267,36 @@ describe('Change Requests', () => {
       const [first, second] = await e.store.listCriteria(p.id, 1);
       expect(first).toMatchObject({ text: 'The first thing works', verification: { method: 'automated', how: TAP }, status: 'unverified', cr_id: 'CR-1', spec_version: 2 });
       expect(second).toMatchObject({ verification: CRITERIA[1]!.verification, cr_id: null });
+    });
+  });
+
+  describe('a Spec criterion that only the stakeholder can check', () => {
+    const HUMAN = { id: 'AC-2', text: 'Dodging feels fair', verification: { method: 'human' as const, how: 'Play two minutes; you should never die without seeing the shot coming' } };
+    const onHuman = (overrides: Partial<ChangeRequestInput> = {}) => onCriterion({ target_ac: 'AC-2', proposed_text: 'Dodging feels fair, even in a crowd', ...overrides });
+
+    it('keeps the line that says the stakeholder checks it when its text changes', async () => {
+      await specByPm([CRITERIA[0]!, HUMAN]);
+      await fileChangeRequest(e, p, onHuman());
+
+      await applyChangeRequest(e, p, 'CR-1');
+
+      const section = sectionText((await read('SPEC-M1')).body, 'ac-2');
+      expect(section).toContain(`Dodging feels fair, even in a crowd\n\nChecked by the stakeholder: ${HUMAN.verification.how}\n`);
+      expect(section).not.toContain('Verified by');
+    });
+
+    it('takes new steps in that line, in its criteria and in the registry when applied', async () => {
+      const steps = 'Play three minutes on the hard setting; every death should follow a shot you could see';
+      await specByPm([CRITERIA[0]!, HUMAN]);
+      await fileChangeRequest(e, p, onHuman({ proposed_text: HUMAN.text, proposed_verification: steps }));
+
+      await applyChangeRequest(e, p, 'CR-1');
+
+      const doc = await read('SPEC-M1');
+      expect(sectionText(doc.body, 'ac-2')).toContain(`Dodging feels fair\n\nChecked by the stakeholder: ${steps}\n`);
+      expect(sectionText(doc.body, 'ac-2')).not.toContain('Verified by');
+      expect(doc.fields.data).toEqual({ criteria: [CRITERIA[0], { ...HUMAN, verification: { method: 'human', how: steps } }] });
+      expect((await e.store.listCriteria(p.id, 1))[1]).toMatchObject({ verification: { method: 'human', how: steps }, cr_id: 'CR-1' });
     });
   });
 

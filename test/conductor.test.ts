@@ -307,6 +307,9 @@ describe('flow', () => {
 
     const spec = await byTicket(h, 'M1-SPEC');
     expect([spec.role_id, spec.purpose, orderOf(spec).inputs, orderOf(spec).base]).toEqual(['pm', 'milestone_spec', ['ROADMAP@1', 'HUMAN-REQUIREMENTS@1'], { kind: 'base' }]);
+    // The charter allows a human check, so the order that comes with it can't say every criterion is automated.
+    expect(orderOf(spec).instructions).toContain('human check');
+    expect(orderOf(spec).instructions).not.toContain('automated command');
     expect(await taskIds(h)).not.toContain('M2-SPEC');
   });
 

@@ -161,7 +161,7 @@ export function specTask(project: ProjectRow, n: number, round: number, inputs: 
     milestone: n,
     role_id: 'pm',
     kind: 'authoring',
-    order: workOrder('milestone_spec', `Write the Spec for milestone ${n} from the Roadmap and the Human Requirements, with acceptance criteria that an automated command can verify.`, inputs, BASE, withComment(comment)),
+    order: workOrder('milestone_spec', `Write the Spec for milestone ${n} from the Roadmap and the Human Requirements, with acceptance criteria that a command can verify, or a human check where only a person can judge.`, inputs, BASE, withComment(comment)),
   };
 }
 

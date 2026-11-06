@@ -1,4 +1,4 @@
-import { AC_SLUG, type Criterion } from '../artifacts/acs.ts';
+import { AC_SLUG, type Criterion, verificationLabel } from '../artifacts/acs.ts';
 import { parsePin, replaceSection, sectionsOf, type ArtifactDoc, type ArtifactType, type Pin, type Section } from '../artifacts/format.ts';
 import type { NewVersion } from '../artifacts/store.ts';
 import type { Coverage } from './apply/design.ts';
@@ -155,7 +155,9 @@ async function criterionReplacement(deps: Deps, project: ProjectRow, target: Art
 
   const text = withoutHeading(proposed, section);
   const verification = how === undefined ? criterion.verification : { ...criterion.verification, how };
-  const verified = section.text.includes('\nVerified by: ') ? `\n\nVerified by: ${verification.how}` : '';
+  // The locked criterion says who checks it, so the line a human check carries is kept as the engine wrote it. A section with no such line stays without one.
+  const label = verificationLabel(criterion);
+  const verified = section.text.includes(`\n${label}: `) ? `\n\n${label}: ${verification.how}` : '';
   const { body, before, after } = replaced(doc, slug, `${text}${verified}`);
   if (after.length !== before.length) throw new ChangeRequestError(`The proposed text for ${ac} has a heading in it`);
 
