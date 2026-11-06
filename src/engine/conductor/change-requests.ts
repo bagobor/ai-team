@@ -1,5 +1,5 @@
 import type { ArtifactDoc } from '../../artifacts/format.ts';
-import { ownerOf, applyChangeRequest, ChangeRequestError, criterionText, movedSince, rejectChangeRequest, requestOf, TargetMovedError, touchesCriterionText } from '../change-requests.ts';
+import { ownerOf, applyChangeRequest, ChangeRequestError, criterionText, flagsRegression, movedSince, rejectChangeRequest, requestOf, TargetMovedError, touchesCriterionText } from '../change-requests.ts';
 import { openTickets } from '../apply/design.ts';
 import { techId, testPlanId } from '../apply/ids.ts';
 import { recommendationOf } from '../apply/review.ts';
@@ -63,18 +63,22 @@ async function askStakeholder(deps: Deps, project: ProjectRow, cr: ArtifactVersi
 
   const filed = cr.derived_from[0] as string;
   const moved = await movedSince(deps, project, input, filed, current);
+  // QA refuses commands that pass before the work, and the Test Plan's owner is QA, so a request to waive that is asked in its own words.
+  const waiver = flagsRegression(doc, current);
   await store.raiseInbox({
     project_id: project.id,
     ...(cr.milestone === null ? {} : { milestone: cr.milestone }),
     type: 'approval',
     dedupe_key: asked.length === 0 ? `cr:${crNumber(crId)}` : `cr:${crNumber(crId)}:${pinOf(target)}`,
     ref: { kind: 'cr', cr: crId },
-    title: `Change an acceptance criterion: ${crId}`,
+    title: waiver ? `Let a criterion pass on the base: ${crId}` : `Change an acceptance criterion: ${crId}`,
     asked_by: ownerOf(target),
     why: [
-      `${crId} changes the text of ${ac} in ${target.artifact_id}.`,
+      waiver
+        ? `${crId} asks to make ${ac} of ${target.artifact_id} a regression guard: its commands pass before this milestone's work too, which QA otherwise refuses because they show nothing of it. Approve only if ${ac} is meant to hold already. A Test Plan's owner can't waive its own check.`
+        : `${crId} changes the text of ${ac} in ${target.artifact_id}.`,
       ...(moved ? [`${ac} has changed since ${crId} was filed against ${filed}, so approving it replaces the text it has now.`] : []),
-      'Criteria text changes only with your approval.',
+      ...(waiver ? [] : ['Criteria text changes only with your approval.']),
     ].join(' '),
     blocks: [`Applying ${crId}`],
     evidence: [
@@ -104,8 +108,9 @@ async function advanceRequest(deps: Deps, project: ProjectRow, cr: ArtifactVersi
   if (!attempt) throw new Error(`${task.ticket_id} is done with no successful attempt`);
   const { decision, rationale } = recommendationOf(attempt);
 
-  // Changes to criteria text always go to the stakeholder. Everything else, the owner decides.
-  if (touchesCriterionText(doc, target)) {
+  // Changes to criteria text, and a Test Plan request that waives QA's base check, always go to the stakeholder. Everything else, the owner decides.
+  // The owner's recommendation is still asked for, and shown, but it doesn't apply or reject these.
+  if (touchesCriterionText(doc, target) || (target.type === 'test_plan' && flagsRegression(doc, await artifacts.read(project, pinOf(target))))) {
     await askStakeholder(deps, project, cr, doc, target, `${decision}: ${rationale}`);
     return;
   }

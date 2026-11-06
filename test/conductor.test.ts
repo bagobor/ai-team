@@ -1509,6 +1509,77 @@ describe('review focus: a change mid-flight', () => {
     expect(await milestonePhase(h)).toBe('milestone_review');
   });
 
+  // QA owns the Test Plan and raises these requests after a refusal, so an owner's approval alone would let it waive its own check.
+  describe('a Test Plan request to make an entry a regression guard', () => {
+    const plan = { ...TEST_PLAN, coverage: [{ ac: 'AC-1', commands: ['true'], notes: '' }, { ac: 'AC-2', commands: ['true'], notes: '', regression: true }] };
+    const sameCommands = { target_artifact: 'TEST-PLAN-M1', target_ac: 'AC-1', proposed_text: 'true', rationale: 'AC-1 holds already', evidence: 'It passed before this milestone', raised_by: 'qa_engineer' };
+    const coverageOf = async (h: Harness) => ((await h.artifacts.read(h.project, 'TEST-PLAN-M1')).fields.data as { coverage: { ac: string; commands: string[]; regression?: boolean }[] }).coverage;
+
+    it.each(['approve', 'reject'])('goes to the stakeholder when the owner recommends %s, and changes nothing until they decide', async (decision) => {
+      const h = await harness();
+      await toBuild(h, { plan });
+      const { artifact_id: id } = await fileChangeRequest(h, h.project, sameCommands);
+      await h.conductor.tick();
+
+      await finish(h, `${id}-REC`, { decision, rationale: 'Owner says so' });
+      await h.conductor.tick();
+
+      const item = await pending(h, 'cr');
+      expect(item).toMatchObject({ type: 'approval', title: `Let a criterion pass on the base: ${id}`, dedupe_key: 'cr:1', recommendation: `${decision}: Owner says so` });
+      expect(item.why).toContain(`${id} asks to make AC-1 of TEST-PLAN-M1 a regression guard`);
+      expect(item.why).toContain("A Test Plan's owner can't waive its own check.");
+      expect(item.why).not.toContain('Criteria text changes only with your approval');
+      expect(await statusOf(h, id)).toBe('proposed');
+      expect((await h.artifacts.latest(h.project.id, 'TEST-PLAN-M1'))!.version).toBe(1);
+      expect((await coverageOf(h))[0]).not.toHaveProperty('regression');
+    });
+
+    it('publishes the flagged version when the stakeholder approves it, as their decision', async () => {
+      const h = await harness();
+      await toBuild(h, { plan });
+      const { artifact_id: id } = await fileChangeRequest(h, h.project, sameCommands);
+      await h.conductor.tick();
+      await finish(h, `${id}-REC`, { decision: 'approve', rationale: 'Yes' });
+      await h.conductor.tick();
+      const item = await pending(h, 'cr');
+
+      await h.store.answerInbox(item.id, { action: 'approve' });
+      await h.conductor.tick();
+
+      expect(await h.artifacts.latest(h.project.id, 'TEST-PLAN-M1')).toMatchObject({ version: 2, status: 'approved' });
+      expect((await coverageOf(h))[0]).toEqual({ ac: 'AC-1', commands: ['true'], notes: '', regression: true });
+      expect(await h.artifacts.latest(h.project.id, id)).toMatchObject({ status: 'approved', approved_by: 'stakeholder' });
+      expect(await decisionRecords(h)).toContainEqual(expect.objectContaining({ artifact_id: `DEC-${item.id}` }));
+    });
+
+    it('is closed without a change when the stakeholder rejects it', async () => {
+      const h = await harness();
+      await toBuild(h, { plan });
+      const { artifact_id: id } = await fileChangeRequest(h, h.project, sameCommands);
+      await h.conductor.tick();
+      await finish(h, `${id}-REC`, { decision: 'approve', rationale: 'Yes' });
+      await h.conductor.tick();
+
+      await h.store.answerInbox((await pending(h, 'cr')).id, { action: 'reject' });
+      await h.conductor.tick();
+
+      expect(await statusOf(h, id)).toBe('superseded');
+      expect((await h.artifacts.latest(h.project.id, 'TEST-PLAN-M1'))!.version).toBe(1);
+    });
+
+    // The owner still decides a request for other commands: the 'holds the Bug while QA asks to change a Test Plan command' test above applies one without an answer, and this one also shows no item is raised.
+    it('leaves a request for different commands to the owner, with no Inbox item', async () => {
+      const h = await harness();
+      await toBuild(h, { plan });
+
+      const id = await ownerApplies(h, { ...sameCommands, proposed_text: 'false' });
+
+      expect(await inboxOf(h, 'cr')).toEqual([]);
+      expect(await h.artifacts.latest(h.project.id, id)).toMatchObject({ status: 'approved', approved_by: 'owner:qa_engineer' });
+      expect(await coverageOf(h)).toEqual([{ ac: 'AC-1', commands: ['false'], notes: '' }, plan.coverage[1]]);
+    });
+  });
+
   it('goes back to build when QA was cancelled by a crash between the two steps', async () => {
     const h = await harness();
     await toVerify(h);

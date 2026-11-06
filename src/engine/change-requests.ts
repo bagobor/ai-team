@@ -42,8 +42,30 @@ export const ownerOf = (target: ArtifactVersionRow): string => target.owner_role
 
 export const requestOf = (cr: Pick<ArtifactDoc, 'fields'>): ChangeRequestInput => cr.fields.data as ChangeRequestInput;
 
-// A Test Plan's criterion is its commands, which its owner decides like any other section.
+// A Test Plan's criterion is its commands, which its owner decides like any other section, except when flagsRegression says otherwise.
 export const touchesCriterionText = (cr: Pick<ArtifactDoc, 'fields'>, target: Pick<ArtifactVersionRow, 'type'>): boolean => target.type === 'spec' && Boolean(requestOf(cr).target_ac);
+
+const coverageIn = (doc: ArtifactDoc): Coverage[] => {
+  const coverage = (doc.fields.data as { coverage?: unknown } | undefined)?.coverage;
+  return Array.isArray(coverage) ? (coverage as Coverage[]) : [];
+};
+
+const commandLines = (proposed: string): string[] => proposed.split('\n').map((line) => line.trim()).filter((line) => line !== '');
+
+// The same commands, in the same order, which is the request that makes an entry a regression guard.
+const proposesCurrent = (entry: Coverage, commands: string[]): boolean => {
+  const has = entry.commands.map((command) => command.trim());
+  return commands.length === has.length && commands.every((command, i) => command === has[i]);
+};
+
+// A request for the commands an entry already has makes it a regression guard, which waives QA's check that the commands fail on the base.
+// QA owns the Test Plan and raises these requests itself, so the stakeholder decides them, as they do a criterion's text.
+export function flagsRegression(cr: Pick<ArtifactDoc, 'fields'>, target: ArtifactDoc): boolean {
+  const { target_ac, proposed_text } = requestOf(cr);
+  if (target.type !== 'test_plan' || !target_ac) return false;
+  const entry = coverageIn(target).find((row) => row.ac === target_ac);
+  return entry !== undefined && proposesCurrent(entry, commandLines(proposed_text));
+}
 
 const pinIn = (text: string): Pin | undefined => {
   try {
@@ -131,22 +153,15 @@ function sectionReplacement(target: ArtifactVersionRow, doc: ArtifactDoc, slug: 
   return { body, fields: doc.fields };
 }
 
-const coverageIn = (doc: ArtifactDoc): Coverage[] => {
-  const coverage = (doc.fields.data as { coverage?: unknown } | undefined)?.coverage;
-  return Array.isArray(coverage) ? (coverage as Coverage[]) : [];
-};
-
 // What QA verify runs is the coverage, not the prose, so a Test Plan criterion takes new commands, one per line.
 // QA verify has no way to set the entry's regression flag, so asking for the commands the entry already has is how a criterion that held before the work gets it.
 function commandsReplacement(doc: ArtifactDoc, ac: string, proposed: string): Replacement {
   const coverage = coverageIn(doc);
   const entry = coverage.find((row) => row.ac === ac);
   if (!entry) throw new ChangeRequestError(`${doc.id} has no commands for ${ac}. It covers ${coverage.map((row) => row.ac).join(', ')}`);
-  const commands = proposed.split('\n').map((line) => line.trim()).filter((line) => line !== '');
-  const has = entry.commands.map((command) => command.trim());
-  const unchanged = commands.length === has.length && commands.every((command, i) => command === has[i]);
+  const commands = commandLines(proposed);
   const data = doc.fields.data as Record<string, unknown>;
-  const replaced = unchanged ? { ...entry, regression: true } : { ...entry, commands };
+  const replaced = proposesCurrent(entry, commands) ? { ...entry, regression: true } : { ...entry, commands };
   return { body: doc.body, fields: { ...doc.fields, data: { ...data, coverage: coverage.map((row) => (row.ac === ac ? replaced : row)) } } };
 }
 
@@ -349,7 +364,7 @@ export async function applyChangeRequest(deps: Deps, project: ProjectRow, crId: 
         acceptanceCriteria: doc.acceptanceCriteria,
         body,
       }],
-      status: [{ id: crId, status: 'approved', approvedBy: touchesCriterionText(request, target) ? 'stakeholder' : `owner:${cr.owner_role}` }],
+      status: [{ id: crId, status: 'approved', approvedBy: touchesCriterionText(request, target) || flagsRegression(request, doc) ? 'stakeholder' : `owner:${cr.owner_role}` }],
     },
     async (s, rows) => {
       if (criterion !== undefined) {

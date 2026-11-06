@@ -1,7 +1,7 @@
 import { sectionsOf, sectionText } from '../src/artifacts/format.ts';
 import { applyOutput } from '../src/engine/apply/index.ts';
 import type { NewVersion } from '../src/artifacts/store.ts';
-import { applyChangeRequest, ChangeRequestError, changeRequestDocs, fileChangeRequest, ownerOf, rejectChangeRequest, touchesCriterionText, type ChangeRequestInput } from '../src/engine/change-requests.ts';
+import { applyChangeRequest, ChangeRequestError, changeRequestDocs, fileChangeRequest, flagsRegression, ownerOf, rejectChangeRequest, touchesCriterionText, type ChangeRequestInput } from '../src/engine/change-requests.ts';
 import { addProject } from '../src/engine/intake.ts';
 import type { ProjectRow } from '../src/engine/store.ts';
 import { apply, CRITERIA, ctxFor, evidenceOf, lockSpec, projectOf, publish, ticketTask } from './helpers/apply.ts';
@@ -322,6 +322,7 @@ describe('Change Requests', () => {
         { ac: 'AC-2', commands: ['npm test -- second'], notes: '' },
       ]);
       expect(await read('TEST-PLAN-M1')).toMatchObject({ version: 2, status: 'approved', body: '# Plan\n\nRun the checks.\n' });
+      expect(await latest('CR-1')).toMatchObject({ approved_by: 'owner:qa_engineer' });
     });
 
     // QA cannot set the flag itself, so asking for the commands an entry already has is how it says the criterion holds before the work.
@@ -334,7 +335,8 @@ describe('Change Requests', () => {
       expect(await coverageOf()).toEqual([{ ...COVERAGE[0], regression: true }, COVERAGE[1]]);
       // The new version differs from the old in its data alone, and it is a version: nothing treats the approval as having changed nothing.
       expect(await read('TEST-PLAN-M1')).toMatchObject({ version: plan.version + 1, status: 'approved', body: '# Plan\n\nRun the checks.\n' });
-      expect(await latest('CR-1')).toMatchObject({ status: 'approved' });
+      // Waiving QA's base check is the stakeholder's to allow, so the request carries their name and not the owner's.
+      expect(await latest('CR-1')).toMatchObject({ status: 'approved', approved_by: 'stakeholder' });
     });
 
     it('makes a regression guard of an entry whose commands several lines long are all proposed again', async () => {
@@ -357,6 +359,29 @@ describe('Change Requests', () => {
       await applyChangeRequest(e, p, 'CR-1');
 
       expect((await coverageOf())[0]).not.toHaveProperty('regression');
+    });
+
+    it('says a request would make the entry a regression guard only when it proposes the commands the entry has', async () => {
+      await testPlan();
+      const same = await read((await fileChangeRequest(e, p, onCommands({ proposed_text: ' npm test -- old \n' }))).artifact_id);
+      const other = await read((await fileChangeRequest(e, p, onCommands())).artifact_id);
+      const secondEntry = await read((await fileChangeRequest(e, p, onCommands({ target_ac: 'AC-2', proposed_text: 'npm test -- old' }))).artifact_id);
+      const plan = await read('TEST-PLAN-M1');
+
+      expect(flagsRegression(same, plan)).toBe(true);
+      expect(flagsRegression(other, plan)).toBe(false);
+      // The commands are AC-1's, not AC-2's.
+      expect(flagsRegression(secondEntry, plan)).toBe(false);
+    });
+
+    it('says a request on a section, or on a Spec criterion, is not one', async () => {
+      await lockSpec(e);
+      await document();
+      const section = await read((await fileChangeRequest(e, p, onSection())).artifact_id);
+      const criterion = await read((await fileChangeRequest(e, p, onCriterion())).artifact_id);
+
+      expect(flagsRegression(section, await read('TECH-M1'))).toBe(false);
+      expect(flagsRegression(criterion, await read('SPEC-M1'))).toBe(false);
     });
 
     it('refuses a criterion the plan does not cover', async () => {
