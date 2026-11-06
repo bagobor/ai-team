@@ -20,7 +20,7 @@ import { applyOutput } from './apply/index.ts';
 import { raisedRequests } from './apply/raised.ts';
 import { IllegalTransition } from './fsm.ts';
 import { reviewInputs } from './review-inputs.ts';
-import { roleInputs, writeReference } from './role-inputs.ts';
+import { roleInputs, writeReference, type Reference } from './role-inputs.ts';
 import type { AttemptPatch, AttemptRow, ProjectRow, Store, TaskRow } from './store.ts';
 import type { WorkOrder } from './workorder.ts';
 
@@ -63,7 +63,7 @@ type TaskText = {
   doneCommands: string[];
   inputs: ManifestInput[];
   acRefs: string[];
-  reference?: string;
+  reference?: Reference;
   diff?: NonNullable<BuildInput['diff']>;
   comment?: string;
 };
@@ -391,7 +391,7 @@ export class Runner {
       taskSource: `workorder:${order.purpose}`,
       doneCommands: order.checks,
       acRefs: task.ac_refs,
-      ...(order.purpose === 'milestone_review' ? { inputs: await reviewInputs(this.deps, project, task.milestone, order.inputs) } : await roleInputs(this.deps, project, order.inputs)),
+      ...(order.purpose === 'milestone_review' ? await reviewInputs(this.deps, project, task.milestone, order.inputs) : await roleInputs(this.deps, project, order.inputs, { designInFile: order.purpose === 'qa_verify' })),
       ...(diff ? { diff } : {}),
       ...(order.comment ? { comment: order.comment } : {}),
     };

@@ -31,6 +31,8 @@ export const largeTickets = Array.from({ length: TICKET_COUNT }, (_, t) => ({
   body: 'Do it.\n',
 }));
 export const largeDesign = { body: '# Design\n', tickets: largeTickets };
+// The first real project's Tech Designs ran from 7,000 to 12,000 characters of prose.
+export const proseDesign = { body: `# Design\n\n## Power-ups\n\ndesign-prose-marker ${words(6000)}\n\n## Boss\n\n${words(6000)}\n`, tickets: largeTickets };
 export const largeTestPlan = { body: `# Test plan\n\nplan-prose-marker ${words(1500)}\n`, coverage: largeCoverage, harness_tickets: [] };
 
 // Each document comes from its real applier, so these are the sizes and shapes a real milestone leaves behind.
@@ -47,8 +49,8 @@ export async function publishLargeSpec(e: TestEngine, { ownCriteriaSection = tru
   return project;
 }
 
-export async function publishLargeDesign(e: TestEngine): Promise<void> {
-  await publish(e, await apply(e, 'tech_design', largeDesign, { inputs: ['SPEC-M1@1'], role: 'tech_lead' }));
+export async function publishLargeDesign(e: TestEngine, design = largeDesign): Promise<void> {
+  await publish(e, await apply(e, 'tech_design', design, { inputs: ['SPEC-M1@1'], role: 'tech_lead' }));
   await publish(e, await apply(e, 'test_plan', largeTestPlan, { inputs: ['SPEC-M1@1'], role: 'qa_engineer' }));
 }
 

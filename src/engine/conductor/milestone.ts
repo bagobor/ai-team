@@ -3,7 +3,7 @@ import { runSandboxed } from '../../checks/run-checks.ts';
 import { advanceBaseBranch, snapshotState, syncBaseIntoIntegration } from '../../git/merge.ts';
 import { addAttemptWorktree, ensureIntegrationBranch, removeAttemptWorktree } from '../../git/workspace.ts';
 import { stateRepoDir, workerDenyRead, worktreePath } from '../../paths.ts';
-import { ENV_PROFILE, reviewId, specId, testPlanId } from '../apply/ids.ts';
+import { ENV_PROFILE, reviewId, specId, techId, testPlanId } from '../apply/ids.ts';
 import type { EngineDeps, Runner } from '../runner.ts';
 import type { MilestoneRow, ProjectRow, Store, TaskRow } from '../store.ts';
 import { ensureTask, isClosed, latestPin, milestoneReviewTask, noteOf, pinOf, qaTask, raiseHold, RETRY_OR_HALT, roundId, roundOf, specTask, techTask, testPlanTask, ticketTask, openHold, type TaskSpec, type TicketFields } from './tasks.ts';
@@ -159,7 +159,7 @@ async function build(deps: EngineDeps, runner: Runner, project: ProjectRow, m: M
   if ((await artifacts.list(project.id)).some((row) => row.milestone === n && row.status === 'stale' && STALE_BLOCKS.includes(row.type))) return;
 
   const round = m.verify_round + 1;
-  const inputs = [await latestPin(deps, project, specId(n)), await latestPin(deps, project, testPlanId(n))];
+  const inputs = [await latestPin(deps, project, specId(n)), await latestPin(deps, project, techId(n)), await latestPin(deps, project, testPlanId(n))];
   await store.atomically(async (s) => {
     await s.patchMilestone(project.id, n, { verify_round: round });
     await ensureTask(s, qaTask(project, n, round, inputs));
@@ -179,7 +179,7 @@ async function verify(deps: EngineDeps, project: ProjectRow, m: MilestoneRow, ta
 
   const criteria = await store.listCriteria(project.id, n);
   if (criteria.every(({ status }) => status === 'passing' || status === 'waived')) {
-    const inputs = [await latestPin(deps, project, specId(n)), await latestPin(deps, project, testPlanId(n)), await latestPin(deps, project, `QA-REPORT-M${n}-${round}`)];
+    const inputs = [await latestPin(deps, project, specId(n)), await latestPin(deps, project, techId(n)), await latestPin(deps, project, testPlanId(n)), await latestPin(deps, project, `QA-REPORT-M${n}-${round}`)];
     await store.atomically(async (s) => {
       await ensureTask(s, milestoneReviewTask(project, n, round, inputs));
       await s.setMilestonePhase(project.id, n, 'milestone_review');

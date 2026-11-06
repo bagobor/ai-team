@@ -6,10 +6,10 @@ import type { TaskManifest } from '../src/manifest/build.ts';
 import { manifestDir } from '../src/paths.ts';
 import { apply, publish } from './helpers/apply.ts';
 import { makeEngine, okStep, resultStep, runOnce, ticket, type TestEngine } from './helpers/engine.ts';
-import { command, ids, largeCoverage, largeDesign, largeTestPlan, largeTickets, noteOf, planNoteOf, pmRowOf, publishLargeDesign, publishLargeSpec, publishProfile, ROOM_BEFORE_M4, textOf } from './helpers/large-milestone.ts';
+import { command, ids, largeCoverage, largeDesign, largeTestPlan, largeTickets, noteOf, planNoteOf, pmRowOf, proseDesign, publishLargeDesign, publishLargeSpec, publishProfile, ROOM_BEFORE_M4, textOf } from './helpers/large-milestone.ts';
 import { commitAll, porcelain, run, tempDir } from './helpers/repo.ts';
 
-const QA_PINS = ['SPEC-M1@1', 'TEST-PLAN-M1@1'];
+const QA_PINS = ['SPEC-M1@1', 'TECH-M1@1', 'TEST-PLAN-M1@1'];
 const QA_OUTPUT = { results: ids.map((ac) => ({ ac, status: 'passing', commands: [], notes: noteOf(ac) })), bugs: [], summary: 'All of it passed' };
 // The engine refuses these outputs, and a refused attempt keeps its worktree, so a test can read what the worker could read.
 const QA_REFUSED = { results: [], bugs: [], summary: 'Nothing' };
@@ -42,6 +42,7 @@ describe('what a role reads on a milestone of 10 tickets and 30 criteria', () =>
 
   const taskText = (ticketId: string) => readFileSync(join(manifestDir(e.paths, 'p', ticketId, 1), 'task.md'), 'utf8');
   const referenceOf = ({ worktree_path }: AttemptRow) => readFileSync(join(worktree_path, '.aiteam-reference', 'verification.md'), 'utf8');
+  const designOf = ({ worktree_path }: AttemptRow) => readFileSync(join(worktree_path, '.aiteam-reference', 'tech-design.md'), 'utf8');
   const timesIn = (text: string, part: string) => text.split(part).length - 1;
 
   function expectAllCommands(reference: string): void {
@@ -94,6 +95,30 @@ describe('what a role reads on a milestone of 10 tickets and 30 criteria', () =>
       expect(text).toContain('.aiteam-reference/verification.md');
     });
 
+    it('fits the budget with room left for M4 beside a Tech Design the size of a real one', async () => {
+      const project = await engineWith('M1-QA-1', QA_OUTPUT);
+      await publishLargeDesign(e, proseDesign);
+
+      const ran = await workOn(qaTask(project, 1, 1, QA_PINS));
+
+      expectRoomForM4(ran);
+      expect(ran.state).toBe('done');
+    });
+
+    it('can read the whole Tech Design in a file, and finds its sections in the manifest', async () => {
+      const project = await engineWith('M1-QA-1', QA_REFUSED);
+      await publishLargeDesign(e, proseDesign);
+
+      const { attempt } = await workOn(qaTask(project, 1, 1, QA_PINS));
+
+      const text = taskText('M1-QA-1');
+      expect(text).toContain('.aiteam-reference/tech-design.md');
+      expect(text).toContain('- Power-ups\n- Boss');
+      expect(text).not.toContain('design-prose-marker');
+      expect(designOf(attempt)).toContain(proseDesign.body.trim());
+      expectAllCommands(referenceOf(attempt));
+    });
+
     it('leaves the commands out of a Spec without an Acceptance criteria section of its own as well', async () => {
       const project = await engineWith('M1-QA-1', QA_REFUSED, { ownCriteriaSection: false });
       await publishLargeDesign(e);
@@ -108,6 +133,7 @@ describe('what a role reads on a milestone of 10 tickets and 30 criteria', () =>
     it('sees the Spec\'s command and the Test Plan\'s under the same criterion when they differ', async () => {
       const project = await engineWith('M1-QA-1', QA_REFUSED);
       const coverage = ids.map((ac) => ({ ac, commands: [`first-plan-command ${ac}`, `second-plan-command ${ac}`], notes: '' }));
+      await publish(e, await apply(e, 'tech_design', largeDesign, { inputs: ['SPEC-M1@1'], role: 'tech_lead' }));
       await publish(e, await apply(e, 'test_plan', { ...largeTestPlan, coverage }, { inputs: ['SPEC-M1@1'], role: 'qa_engineer' }));
 
       const { attempt } = await workOn(qaTask(project, 1, 1, QA_PINS));
@@ -122,6 +148,7 @@ describe('what a role reads on a milestone of 10 tickets and 30 criteria', () =>
     it('puts the Test Plan\'s commands first, and says the Spec\'s other command runs only if the plan takes it up', async () => {
       const project = await engineWith('M1-QA-1', QA_REFUSED);
       const coverage = ids.map((ac) => ({ ac, commands: [`plan-command ${ac}`], notes: '' }));
+      await publish(e, await apply(e, 'tech_design', largeDesign, { inputs: ['SPEC-M1@1'], role: 'tech_lead' }));
       await publish(e, await apply(e, 'test_plan', { ...largeTestPlan, coverage }, { inputs: ['SPEC-M1@1'], role: 'qa_engineer' }));
 
       const { attempt } = await workOn(qaTask(project, 1, 1, QA_PINS));

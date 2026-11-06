@@ -197,7 +197,7 @@ export function qaTask(project: ProjectRow, n: number, round: number, inputs: st
     milestone: n,
     role_id: 'qa_engineer',
     kind: 'qa_verify',
-    order: workOrder('qa_verify', `Verify every acceptance criterion of milestone ${n} on the integration branch. Report a Bug for each criterion that fails.`, inputs, INTEGRATION),
+    order: workOrder('qa_verify', `Verify every acceptance criterion of milestone ${n} on the integration branch. Where a criterion refers to the Tech Design, check the build against it. Report a Bug for each criterion that fails.`, inputs, INTEGRATION),
   };
 }
 
@@ -209,7 +209,7 @@ export function milestoneReviewTask(project: ProjectRow, n: number, round: numbe
     milestone: n,
     role_id: 'pm',
     kind: 'authoring',
-    order: workOrder('milestone_review', `Write the Milestone Review of milestone ${n} for the stakeholder: what was built, known issues, and any deviations from the Spec. Your inputs leave out the verification commands and their output, because each criterion has already passed or been waived: the status beside it is the engine's own record.`, inputs, INTEGRATION),
+    order: workOrder('milestone_review', `Write the Milestone Review of milestone ${n} for the stakeholder: what was built, known issues, and any deviations from the Spec or the Tech Design. Your inputs leave out the verification commands and their output, because each criterion has already passed or been waived: the status beside it is the engine's own record.`, inputs, INTEGRATION),
   };
 }
 

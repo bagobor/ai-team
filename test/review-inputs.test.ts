@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { ensureTask, milestoneReviewTask } from '../src/engine/conductor/tasks.ts';
 import type { TaskRow } from '../src/engine/store.ts';
@@ -6,21 +6,23 @@ import type { TaskManifest } from '../src/manifest/build.ts';
 import { manifestDir } from '../src/paths.ts';
 import { apply, projectOf, publish } from './helpers/apply.ts';
 import { makeEngine, resultStep, runOnce, type TestEngine } from './helpers/engine.ts';
-import { ids, noteOf, pmRowOf, publishLargeDesign, publishLargeSpec, ROOM_BEFORE_M4, words } from './helpers/large-milestone.ts';
+import { ids, largeDesign, noteOf, pmRowOf, proseDesign, publishLargeDesign, publishLargeSpec, ROOM_BEFORE_M4, words } from './helpers/large-milestone.ts';
 import { revParse } from './helpers/repo.ts';
 
-const PINS = ['SPEC-M1@1', 'TEST-PLAN-M1@1', 'QA-REPORT-M1-1@1'];
+const PINS = ['SPEC-M1@1', 'TECH-M1@1', 'TEST-PLAN-M1@1', 'QA-REPORT-M1-1@1'];
 const REVIEW = { body: '# How it went\n', known_issues: [], deviations: [], stakeholder_note: 'Ship it' };
+// The engine refuses a heading only it writes, and a refused attempt keeps its worktree, so a test can read what the PM could read.
+const REFUSED = { ...REVIEW, body: '## Deviations\n\nNone\n' };
 
 type QaOverrides = { notes?: (ac: string) => string; summary?: string; bugs?: unknown[]; ownCriteriaSection?: boolean };
 
 describe('the Milestone Review inputs', () => {
   let e: TestEngine;
 
-  async function reviewOfLargeMilestone(qa: QaOverrides = {}): Promise<TaskRow> {
-    e = await makeEngine({ steps: { byTask: { 'M1-REVIEW-1': resultStep(REVIEW) } } });
+  async function reviewOfLargeMilestone(qa: QaOverrides = {}, { design = largeDesign, review = REVIEW } = {}): Promise<TaskRow> {
+    e = await makeEngine({ steps: { byTask: { 'M1-REVIEW-1': resultStep(review) } } });
     const project = await publishLargeSpec(e, { ownCriteriaSection: qa.ownCriteriaSection ?? true });
-    await publishLargeDesign(e);
+    await publishLargeDesign(e, design);
 
     const results = ids.map((ac) => ({ ac, status: 'passing', commands: [], notes: (qa.notes ?? noteOf)(ac) }));
     const output = { results, bugs: qa.bugs ?? [], summary: qa.summary ?? `qa-summary-marker ${words(600)}` };
@@ -67,6 +69,31 @@ describe('the Milestone Review inputs', () => {
     expect(text).toContain('noted-title-marker: noted-description-marker');
   });
 
+  it('fit the budget with room left for M4 beside a Tech Design the size of a real one', async () => {
+    const task = await reviewOfLargeMilestone({}, { design: proseDesign });
+
+    await runOnce(e, task.id);
+
+    const [attempt] = await e.store.listAttempts(task.id);
+    expect(attempt).toMatchObject({ failure_kind: null });
+    expect((attempt!.manifest as TaskManifest).totalTokens).toBeLessThanOrEqual(ROOM_BEFORE_M4);
+  });
+
+  it('give the PM the whole Tech Design in a file, and its sections in the manifest', async () => {
+    const task = await reviewOfLargeMilestone({}, { design: proseDesign, review: REFUSED });
+
+    await runOnce(e, task.id);
+
+    const [attempt] = await e.store.listAttempts(task.id);
+    expect(attempt).toMatchObject({ state: 'invalid_output' });
+    const text = taskText();
+    expect(text).toContain('.aiteam-reference/tech-design.md');
+    expect(text).toContain('- Power-ups\n- Boss');
+    expect(text).not.toContain('design-prose-marker');
+    expect(readFileSync(join(attempt!.worktree_path, '.aiteam-reference', 'tech-design.md'), 'utf8')).toContain(proseDesign.body.trim());
+    expect(existsSync(join(attempt!.worktree_path, '.aiteam-reference', 'verification.md'))).toBe(false);
+  });
+
   it('leave out the verification commands, which ran and passed before the review began', async () => {
     const task = await reviewOfLargeMilestone();
 
@@ -84,7 +111,7 @@ describe('the Milestone Review inputs', () => {
     for (const ac of ids) expect(taskText()).toContain(`- ${ac} (passing): text-${ac}-marker`);
   });
 
-  it('still name their three documents, and the review still derives from them', async () => {
+  it('still name their four documents, and the review still derives from them', async () => {
     const task = await reviewOfLargeMilestone();
 
     await runOnce(e, task.id);

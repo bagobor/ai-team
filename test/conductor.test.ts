@@ -558,8 +558,17 @@ describe('flow', () => {
     await h.conductor.tick();
 
     const qa = await byTicket(h, 'M1-QA-1');
-    expect([qa.role_id, qa.kind, qa.purpose, orderOf(qa).base, orderOf(qa).inputs]).toEqual(['qa_engineer', 'qa_verify', 'qa_verify', { kind: 'integration' }, ['SPEC-M1@1', 'TEST-PLAN-M1@1']]);
+    expect([qa.role_id, qa.kind, qa.purpose, orderOf(qa).base, orderOf(qa).inputs]).toEqual(['qa_engineer', 'qa_verify', 'qa_verify', { kind: 'integration' }, ['SPEC-M1@1', 'TECH-M1@1', 'TEST-PLAN-M1@1']]);
     expect((await h.store.getMilestone(h.project.id, 1))!).toMatchObject({ phase: 'verify', verify_round: 1 });
+  });
+
+  it('gives the Milestone Review the Tech Design as well as the Spec, the Test Plan and the QA report', async () => {
+    const h = await harness();
+    await toVerify(h);
+    await finish(h, 'M1-QA-1', PASS);
+    await h.conductor.tick();
+
+    expect(orderOf(await byTicket(h, 'M1-REVIEW-1')).inputs).toEqual(['SPEC-M1@1', 'TECH-M1@1', 'TEST-PLAN-M1@1', 'QA-REPORT-M1-1@1']);
   });
 
   it('counts a cancelled ticket as finished for QA', async () => {
