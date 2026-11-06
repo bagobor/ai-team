@@ -1,0 +1,52 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>isolation</title>
+</head>
+<body>
+<script type="module">
+  // Tries every way a page could reach another server on this machine; the test's server on `other` counts what arrives.
+  const query = new URLSearchParams(location.search);
+  const other = query.get('other');
+  const log = (name, result) => console.log(`probe ${name}: ${result}`);
+
+  async function get(name, url) {
+    try {
+      // no-cors, so a request that does arrive reads as reached rather than as a CORS failure.
+      await fetch(url, { mode: 'no-cors', cache: 'no-store' });
+      log(name, 'reached');
+    } catch (err) {
+      log(name, `failed ${err.message}`);
+    }
+  }
+
+  function socket(url) {
+    return new Promise((resolve) => {
+      const ws = new WebSocket(url);
+      ws.onopen = () => {
+        log('websocket', 'reached');
+        ws.close();
+        resolve();
+      };
+      ws.onerror = () => {
+        log('websocket', 'failed');
+        resolve();
+      };
+    });
+  }
+
+  const probes = [
+    get('127.0.0.1', `http://127.0.0.1:${other}/`),
+    get('localhost', `http://localhost:${other}/`),
+    get('127.0.0.2', `http://127.0.0.2:${other}/`),
+    socket(`ws://127.0.0.1:${other}/`),
+  ];
+  // The test leaves this out only when it could not listen on ::1.
+  if (query.get('v6') !== '0') probes.push(get('[::1]', `http://[::1]:${other}/`));
+  await Promise.all(probes);
+  console.log('probes done');
+  location.href = `http://127.0.0.1:${other}/`;
+</script>
+</body>
+</html>

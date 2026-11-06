@@ -1,15 +1,25 @@
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { once } from 'node:events';
 import { chmodSync, existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo, Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { connectCdp } from '../src/checks/cdp.ts';
-import { chromePath, chromePlayer, keyProblem, scriptProblems, type PlayResult, type PlayScript } from '../src/checks/play.ts';
+import {
+  blankProblem,
+  chromePath,
+  chromePlayer,
+  keyProblem,
+  scriptProblems,
+  type PlayResult,
+  type PlayScript,
+  type PlayStep,
+} from '../src/checks/play.ts';
 import { serveStatic } from '../src/checks/static-server.ts';
 import { DEFAULT_CONFIG } from '../src/config.ts';
-import { groupAlive } from '../src/proc.ts';
+import { groupAlive, killGroupNow } from '../src/proc.ts';
 import { until } from './helpers/engine.ts';
 import { tempDir } from './helpers/repo.ts';
 
@@ -23,20 +33,33 @@ function profiles(): string[] {
   return readdirSync(tmpdir()).filter((name) => name.startsWith('aiteam-chrome-'));
 }
 
+type FakeChrome = {
+  dir: string;
+  binary: string;
+  args: () => string[];
+  env: () => string[];
+  profile: () => string;
+  pid: () => number;
+};
+
 // A stand-in for the Chrome binary that records how it was started, then does whatever `body` says.
-function fakeChrome(body: string): { binary: string; args: () => string[]; profile: () => string; pid: () => number } {
+function fakeChrome(body: string): FakeChrome {
   const dir = tempDir('aiteam-fake-chrome-');
   const binary = join(dir, 'chrome');
-  writeFileSync(binary, `#!/bin/sh\nprintf '%s\\n' "$@" > '${dir}/args'\necho $$ > '${dir}/pid'\n${body}\n`);
+  writeFileSync(binary, `#!/bin/sh\nprintf '%s\\n' "$@" > '${dir}/args'\nenv > '${dir}/env'\necho $$ > '${dir}/pid'\n${body}\n`);
   chmodSync(binary, 0o755);
-  const args = () => readFileSync(join(dir, 'args'), 'utf8').trimEnd().split('\n');
+  const lines = (name: string) => readFileSync(join(dir, name), 'utf8').trimEnd().split('\n');
   return {
+    dir,
     binary,
-    args,
-    profile: () => args().find((arg) => arg.startsWith('--user-data-dir='))!.slice('--user-data-dir='.length),
+    args: () => lines('args'),
+    env: () => lines('env'),
+    profile: () => lines('args').find((arg) => arg.startsWith('--user-data-dir='))!.slice('--user-data-dir='.length),
     pid: () => Number(readFileSync(join(dir, 'pid'), 'utf8')),
   };
 }
+
+const PROJECT = join(import.meta.dirname, '..');
 
 describe('keys and scripts', () => {
   it('names a key it does not know', () => {
@@ -57,8 +80,20 @@ describe('keys and scripts', () => {
     );
     expect(scriptProblems({ steps: [{ key: 'Fire' }], expect: 'true' })).toContainEqual(expect.stringMatching(/Fire is not a key/));
     expect(scriptProblems({ steps: [], expect: '  ' })).toContainEqual(expect.stringMatching(/expect/));
-    // A script is parsed from an agent's output, so it may not be a mapping at all.
+    // A script is parsed from an agent's output, so it may not be a mapping at all, nor its steps.
     expect(scriptProblems(null as unknown as PlayScript)).toEqual([expect.stringMatching(/steps.*expect/)]);
+    for (const step of ['ArrowLeft', null, 5]) {
+      expect(scriptProblems({ steps: [step as unknown as PlayStep], expect: 'true' })).toEqual([
+        expect.stringMatching(/Step 1 needs a key, a wait_ms or an eval/),
+      ]);
+    }
+  });
+
+  it('counts a screenshot whose colors could not be read as blank', () => {
+    expect(blankProblem(2)).toBeUndefined();
+    expect(blankProblem(40)).toBeUndefined();
+    expect(blankProblem(1)).toMatch(/one flat color/);
+    for (const count of [Number.NaN, undefined, null, 'many']) expect(blankProblem(count)).toMatch(/could not be counted/);
   });
 });
 
@@ -91,17 +126,99 @@ describe('chromePlayer without a working Chrome', () => {
         '--no-default-browser-check',
         '--disable-extensions',
         '--mute-audio',
+        '--use-mock-keychain',
         '--autoplay-policy=no-user-gesture-required',
         '--proxy-server=http://127.0.0.1:9',
         '--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1',
         '--force-webrtc-ip-handling-policy=disable_non_proxied_udp',
       ]),
     );
-    // A bypass list of <-loopback> would send the page on 127.0.0.1 itself to the dead proxy.
-    expect(args.filter((arg) => arg.startsWith('--proxy-bypass-list'))).toEqual([]);
+    // Only the played page's own origin goes direct: NOWHERE is on port 9.
+    expect(args.filter((arg) => arg.startsWith('--proxy-bypass-list'))).toEqual(['--proxy-bypass-list=<-loopback>;127.0.0.1:9']);
     expect(args).not.toContain('--no-sandbox');
     expect(dirname(fake.profile())).toBe(tmpdir());
     expect(fake.profile()).toMatch(/\/aiteam-chrome-[^/]+$/);
+  });
+
+  it('gives Chrome none of the engine environment, and a home inside its profile', async () => {
+    process.env.AITEAM_PLAY_SENTINEL = 'engine only';
+    try {
+      const fake = fakeChrome('exit 3');
+      await chromePlayer({ ...config, chrome: { binary: fake.binary } }).smoke(NOWHERE, ['Space']);
+
+      const env = fake.env();
+      const home = join(fake.profile(), 'home');
+      expect(env).toContain('CHROME_HEADLESS=1');
+      expect(env).toContain(`HOME=${home}`);
+      expect(env).toContain(`CFFIXED_USER_HOME=${home}`);
+      // The shell that stands in for Chrome sets PWD, SHLVL and _ itself.
+      const allowed = new Set(['PATH', 'TMPDIR', 'LANG', 'HOME', 'CFFIXED_USER_HOME', 'CHROME_HEADLESS', 'PWD', 'SHLVL', '_']);
+      expect(env.map((line) => line.split('=')[0]).filter((name) => !allowed.has(name!))).toEqual([]);
+    } finally {
+      delete process.env.AITEAM_PLAY_SENTINEL;
+    }
+  });
+
+  it('refuses a malformed script without starting Chrome', async () => {
+    const fake = fakeChrome('exit 3');
+    const steps = ['ArrowLeft'] as unknown as PlayStep[];
+    const result = await chromePlayer({ ...config, chrome: { binary: fake.binary } }).script(NOWHERE, { steps, expect: 'true' });
+
+    expect(result.ok).toBe(false);
+    expect(result.problems).toEqual([{ kind: 'expect', detail: expect.stringMatching(/Step 1/) }]);
+    expect(existsSync(join(fake.dir, 'args'))).toBe(false);
+  });
+
+  it('plays only a page served on 127.0.0.1, and says so', async () => {
+    const fake = fakeChrome('exit 3');
+    const player = chromePlayer({ ...config, chrome: { binary: fake.binary } });
+
+    for (const url of ['http://localhost:9/index.html', 'https://127.0.0.1:9/', 'file:///tmp/index.html', 'not a url']) {
+      const result = await player.smoke(url, []);
+      expect(result.ok).toBe(false);
+      expect(result.problems).toEqual([{ kind: 'browser', detail: expect.stringContaining(url) }]);
+    }
+    expect(existsSync(join(fake.dir, 'args'))).toBe(false);
+  });
+
+  it('stops Chrome when the engine exits in the middle of a run', async () => {
+    // Forks busily, as Chrome does while it starts: a group signal races a fork, and what is forked meanwhile escapes
+    // a single kill.
+    const fake = fakeChrome(
+      'for j in 1 2 3 4; do (i=0; while [ $i -lt 40 ]; do sleep 60 & i=$((i+1)); done; wait) & done; wait',
+    );
+    const script = join(tempDir('aiteam-play-exit-'), 'run.mts');
+    writeFileSync(
+      script,
+      [
+        `import { readFileSync } from 'node:fs';`,
+        `import { chromePlayer } from ${JSON.stringify(join(PROJECT, 'src/checks/play.ts'))};`,
+        `import { DEFAULT_CONFIG } from ${JSON.stringify(join(PROJECT, 'src/config.ts'))};`,
+        `const [binary, pidFile] = process.argv.slice(2);`,
+        `const url = ${JSON.stringify(NOWHERE)};`,
+        `void chromePlayer({ ...DEFAULT_CONFIG, chrome: { binary } }).smoke(url, ['Space']);`,
+        `const written = () => { try { return /^\\d+\\n/.test(readFileSync(pidFile, 'utf8')); } catch { return false; } };`,
+        // As the daemon's signal handler does, while the run still waits for DevTools. The pid has to be in the file
+        // first: a fake killed between creating it and writing it would leave the test no group to look at.
+        `setInterval(() => written() && process.exit(0), 20);`,
+      ].join('\n'),
+    );
+    const child = spawn(process.execPath, ['--import', 'tsx', script, fake.binary, join(fake.dir, 'pid')], {
+      cwd: PROJECT,
+      stdio: 'ignore',
+    });
+    const [code] = await once(child, 'exit');
+
+    expect(code).toBe(0);
+    const pid = fake.pid();
+    // Signalling group 0 would mean the test's own.
+    expect(pid).toBeGreaterThan(1);
+    try {
+      await until(async () => !groupAlive(pid), 3_000);
+    } finally {
+      // Whatever the outcome, the fake must not outlive the test.
+      killGroupNow(pid);
+    }
   });
 
   it('fails, naming the path, when Chrome exits before DevTools opens, and removes the profile', async () => {
@@ -185,7 +302,15 @@ describe.skipIf(!chrome && process.env.AITEAM_REQUIRE_CHROME !== '1')('chromePla
     expect(result.ok).toBe(false);
     expect(kinds(result)).toContain('frozen');
     expect(kinds(result)).not.toContain('blank');
+    // The count starts at load, so it spans both settles and the keys.
+    expect(result.problems.find((problem) => problem.kind === 'frozen')!.detail).toMatch(/0 animation frames in [2-9]\.\d s after load/);
   });
+
+  it('answers a dialog and plays on', async () => {
+    const result = await smoke('alert');
+    expect(result).toMatchObject({ ok: true, problems: [] });
+    expect(result.log).toContain('dialog alert: start');
+  }, 30_000);
 
   it('passes an animating WebGL canvas', async () => {
     const result = await smoke('webgl');
@@ -200,6 +325,49 @@ describe.skipIf(!chrome && process.env.AITEAM_REQUIRE_CHROME !== '1')('chromePla
     expect(offMachine.length).toBeGreaterThan(0);
     for (const problem of offMachine) expect(problem).toEqual({ kind: 'request', detail: expect.stringContaining('ERR_PROXY_CONNECTION_FAILED') });
     expect(result.log.join('\n')).toContain('ERR_PROXY_CONNECTION_FAILED');
+  });
+
+  it('lets the page reach its own origin and no other server on this machine', async () => {
+    const arrived: string[] = [];
+    const servers: Server[] = [];
+    const listen = async (port: number, host: string): Promise<number> => {
+      const server = createServer((_, res) => res.end('reached'));
+      server.on('connection', () => arrived.push(host));
+      await new Promise<void>((resolve, reject) => server.once('error', reject).listen(port, host, () => resolve()));
+      servers.push(server);
+      return (server.address() as AddressInfo).port;
+    };
+    const other = await listen(0, '127.0.0.1');
+    const v6 = await listen(other, '::1').then(
+      () => true,
+      () => false,
+    );
+    // Not every machine has 127.0.0.2 on its loopback; the probe goes out either way.
+    await listen(other, '127.0.0.2').catch(() => undefined);
+
+    try {
+      const page = `index.html?other=${other}${v6 ? '' : '&v6=0'}`;
+      const result = await served('isolation', (url) => player.smoke(url + page, []));
+      const log = result.log.join('\n');
+
+      expect(log).toContain('console.log: probes done');
+      expect(log).toContain(`http://127.0.0.1:${other}/ failed: net::ERR_PROXY_CONNECTION_FAILED`);
+      expect(arrived).toEqual([]);
+    } finally {
+      await Promise.all(servers.map((server) => new Promise((resolve) => server.close(resolve))));
+    }
+  });
+
+  it("keeps Chrome's crash database inside the run's profile", async () => {
+    const before = new Set(profiles());
+    const running = smoke('ok');
+    const profile = join(tmpdir(), await until(async () => profiles().find((name) => !before.has(name))));
+    const crashpad = join(profile, 'home', 'Library', 'Application Support', 'Google', 'Chrome', 'Crashpad');
+    const seen = await until(async () => existsSync(crashpad)).catch(() => false);
+
+    expect((await running).ok).toBe(true);
+    expect(seen).toBe(true);
+    expect(existsSync(profile)).toBe(false);
   });
 
   it('runs a play script and its expectation', async () => {

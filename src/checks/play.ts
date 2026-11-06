@@ -1,15 +1,14 @@
-import type { ChildProcess } from 'node:child_process';
-import { once } from 'node:events';
-import { statSync } from 'node:fs';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import type { Config } from '../config.ts';
-import { groupAlive, killGroupNow, spawnGroup } from '../proc.ts';
 import { connectCdp, type Cdp } from './cdp.ts';
+import { chromePath, DEFAULT_CHROME, startChrome, type Chrome } from './chrome.ts';
 
-const letters = [...'ABCDEFGHIJKLMNOPQRSTUVWXYZ'].map((c) => [`Key${c}`, { key: c.toLowerCase(), code: `Key${c}`, keyCode: c.charCodeAt(0) }]);
+export { chromePath } from './chrome.ts';
+
+const letters = [...'ABCDEFGHIJKLMNOPQRSTUVWXYZ'].map((c) => [
+  `Key${c}`,
+  { key: c.toLowerCase(), code: `Key${c}`, keyCode: c.charCodeAt(0) },
+]);
 const digits = [...'0123456789'].map((d) => [`Digit${d}`, { key: d, code: `Digit${d}`, keyCode: d.charCodeAt(0) }]);
 
 // Named by KeyboardEvent.code, which is what games read.
@@ -27,7 +26,10 @@ export const KEYS: Record<string, { key: string; code: string; keyCode: number }
 
 export function keyProblem(key: string): string | undefined {
   if (Object.hasOwn(KEYS, key)) return undefined;
-  return `${key} is not a key. Keys are named by KeyboardEvent.code: ArrowLeft, ArrowRight, ArrowUp, ArrowDown, Space, Enter, Escape, ShiftLeft, KeyA to KeyZ and Digit0 to Digit9`;
+  return (
+    `${key} is not a key. Keys are named by KeyboardEvent.code: ArrowLeft, ArrowRight, ArrowUp, ArrowDown, ` +
+    'Space, Enter, Escape, ShiftLeft, KeyA to KeyZ and Digit0 to Digit9'
+  );
 }
 
 export type PlayStep = { key: string; hold_ms?: number } | { wait_ms: number } | { eval: string };
@@ -39,10 +41,17 @@ const DEFAULT_HOLD_MS = 50;
 
 const isMs = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v) && v >= 0;
 
-// A key's hold counts as waiting, since the run spends that time too.
+// A key's hold counts as waiting, since the run spends that time too. A step that isn't even an object is reported
+// by scriptProblems, so here it waits nothing.
+function waitOf(step: unknown): number {
+  if (typeof step !== 'object' || step === null) return 0;
+  const { wait_ms, hold_ms } = step as { wait_ms?: unknown; hold_ms?: unknown };
+  const ms = 'wait_ms' in step ? wait_ms : 'key' in step ? (hold_ms ?? DEFAULT_HOLD_MS) : 0;
+  return isMs(ms) ? ms : 0;
+}
+
 function totalWait(script: PlayScript): number {
-  const waitOf = (step: PlayStep) => ('wait_ms' in step ? step.wait_ms : 'key' in step ? (step.hold_ms ?? DEFAULT_HOLD_MS) : 0);
-  return script.steps.reduce((sum, step) => sum + (isMs(waitOf(step)) ? waitOf(step) : 0), 0);
+  return script.steps.reduce((sum, step) => sum + waitOf(step), 0);
 }
 
 // Scripts come from an agent's output, so nothing about their shape is taken on trust.
@@ -50,7 +59,9 @@ export function scriptProblems(script: PlayScript): string[] {
   if (typeof script !== 'object' || script === null) return ['A play script is a mapping with steps and an expect'];
   if (!Array.isArray(script.steps)) return ['steps must be a list'];
   const problems: string[] = [];
-  if (script.steps.length > MAX_STEPS) problems.push(`A play script has at most ${MAX_STEPS} steps, not ${script.steps.length}`);
+  if (script.steps.length > MAX_STEPS) {
+    problems.push(`A play script has at most ${MAX_STEPS} steps, not ${script.steps.length}`);
+  }
   script.steps.forEach((step, i) => {
     const at = `Step ${i + 1}`;
     if (typeof step !== 'object' || step === null) {
@@ -58,7 +69,9 @@ export function scriptProblems(script: PlayScript): string[] {
     } else if ('key' in step) {
       const problem = keyProblem(step.key);
       if (problem) problems.push(`${at}: ${problem}`);
-      if (step.hold_ms !== undefined && !isMs(step.hold_ms)) problems.push(`${at}: hold_ms must be a number of milliseconds`);
+      if (step.hold_ms !== undefined && !isMs(step.hold_ms)) {
+        problems.push(`${at}: hold_ms must be a number of milliseconds`);
+      }
     } else if ('wait_ms' in step) {
       if (!isMs(step.wait_ms)) problems.push(`${at}: wait_ms must be a number of milliseconds`);
     } else if (!('eval' in step) || typeof step.eval !== 'string' || step.eval.trim() === '') {
@@ -66,13 +79,28 @@ export function scriptProblems(script: PlayScript): string[] {
     }
   });
   const wait = totalWait(script);
-  if (wait > MAX_WAIT_MS) problems.push(`A play script holds and waits at most ${MAX_WAIT_MS} ms in all, not ${wait} ms`);
-  if (typeof script.expect !== 'string' || script.expect.trim() === '') problems.push('expect must be a JavaScript expression that is true when the script worked');
+  if (wait > MAX_WAIT_MS) {
+    problems.push(`A play script holds and waits at most ${MAX_WAIT_MS} ms in all, not ${wait} ms`);
+  }
+  if (typeof script.expect !== 'string' || script.expect.trim() === '') {
+    problems.push('expect must be a JavaScript expression that is true when the script worked');
+  }
   return problems;
 }
 
 export type PlayProblem = {
-  kind: 'load' | 'exception' | 'console' | 'request' | 'blank' | 'frozen' | 'still' | 'key' | 'expect' | 'timeout' | 'browser';
+  kind:
+    | 'load'
+    | 'exception'
+    | 'console'
+    | 'request'
+    | 'blank'
+    | 'frozen'
+    | 'still'
+    | 'key'
+    | 'expect'
+    | 'timeout'
+    | 'browser';
   detail: string;
 };
 export type PlayResult = { ok: boolean; problems: PlayProblem[]; durationMs: number; log: string[] };
@@ -82,35 +110,7 @@ export type Player = {
   script(url: string, script: PlayScript): Promise<PlayResult>;
 };
 
-const DEFAULT_CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
-
-export function chromePath(config: Config): string | undefined {
-  const path = config.chrome.binary ?? DEFAULT_CHROME;
-  try {
-    return statSync(path).isFile() ? path : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-// Chrome's own sandbox stays on. Everything off this machine goes to a proxy that isn't there; Chrome never proxies loopback, so the page itself still loads.
-const FLAGS = [
-  '--headless=new',
-  '--remote-debugging-port=0',
-  '--no-first-run',
-  '--no-default-browser-check',
-  '--disable-extensions',
-  '--mute-audio',
-  '--autoplay-policy=no-user-gesture-required',
-  '--proxy-server=http://127.0.0.1:9',
-  '--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1',
-  '--force-webrtc-ip-handling-policy=disable_non_proxied_udp',
-];
-
 const DEFAULT_TIMEOUT_MS = 20_000;
-const START_TIMEOUT_MS = 10_000;
-const EXIT_WAIT_MS = 5_000;
-const POLL_MS = 50;
 const SETTLE_MS = 1_000;
 const SMOKE_HOLD_MS = 100;
 const MIN_FRAMES = 30;
@@ -121,7 +121,8 @@ const MAX_DETAIL = 500;
 const MAX_EVENT_PROBLEMS = 20;
 const EVENT_KINDS = new Set<PlayProblem['kind']>(['exception', 'console', 'request', 'key']);
 
-// Counts the frames in which the page itself asked for one, so a page that never animates reads 0 however often Chrome paints.
+// Counts the frames in which the page itself asked for one, so a page that never animates reads 0 however often
+// Chrome paints.
 const FRAME_COUNTER = `(() => {
   const request = window.requestAnimationFrame.bind(window);
   let last;
@@ -132,7 +133,8 @@ const FRAME_COUNTER = `(() => {
   });
 })();`;
 
-// Runs in a blank tab, since Node has no PNG decoder. The screenshot is the composited frame, so a WebGL canvas counts like any other.
+// Runs in a blank tab, since Node has no PNG decoder. The screenshot is the composited frame, so a WebGL canvas counts
+// like any other.
 const COUNT_COLORS = `async (src) => {
   const image = new Image();
   image.src = src;
@@ -144,7 +146,9 @@ const COUNT_COLORS = `async (src) => {
   g.drawImage(image, 0, 0, 160, 90);
   const data = g.getImageData(0, 0, 160, 90).data;
   const seen = new Set();
-  for (let i = 0; i < data.length; i += 4) seen.add(((data[i] >> 4) << 8) | ((data[i + 1] >> 4) << 4) | (data[i + 2] >> 4));
+  for (let i = 0; i < data.length; i += 4) {
+    seen.add(((data[i] >> 4) << 8) | ((data[i + 1] >> 4) << 4) | (data[i + 2] >> 4));
+  }
   return seen.size;
 }`;
 
@@ -156,14 +160,25 @@ const messageOf = (err: unknown) => (err instanceof Error ? err.message : String
 const at = (url?: string, line?: number) => (url ? ` at ${url}:${(line ?? 0) + 1}` : '');
 
 function exceptionText(d: any): string {
-  const message: string | undefined = d?.exception?.description?.split('\n')[0] ?? (d?.exception?.value !== undefined ? String(d.exception.value) : undefined);
+  const description: string | undefined = d?.exception?.description?.split('\n')[0];
+  const message = description ?? (d?.exception?.value !== undefined ? String(d.exception.value) : undefined);
   const text: string = d?.text ?? 'Uncaught';
   const frame = d?.stackTrace?.callFrames?.[0];
-  return `${message && !text.includes(message) ? `${text} ${message}` : text}${at(frame?.url ?? d?.url, frame?.lineNumber ?? d?.lineNumber)}`;
+  const where = at(frame?.url ?? d?.url, frame?.lineNumber ?? d?.lineNumber);
+  return `${message && !text.includes(message) ? `${text} ${message}` : text}${where}`;
 }
 
 function shown(value: any): string {
   return typeof value === 'string' ? value : value === undefined ? 'undefined' : JSON.stringify(value);
+}
+
+// Fails closed: a count that couldn't be read is no evidence that anything was drawn.
+export function blankProblem(colors: unknown): string | undefined {
+  if (typeof colors !== 'number' || !Number.isFinite(colors)) {
+    return 'The colors on screen could not be counted, so nothing is known to have been drawn';
+  }
+  if (!(colors >= 2)) return 'The page shows one flat color a second after the keys: nothing was drawn';
+  return undefined;
 }
 
 const LOOPBACK = new Set(['127.0.0.1', 'localhost', '[::1]']);
@@ -182,8 +197,16 @@ function offMachine(url: string): boolean {
   return u !== undefined && /^(https?|wss?):$/.test(u.protocol) && !LOOPBACK.has(u.hostname);
 }
 
-// Chrome asks for a favicon on its own. A game without one is no worse to play, so its absence is logged and nothing more.
+// Chrome asks for a favicon on its own. A game without one is no worse to play, so its absence is logged and nothing
+// more.
 const isFavicon = (url: string) => parsed(url)?.pathname === '/favicon.ico';
+
+// Chrome lets only this port through, so a page served anywhere else couldn't be played as it would be checked.
+function servedPort(url: string): number | undefined {
+  const u = parsed(url);
+  if (u?.protocol !== 'http:' || u.hostname !== '127.0.0.1') return undefined;
+  return Number(u.port || 80);
+}
 
 type Session = { id: string; send<T = any>(method: string, params?: object): Promise<T> };
 
@@ -193,10 +216,8 @@ class Run {
   readonly responses = new Map<string, number>();
   private readonly stopper = new AbortController();
   private dropped = 0;
-  child?: ChildProcess;
-  profile?: string;
+  chrome?: Chrome;
   cdp?: Cdp;
-  stderr = '';
   keyDown?: string;
   timedOut = false;
 
@@ -215,7 +236,8 @@ class Run {
     const text = clip(detail, MAX_DETAIL);
     if (this.problems.some((p) => p.kind === kind && p.detail === text)) return;
     // A page that fails every frame must not crowd out the checks made at the end of the run.
-    if (EVENT_KINDS.has(kind) && this.problems.filter((p) => EVENT_KINDS.has(p.kind)).length >= MAX_EVENT_PROBLEMS) return;
+    const events = this.problems.filter((p) => EVENT_KINDS.has(p.kind)).length;
+    if (EVENT_KINDS.has(kind) && events >= MAX_EVENT_PROBLEMS) return;
     this.problems.push({ kind, detail: text });
   }
 
@@ -223,7 +245,7 @@ class Run {
   stop(why: Error): void {
     this.stopper.abort(why);
     this.cdp?.close();
-    if (this.child?.pid !== undefined) killGroupNow(this.child.pid);
+    this.chrome?.kill();
   }
 
   wait(ms: number): Promise<void> {
@@ -232,20 +254,16 @@ class Run {
 
   // For a promise only Chrome can settle, such as an event that never comes.
   guard<T>(promise: Promise<T>): Promise<T> {
-    return Promise.race([promise, new Promise<never>((_, reject) => this.signal.addEventListener('abort', () => reject(this.signal.reason), { once: true }))]);
+    const stopped = new Promise<never>((_, reject) => {
+      this.signal.addEventListener('abort', () => reject(this.signal.reason), { once: true });
+    });
+    return Promise.race([promise, stopped]);
   }
 
-  // Chrome forks helpers into its process group, so the whole group goes, and the profile only once nothing writes to it.
   async cleanUp(): Promise<void> {
     this.stop(new Error('the run is over'));
-    const pid = this.child?.pid;
-    if (this.child && pid !== undefined) {
-      if (this.child.exitCode === null && this.child.signalCode === null) await Promise.race([once(this.child, 'exit'), sleep(EXIT_WAIT_MS)]);
-      for (const deadline = Date.now() + EXIT_WAIT_MS; groupAlive(pid) && Date.now() < deadline; ) await sleep(POLL_MS);
-      // Chrome's crash reporter leaves the group on purpose and inherits this pipe, so our end is closed rather than held open for it.
-      this.child.stderr?.destroy();
-    }
-    if (this.profile) await rm(this.profile, { recursive: true, force: true, maxRetries: 5 }).catch((err) => this.note(`could not remove ${this.profile}: ${messageOf(err)}`));
+    const left = await this.chrome?.close();
+    if (left) this.note(left);
   }
 
   result(started: number): PlayResult {
@@ -254,43 +272,25 @@ class Run {
   }
 }
 
-async function devToolsUrl(profile: string): Promise<string | undefined> {
-  try {
-    const [port, path] = (await readFile(join(profile, 'DevToolsActivePort'), 'utf8')).split('\n').map((line) => line.trim());
-    return port && /^\d+$/.test(port) && path ? `ws://127.0.0.1:${port}${path}` : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-async function launch(run: Run): Promise<Cdp> {
-  run.profile = await mkdtemp(join(tmpdir(), 'aiteam-chrome-'));
-  run.signal.throwIfAborted();
-  const child = spawnGroup(run.binary, [...FLAGS, `--user-data-dir=${run.profile}`, 'about:blank'], { stdio: ['ignore', 'ignore', 'pipe'] });
-  run.child = child;
-  child.stderr?.setEncoding('utf8').on('data', (chunk: string) => (run.stderr = (run.stderr + chunk).slice(-2000)));
-  child.once('error', (err) => run.stop(new Error(`could not start: ${err.message}`)));
-  child.once('exit', (code, signal) => run.stop(new Error(`exited with ${code === null ? signal : `code ${code}`}`)));
-
-  const deadline = Date.now() + START_TIMEOUT_MS;
-  for (;;) {
-    const url = await devToolsUrl(run.profile);
-    if (url) return (run.cdp = await run.guard(connectCdp(url)));
-    if (Date.now() > deadline) throw new Error(`did not open DevTools within ${START_TIMEOUT_MS / 1000} s`);
-    await run.wait(POLL_MS);
-  }
+async function launch(run: Run, port: number): Promise<Cdp> {
+  run.chrome = await startChrome(run.binary, port, run.signal, (why) => run.stop(why));
+  const url = await run.chrome.devTools(run.signal);
+  return (run.cdp = await run.guard(connectCdp(url)));
 }
 
 async function openTab(cdp: Cdp, browserContextId: string): Promise<Session> {
-  const { targetId } = await cdp.send<{ targetId: string }>('Target.createTarget', { url: 'about:blank', browserContextId });
+  const tab = { url: 'about:blank', browserContextId };
+  const { targetId } = await cdp.send<{ targetId: string }>('Target.createTarget', tab);
   const { sessionId } = await cdp.send<{ sessionId: string }>('Target.attachToTarget', { targetId, flatten: true });
   return { id: sessionId, send: (method, params) => cdp.send(method, params, sessionId) };
 }
 
-// The smoke check makes console errors and failed requests problems. A play script tests one criterion, so they only go to its log.
+// The smoke check makes console errors and failed requests problems. A play script tests one criterion, so they only
+// go to its log.
 function watch(run: Run, cdp: Cdp, page: Session, mainFrame: string, strict: boolean): void {
   const urls = new Map<string, string>();
-  const on = (event: string, handler: (params: any) => void) => cdp.on(event, (params, sessionId) => sessionId === page.id && handler(params ?? {}));
+  const on = (event: string, handler: (params: any) => void) =>
+    cdp.on(event, (params, sessionId) => sessionId === page.id && handler(params ?? {}));
 
   on('Runtime.exceptionThrown', ({ exceptionDetails }) => {
     const text = exceptionText(exceptionDetails);
@@ -299,7 +299,9 @@ function watch(run: Run, cdp: Cdp, page: Session, mainFrame: string, strict: boo
     else run.problem('exception', text);
   });
   on('Runtime.consoleAPICalled', ({ type, args, stackTrace }) => {
-    const words = (args ?? []).map((a: any) => (a?.value !== undefined ? shown(a.value) : (a?.unserializableValue ?? a?.description ?? a?.type)));
+    const words = (args ?? []).map((a: any) =>
+      a?.value !== undefined ? shown(a.value) : (a?.unserializableValue ?? a?.description ?? a?.type),
+    );
     const frame = stackTrace?.callFrames?.[0];
     const text = `${words.join(' ')}${at(frame?.url, frame?.lineNumber)}`;
     run.note(`console.${type}: ${text}`);
@@ -311,15 +313,25 @@ function watch(run: Run, cdp: Cdp, page: Session, mainFrame: string, strict: boo
     // Chrome logs each failed request here too; it is already a request problem, with its URL.
     if (strict && entry?.level === 'error' && entry?.source !== 'network') run.problem('console', text);
   });
+  // An alert, confirm or prompt blocks the page until someone answers it, and nobody else will.
+  on('Page.javascriptDialogOpening', ({ type, message }) => {
+    run.note(`dialog ${type}: ${clip(String(message ?? ''), 100)}`);
+    page.send('Page.handleJavaScriptDialog', { accept: true }).catch(() => {});
+  });
   on('Network.requestWillBeSent', ({ requestId, request }) => urls.set(requestId, request?.url));
   on('Network.responseReceived', ({ requestId, type, frameId, response }) => {
     const { url = '', status = 0, statusText = '' } = response ?? {};
     run.responses.set(requestId, status);
-    if (offMachine(url)) run.problem('request', `${url} answered ${status}, though the page must not reach anything off this machine`);
+    if (offMachine(url)) {
+      run.problem('request', `${url} answered ${status}, though the page must not reach anything off this machine`);
+    }
     if (status < 400) return;
     run.note(`${url} answered ${status} ${statusText}`);
     // The page's own document is judged by the load check.
-    if (strict && !isFavicon(url) && !(type === 'Document' && frameId === mainFrame)) run.problem('request', `${url} answered ${status} ${statusText}`.trim());
+    const ownDocument = type === 'Document' && frameId === mainFrame;
+    if (strict && !isFavicon(url) && !ownDocument) {
+      run.problem('request', `${url} answered ${status} ${statusText}`.trim());
+    }
   });
   on('Network.loadingFailed', ({ requestId, errorText, canceled }) => {
     const url = urls.get(requestId) ?? 'A request';
@@ -354,7 +366,8 @@ async function press(run: Run, page: Session, name: string, holdMs: number): Pro
   run.note(`key ${name}, held ${holdMs} ms`);
   run.keyDown = name;
   try {
-    await page.send('Input.dispatchKeyEvent', text ? { ...event, type: 'keyDown', text, unmodifiedText: text } : { ...event, type: 'rawKeyDown' });
+    const down = text ? { ...event, type: 'keyDown', text, unmodifiedText: text } : { ...event, type: 'rawKeyDown' };
+    await page.send('Input.dispatchKeyEvent', down);
     await run.wait(holdMs);
     await page.send('Input.dispatchKeyEvent', { ...event, type: 'keyUp' });
   } finally {
@@ -362,10 +375,12 @@ async function press(run: Run, page: Session, name: string, holdMs: number): Pro
   }
 }
 
-// What a script evaluates is its own business: a throw, or a value Chrome can't hand back, is the script's problem. A dead browser is not.
+// What a script evaluates is its own business: a throw, or a value Chrome can't hand back, is the script's problem.
+// A dead browser is not.
 async function evaluate(run: Run, page: Session, expression: string): Promise<{ value?: unknown; threw?: string }> {
   try {
-    const { result, exceptionDetails } = await page.send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true });
+    const params = { expression, awaitPromise: true, returnByValue: true };
+    const { result, exceptionDetails } = await page.send('Runtime.evaluate', params);
     return exceptionDetails ? { threw: exceptionText(exceptionDetails) } : { value: result?.value };
   } catch (err) {
     if (run.signal.aborted) throw err;
@@ -377,10 +392,11 @@ async function smokeSteps(run: Run, cdp: Cdp, context: string, page: Session, ke
   const frames = async () => Number((await evaluate(run, page, 'window.__aiteamFrames')).value) || 0;
   const screenshot = async () => (await page.send<{ data: string }>('Page.captureScreenshot', { format: 'png' })).data;
 
-  await run.wait(SETTLE_MS);
-  const before = await screenshot();
+  // Frames are counted from load, so a page that animates only for its first second still counts as frozen after it.
   const framesBefore = await frames();
   const counting = Date.now();
+  await run.wait(SETTLE_MS);
+  const before = await screenshot();
   for (const key of keys) await press(run, page, key, SMOKE_HOLD_MS);
   await run.wait(SETTLE_MS);
   const after = await screenshot();
@@ -388,13 +404,19 @@ async function smokeSteps(run: Run, cdp: Cdp, context: string, page: Session, ke
   const seconds = ((Date.now() - counting) / 1000).toFixed(1);
 
   const scratch = await openTab(cdp, context);
-  const counted = await evaluate(run, scratch, `(${COUNT_COLORS})(${JSON.stringify(`data:image/png;base64,${after}`)})`);
+  const image = JSON.stringify(`data:image/png;base64,${after}`);
+  const counted = await evaluate(run, scratch, `(${COUNT_COLORS})(${image})`);
   if (counted.threw) throw new Error(`could not read the screenshot: ${counted.threw}`);
-  const colors = Number(counted.value);
-  if (colors < 2) run.problem('blank', `The page shows one flat color a second after the keys: nothing was drawn`);
-  if (ran < MIN_FRAMES) run.problem('frozen', `The page ran ${ran} animation frames in ${seconds} s, from a second after load to a second after the keys; at least ${MIN_FRAMES} were expected`);
-  if (before === after) run.problem('still', 'The screen did not change from a second after load to a second after the keys');
-  run.note(`${colors} colors, ${ran} frames`);
+  const blank = blankProblem(counted.value);
+  if (blank) run.problem('blank', blank);
+  if (ran < MIN_FRAMES) {
+    const expected = `at least ${MIN_FRAMES} were expected`;
+    run.problem('frozen', `The page ran ${ran} animation frames in ${seconds} s after load; ${expected}`);
+  }
+  if (before === after) {
+    run.problem('still', 'The screen did not change from a second after load to a second after the keys');
+  }
+  run.note(`${shown(counted.value)} colors, ${ran} frames`);
 }
 
 async function scriptSteps(run: Run, page: Session, script: PlayScript): Promise<void> {
@@ -414,28 +436,44 @@ async function scriptSteps(run: Run, page: Session, script: PlayScript): Promise
   else if (value !== true) run.problem('expect', `${script.expect} was ${shown(value)}`);
 }
 
-async function play(binary: string, deadlineMs: number, strict: boolean, url: string, steps: (run: Run, cdp: Cdp, context: string, page: Session) => Promise<void>): Promise<PlayResult> {
+type Steps = (run: Run, cdp: Cdp, context: string, page: Session) => Promise<void>;
+
+async function play(
+  binary: string,
+  deadlineMs: number,
+  strict: boolean,
+  url: string,
+  steps: Steps,
+): Promise<PlayResult> {
   const started = Date.now();
+  const port = servedPort(url);
+  if (port === undefined) {
+    const detail = clip(`Only a page served on http://127.0.0.1 can be played, not ${url}`, MAX_DETAIL);
+    return { ok: false, problems: [{ kind: 'browser', detail }], durationMs: 0, log: [] };
+  }
   const run = new Run(binary);
   const timer = setTimeout(() => {
     run.timedOut = true;
     run.stop(new Error('timed out'));
   }, deadlineMs);
   try {
-    const cdp = await launch(run);
+    const cdp = await launch(run, port);
     const { browserContextId } = await cdp.send<{ browserContextId: string }>('Target.createBrowserContext');
     const page = await openTab(cdp, browserContextId);
     const { frameTree } = await page.send('Page.getFrameTree');
     watch(run, cdp, page, frameTree.frame.id, strict);
-    await Promise.all(['Runtime.enable', 'Log.enable', 'Network.enable', 'Page.enable'].map((method) => page.send(method)));
+    const domains = ['Runtime.enable', 'Log.enable', 'Network.enable', 'Page.enable'];
+    await Promise.all(domains.map((method) => page.send(method)));
     await page.send('Page.addScriptToEvaluateOnNewDocument', { source: FRAME_COUNTER });
     if (await load(run, cdp, page, url)) await steps(run, cdp, browserContextId, page);
   } catch (err) {
     if (run.timedOut) {
       run.problems.push({ kind: 'timeout', detail: `The run took longer than ${deadlineMs} ms, so it was stopped` });
     } else {
-      run.problems.push({ kind: 'browser', detail: clip(`Chrome at ${binary}: ${messageOf(run.signal.aborted ? run.signal.reason : err)}`, MAX_DETAIL) });
-      for (const line of run.stderr.trim().split('\n').slice(-5)) if (line) run.note(`chrome: ${line}`);
+      const why = messageOf(run.signal.aborted ? run.signal.reason : err);
+      run.problems.push({ kind: 'browser', detail: clip(`Chrome at ${binary}: ${why}`, MAX_DETAIL) });
+      const tail = (run.chrome?.stderr() ?? '').trim().split('\n').slice(-5);
+      for (const line of tail) if (line) run.note(`chrome: ${line}`);
     }
   } finally {
     clearTimeout(timer);
@@ -446,7 +484,10 @@ async function play(binary: string, deadlineMs: number, strict: boolean, url: st
 
 export function chromePlayer(config: Config, opts: { timeoutMs?: number } = {}): Player {
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  const unavailable = () => (chromePath(config) ? undefined : `Chrome was not found at ${config.chrome.binary ?? DEFAULT_CHROME}. Set chrome.binary in ~/.aiteam/config.yaml`);
+  const unavailable = () =>
+    chromePath(config)
+      ? undefined
+      : `Chrome was not found at ${config.chrome.binary ?? DEFAULT_CHROME}. Set chrome.binary in ~/.aiteam/config.yaml`;
   // Asked again on every run, so a Chrome installed since startup is picked up.
   const missing = (): PlayResult | undefined => {
     const why = unavailable();
@@ -455,12 +496,23 @@ export function chromePlayer(config: Config, opts: { timeoutMs?: number } = {}):
 
   return {
     unavailable,
-    smoke: async (url, keys) => missing() ?? play(chromePath(config)!, timeoutMs, true, url, (run, cdp, context, page) => smokeSteps(run, cdp, context, page, keys)),
+    smoke: async (url, keys) => {
+      const steps: Steps = (run, cdp, context, page) => smokeSteps(run, cdp, context, page, keys);
+      return missing() ?? play(chromePath(config)!, timeoutMs, true, url, steps);
+    },
     script: async (url, script) => {
       const invalid = scriptProblems(script);
-      if (invalid.length > 0) return { ok: false, problems: invalid.map((detail) => ({ kind: 'expect' as const, detail: `The play script is invalid: ${detail}` })), durationMs: 0, log: [] };
+      if (invalid.length > 0) {
+        const problems = invalid.map((detail) => ({
+          kind: 'expect' as const,
+          detail: `The play script is invalid: ${detail}`,
+        }));
+        return { ok: false, problems, durationMs: 0, log: [] };
+      }
       // The timeout is for a browser or page that hangs; the script's own waits come on top of it.
-      return missing() ?? play(chromePath(config)!, timeoutMs + totalWait(script), false, url, (run, _cdp, _context, page) => scriptSteps(run, page, script));
+      const deadline = timeoutMs + totalWait(script);
+      const steps: Steps = (run, _cdp, _context, page) => scriptSteps(run, page, script);
+      return missing() ?? play(chromePath(config)!, deadline, false, url, steps);
     },
   };
 }
