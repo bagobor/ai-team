@@ -28,6 +28,8 @@
 
 ## W1. Product gate
 
+Status: implemented (commits a920b1b..90bff45); run 11 pending
+
 **Findings:** PG-1, PG-2, PG-3, PG-4, PG-5, PG-6, PG-7, SC-3, LC-1.
 
 **Approach.** Full plan in `2026-11-05-w1-product-gate.md`. In outline:
