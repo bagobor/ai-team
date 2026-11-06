@@ -2,7 +2,7 @@
 
 **Status: planned, not run.** Run 11 is the real-run acceptance for W1 (`docs/superpowers/plans/2026-11-05-w1-product-gate.md`, with the roadmap's W1 section in `2026-11-05-flow-fixes-roadmap.md`). This page is the brief to give the team, what to do before the run, and what to check afterwards. The Results section at the end is empty until the run has happened.
 
-The run needs the code of branch `w1-product-gate` (last implementation commit `90bff45`), either from that checkout or from `main` once it is merged. Everything under "Before the run" is done by hand: the stakeholder's daemon and `~/.aiteam` are theirs, and nothing in the repo touches them.
+The run needs the code of branch `w1-product-gate` (last implementation commit `843fbd9`), either from that checkout or from `main` once it is merged. Everything on this page that touches the daemon, `~/.aiteam` or its database is done by the stakeholder, by hand: they are theirs, and nothing in the repo touches them.
 
 ## The brief
 
@@ -44,7 +44,7 @@ The last line is what sets Discovery to one milestone. The first thing to look a
 
    With the variable set, a missing Chrome fails them instead of skipping them. The Chrome is the system one, unless `chrome.binary` is set in `~/.aiteam/config.yaml`.
 
-4. **Restart the daemon on 4780**, so it runs the new code and starts the try server. Check that 4781 is now listening.
+4. **Restart the daemon on 4780**, so it runs the new code and starts the try server. Check that 4781 is now listening. The daemon now warns at start about knowledge files that differ from its seed, and after the copy in step 1 that warning should list none of the files above.
 
 ## During the run
 
@@ -92,7 +92,7 @@ Queries use `sqlite3 -readonly ~/.aiteam/aiteam.db`. Wherever one has `<P>`, put
 
    Pass: 1 to 3 rows with method `human`, and at least one `automated`.
 
-2. **The Environment Profile has a `play` block.** In Documents, open ENV-PROFILE. Pass: a `play` block with `root`, `entry` and `keys`, where `keys` lists every key the game reads, the start key among them.
+2. **The Environment Profile has a `play` block.** In Documents, open ENV-PROFILE. Pass: a `play` block with `root`, `entry` and `keys`, where `keys` lists every key the game reads, the start key among them. An `animated` field may be present too; for this game it should be absent or `true`, since `false` is for a page with no animation loop.
 
 3. **The Test Plan names `protected` paths, and its Q-tickets write the acceptance tests.** In Documents, open TEST-PLAN-M1 and look for `protected` globs. On the Board, the `M1-Q-` tickets are merged. Pass: the Q-tickets' diffs hold files under the protected globs, and the product (`M1-T-`) tickets' diffs hold none.
 
@@ -147,7 +147,7 @@ Queries use `sqlite3 -readonly ~/.aiteam/aiteam.db`. Wherever one has `<P>`, put
 
 ## Cost by phase
 
-Fill this in after the run, with the query below, against STARLANCE's split: planning 40%, build plus review 46%, QA 10%. Those add to 96%, and the record doesn't break down the rest, so Other has nothing to compare with. QA's share is the one to watch: every command now runs twice, once on the base, and the Q-tickets add build work.
+Fill this in after the run, with the query below, against STARLANCE's split: planning 40%, build plus review 46%, QA 10%. Those add to 96%, and the record doesn't break down the other 4%. QA's share is the one to watch: every command now runs twice, once on the base, and the Q-tickets add build work.
 
 ```
 select case

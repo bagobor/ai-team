@@ -28,7 +28,7 @@
 
 ## W1. Product gate
 
-Status: implemented (commits a920b1b..90bff45); run 11 pending
+Status: implemented (commits a920b1b..843fbd9); run 11 pending
 
 **Findings:** PG-1, PG-2, PG-3, PG-4, PG-5, PG-6, PG-7, SC-3, LC-1.
 
