@@ -278,7 +278,7 @@ describe('the daemon', () => {
           script,
           JSON.stringify([
             worker({ roadmap: { body: '# Roadmap\n', milestones: [{ n: 1, title: 'First', goal: 'It runs' }] }, team_proposal: { body: '# Team\n' }, human_requirements: { body: '# Needs\n' }, stakeholder_note: 'One small milestone' }),
-            worker({ body: '# Environment\n', commands: { build: 'true', test: 'true', lint: 'true', smoke: 'echo smoke-ok' }, toolchains: [], network_allow: [], setup: null, stakeholder_note: 'The toolchain is ready' }),
+            worker({ body: '# Environment\n', commands: { build: 'true', test: 'true', lint: 'true', smoke: 'echo smoke-ok' }, toolchains: [], network_allow: [], setup: null, play: null, stakeholder_note: 'The toolchain is ready' }),
           ]),
         );
         const project = (await store.getProject('p'))!;

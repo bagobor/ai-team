@@ -44,6 +44,14 @@ function checkRow(p: Payload): RowParts {
   return { kind: 'test', bold: text(run.command), text: `${checkOutcome(run)}${took}`, tone: run.exitCode === 0 ? 'good' : 'bad' };
 }
 
+// The play gate's outcome, with what went wrong when the game didn't run or couldn't be played.
+function playRow(p: Payload): RowParts {
+  const problems = Array.isArray(p.problems) ? p.problems.map((problem: { kind?: unknown; detail?: unknown } | null) => `${text(problem?.kind)}: ${text(problem?.detail)}`) : [];
+  const said = p.outcome === 'unavailable' ? text(p.why) : problems.join('; ');
+  const bold = typeof p.milestone === 'number' ? `play M${p.milestone}` : 'play';
+  return { kind: 'test', bold, text: said ? `${text(p.outcome)}: ${said}` : text(p.outcome), tone: p.outcome === 'passed' ? 'good' : 'bad' };
+}
+
 const change = (subject: string, p: Payload, detail: unknown): string => {
   const why = text(detail);
   return `${subject}: ${text(p.from)} → ${text(p.to)}${why ? ` (${why})` : ''}`;
@@ -78,6 +86,7 @@ const FORMAT: Record<EventType, (p: Payload) => RowParts> = {
   'merge.conflict': (p) => ({ kind: 'engine', text: `Merge conflict in ${text(p.target)}`, tone: 'bad' }),
   'change_request.dropped': (p) => ({ kind: 'engine', text: `Change Request dropped: ${text(p.reason)}`, tone: 'bad' }),
   'conductor.error': (p) => ({ kind: 'error', text: text(p.message), tone: 'bad' }),
+  'play.result': playRow,
 };
 
 export const EVENT_TYPES = Object.keys(FORMAT) as EventType[];

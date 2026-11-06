@@ -281,6 +281,7 @@ describe('recover', () => {
     it.each([
       ['a QA run', 'M1-QA-1-verify-a1', 'aiteam/verify/M1-QA-1-a1'],
       ['a smoke check', 'M1-smoke-a1', 'aiteam/smoke/M1'],
+      ['a play gate', 'M1-play-a1', 'aiteam/play/M1'],
       ['a state snapshot', 'M1-snapshot', 'aiteam/snapshot-m1'],
     ])('clears what %s left behind when the daemon died', async (_what, folder, branch) => {
       const { headSha } = await ensureIntegrationBranch(e.repoPath, 1, 'main');

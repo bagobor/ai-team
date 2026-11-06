@@ -5,6 +5,8 @@ import { requestOf } from '../change-requests.ts';
 import { addAttemptWorktree, mergeBase, overlayPaths, removeAttemptWorktree } from '../../git/workspace.ts';
 import { worktreePath } from '../../paths.ts';
 import { protectedPaths } from '../protected.ts';
+import type { EngineDeps } from '../runner.ts';
+import type { ProjectRow } from '../store.ts';
 import type { Coverage } from './design.ts';
 import { ENV_PROFILE, specId, techId, testPlanId } from './ids.ts';
 import type { Applier, ApplyCtx } from './index.ts';
@@ -58,10 +60,11 @@ function outputProblems({ results, bugs }: QaOutput, acIds: string[], humanIds: 
   return problems;
 }
 
-async function nextBugNumber(ctx: ApplyCtx, milestone: number): Promise<number> {
+// QA and the play gate both file Bugs, and each takes the next number either of them has used.
+export async function nextBugNumber(deps: Pick<EngineDeps, 'artifacts' | 'store'>, project: ProjectRow, milestone: number): Promise<number> {
   const pattern = new RegExp(`^(?:BUG-M${milestone}|M${milestone}-B)-(\\d+)$`);
-  const artifacts = await ctx.deps.artifacts.list(ctx.project.id);
-  const tasks = await ctx.deps.store.listTasks(ctx.project.id);
+  const artifacts = await deps.artifacts.list(project.id);
+  const tasks = await deps.store.listTasks(project.id);
   const taken = [...artifacts.map((row) => row.artifact_id), ...tasks.map((task) => task.ticket_id)];
   return 1 + Math.max(0, ...taken.map((id) => Number(pattern.exec(id)?.[1] ?? 0)));
 }
@@ -208,13 +211,15 @@ function reportSection({ ac, claimed, status, notes, runs, disputedIn, onBase }:
 }
 
 // Tickets take their shape from a Bug: the failing commands are its definition of done, and only a commandless Bug falls further back.
-export function bugTicket(milestone: number, k: number, bug: { ac: string; title: string; touches: string[]; definition_of_done: string[]; techPin: string; specPin: string }): NewVersion {
+// A QA Bug is against one criterion. A game that doesn't run fails them all, so the play gate's Bug names every automated one.
+export function bugTicket(milestone: number, k: number, bug: { acs: string[]; title: string; touches: string[]; definition_of_done: string[]; techPin: string; specPin: string }): NewVersion {
   const key = `B-${k}`;
   const id = ticketIdFor(milestone, key);
   const inputs = [`BUG-M${milestone}-${k}@1`, bug.techPin];
+  const passes = bug.acs.length === 1 ? `${bug.acs[0]} passes` : `${bug.acs.join(', ')} pass`;
   const { fields, body } = renderTicket(
     milestone,
-    { key, title: oneLine(bug.title), ac_refs: [bug.ac], specialty: 'engineer', touches: bug.touches, depends_on: [], definition_of_done: bug.definition_of_done, inputs, size: 'S', body: `Fix what BUG-M${milestone}-${k} describes, so that ${bug.ac} passes.\n` },
+    { key, title: oneLine(bug.title), ac_refs: bug.acs, specialty: 'engineer', touches: bug.touches, depends_on: [], definition_of_done: bug.definition_of_done, inputs, size: 'S', body: `Fix what BUG-M${milestone}-${k} describes, so that ${passes}.\n` },
     { id, dependsOn: [], inputs },
   );
   return { id, type: 'ticket', status: 'approved', ownerRole: 'tech_lead', approvedBy: 'engine', milestone, derivedFrom: [...inputs, bug.specPin], fields, body };
@@ -314,7 +319,7 @@ export const applyQaVerify: Applier = async (ctx) => {
   if (failing.length > 0) {
     const tech = await artifacts.latest(project.id, techId(milestone));
     if (!tech) throw new Error(`QA task ${task.ticket_id} found failures, but milestone ${milestone} has no Tech Design`);
-    let k = await nextBugNumber(ctx, milestone);
+    let k = await nextBugNumber(ctx.deps, project, milestone);
     for (const verdict of failing) {
       const { ac, runs } = verdict;
       const criterion = criteria.find(({ ac_id }) => ac_id === ac);
@@ -327,7 +332,7 @@ export const applyQaVerify: Applier = async (ctx) => {
         const fallbacks = [failedCommands(runs), nonBlank(bug?.commands ?? []), runs.map(({ command }) => command), [criterion.verification.how]];
         const definition_of_done = fallbacks.find((commands) => commands.length > 0) ?? [];
         publish.push(bugDoc(milestone, k, reportId, verdict, bug, title, touches));
-        publish.push(bugTicket(milestone, k, { ac, title, touches, definition_of_done, techPin: `${tech.artifact_id}@${tech.version}`, specPin }));
+        publish.push(bugTicket(milestone, k, { acs: [ac], title, touches, definition_of_done, techPin: `${tech.artifact_id}@${tech.version}`, specPin }));
         k += 1;
       }
     }

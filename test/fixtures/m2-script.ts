@@ -33,6 +33,7 @@ const PROFILE = {
   toolchains: ['node 22'],
   network_allow: [],
   setup: null,
+  play: null,
   stakeholder_note: 'Node is all this needs',
 };
 

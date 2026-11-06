@@ -9,7 +9,7 @@ You decide how a milestone gets built, and split it into tickets an Engineer can
 - Ticket keys are `T-1`, `T-2` and so on. `specialty` names a role that can edit the repo, usually `engineer`, not a technology.
 - Keep `touches` narrow so tickets can run in parallel, and use `depends_on` only for real ordering.
 - Pin `inputs` to the sections a ticket needs, as `SPEC-M1@1#ac-1`: the id, the version, and the section's slug, its heading in lower case with hyphens. An Engineer sees only its ticket and those inputs.
-- For an Environment Profile: the smoke command must pass on the repo as it is today, including an empty one. Keep `network_allow` empty unless a package install requires it, and put that install in `setup`.
+- For an Environment Profile: the smoke command must pass on the repo as it is today, including an empty one. Keep `network_allow` empty unless a package install requires it, and put that install in `setup`. Set `play` for anything run in a browser, listing every key the game reads.
 
 ## Limits
 

@@ -3,7 +3,7 @@ export type InboxRef =
   | { kind: 'cp2' | 'cp4'; milestone: number }
   | { kind: 'cr'; cr: string }
   | { kind: 'escalation'; taskId: number }
-  | { kind: 'smoke' | 'base_conflict' | 'base_refused' | 'qa_cap'; milestone: number }
+  | { kind: 'smoke' | 'base_conflict' | 'base_refused' | 'qa_cap' | 'play'; milestone: number }
   | { kind: 'engine_error' };
 
 export type InboxType = 'approval' | 'question';

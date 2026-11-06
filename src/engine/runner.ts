@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import type { Kysely } from 'kysely';
 import type { AttemptHandle, AttemptResult, FailureKind, WorkerAdapter } from '../adapters/types.ts';
 import type { ArtifactChange, ArtifactStore } from '../artifacts/store.ts';
+import type { Player } from '../checks/play.ts';
 import { runChecks, runSandboxed } from '../checks/run-checks.ts';
 import type { Config } from '../config.ts';
 import type { DB } from '../db/schema.ts';
@@ -33,6 +34,8 @@ export type EngineDeps = {
   config: Config;
   adapters: Record<string, WorkerAdapter>;
   artifacts: ArtifactStore;
+  // Plays the built product in a browser. Without one, a project with something to play holds instead of passing unplayed.
+  player?: Player;
   now?: () => Date;
 };
 

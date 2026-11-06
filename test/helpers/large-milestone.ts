@@ -57,7 +57,7 @@ export async function publishLargeDesign(e: TestEngine, design = largeDesign): P
 
 // About 660 tokens, as in the first real run.
 export async function publishProfile(e: TestEngine): Promise<string> {
-  const output = { body: `# Environment\n\nprofile-marker ${words(1700)}\n`, commands: { build: 'npm run build', test: 'npm test', lint: 'npm run lint', smoke: 'true' }, toolchains: ['node 22'], network_allow: [], setup: null, stakeholder_note: 'Ready' };
+  const output = { body: `# Environment\n\nprofile-marker ${words(1700)}\n`, commands: { build: 'npm run build', test: 'npm test', lint: 'npm run lint', smoke: 'true' }, toolchains: ['node 22'], network_allow: [], setup: null, play: null, stakeholder_note: 'Ready' };
   const [row] = await publish(e, await apply(e, 'environment_profile', output, { role: 'tech_lead' }));
   return `${row!.artifact_id}@${row!.version}`;
 }

@@ -1023,7 +1023,7 @@ describe('Runner', () => {
 
   describe('environment profile', () => {
     it("shows the Tech Lead's smoke command on its task and publishes the profile", async () => {
-      const output = { body: '# Profile\n', commands: { build: 'true', test: 'true', lint: 'true', smoke: 'echo smoke-ran' }, toolchains: [], network_allow: [], setup: null, stakeholder_note: 'Note' };
+      const output = { body: '# Profile\n', commands: { build: 'true', test: 'true', lint: 'true', smoke: 'echo smoke-ran' }, toolchains: [], network_allow: [], setup: null, play: null, stakeholder_note: 'Note' };
       const e = await engine({ steps: [{ lines: [INIT, resultLine({ structured_output: output })] }] });
       const t = await orderTask(e, { purpose: 'environment_profile' }, { ticket_id: 'DISCOVERY-TL', role_id: 'tech_lead', purpose: 'environment_profile' });
 

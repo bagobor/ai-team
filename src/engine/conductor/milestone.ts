@@ -4,15 +4,17 @@ import { runSandboxed } from '../../checks/run-checks.ts';
 import { advanceBaseBranch, snapshotState, syncBaseIntoIntegration } from '../../git/merge.ts';
 import { addAttemptWorktree, ensureIntegrationBranch, removeAttemptWorktree } from '../../git/workspace.ts';
 import { stateRepoDir, workerDenyRead, worktreePath } from '../../paths.ts';
+import type { ProfileData } from '../apply/discovery.ts';
 import { ENV_PROFILE, reviewId, specId, techId, testPlanId } from '../apply/ids.ts';
 import type { EngineDeps, Runner } from '../runner.ts';
 import type { MilestoneRow, ProjectRow, Store, TaskRow } from '../store.ts';
+import { playBug, problemLine, runPlayGate } from './play-gate.ts';
 import { ensureTask, isClosed, latestPin, milestoneReviewTask, noteOf, pinOf, qaTask, raiseHold, RETRY_OR_HALT, roundId, roundOf, specTask, techTask, testPlanTask, ticketTask, openHold, type TaskSpec, type TicketFields } from './tasks.ts';
 import { ensureTryWorktree, removeTryWorktree } from './try.ts';
 
-type HoldKind = 'smoke' | 'base_conflict' | 'base_refused';
+type HoldKind = 'smoke' | 'base_conflict' | 'base_refused' | 'play';
 
-const HOLD_KINDS = ['smoke', 'base_conflict', 'base_refused', 'qa_cap'] as const;
+const HOLD_KINDS = ['smoke', 'base_conflict', 'base_refused', 'qa_cap', 'play'] as const;
 const STALE_BLOCKS: readonly string[] = ['tech_design', 'test_plan', 'ticket'];
 
 const byId = (tasks: TaskRow[], id: string) => tasks.find(({ ticket_id }) => ticket_id === id);
@@ -38,6 +40,24 @@ function hold(s: Store, project: ProjectRow, n: number, kind: HoldKind, title: s
 
 const holdBaseConflict = (s: Store, project: ProjectRow, n: number, conflicts: string[]) =>
   hold(s, project, n, 'base_conflict', `${project.base_branch} conflicts with milestone ${n}`, `Merging ${project.base_branch} into the integration branch conflicts in: ${conflicts.join(', ')}`, `Resolve the conflict in ${project.base_branch} or on the integration branch, then retry.`);
+
+// QA and the play gate both spend rounds, so either can be the one that finds them all used.
+const holdQaCap = (s: Store, project: ProjectRow, n: number, round: number, cap: number, failing: string) =>
+  raiseHold(s, project, `qa_cap:M${n}`, {
+    milestone: n,
+    type: 'question',
+    ref: { kind: 'qa_cap', milestone: n },
+    title: `Milestone ${n} still fails after ${round} QA rounds`,
+    asked_by: 'engine',
+    why: `${failing} The milestone has used its ${cap} rounds.`,
+    blocks: [`Milestone ${n}`],
+    evidence: [],
+    recommendation: 'Give it three more rounds if the failures look close to fixed, otherwise halt and look at the Bug reports.',
+    options: [
+      { id: 'more', label: 'Three more rounds' },
+      { id: 'halt', label: 'Halt' },
+    ],
+  });
 
 async function setPending(deps: EngineDeps, project: ProjectRow, { n }: MilestoneRow): Promise<void> {
   const inputs = [await latestPin(deps, project, 'ROADMAP'), await latestPin(deps, project, 'HUMAN-REQUIREMENTS')];
@@ -75,7 +95,7 @@ async function afterSpec(deps: EngineDeps, project: ProjectRow, { n }: Milestone
 
 // Runs in a worktree of its own at the integration head, with the same setup a ticket gets, and leaves nothing behind.
 async function runSmoke(deps: EngineDeps, project: ProjectRow, n: number): Promise<{ ok: true } | { ok: false; why: string }> {
-  const { commands, setup } = (await deps.artifacts.read(project, ENV_PROFILE)).fields.data as { commands: { smoke: string }; setup: string | null };
+  const { commands, setup } = (await deps.artifacts.read(project, ENV_PROFILE)).fields.data as ProfileData;
   const { headSha } = await ensureIntegrationBranch(project.repo_path, n, project.base_branch);
   const worktree = worktreePath(deps.paths, project.name, `M${n}-smoke`, 1);
   const branch = `aiteam/smoke/M${n}`;
@@ -160,6 +180,28 @@ async function build(deps: EngineDeps, runner: Runner, project: ProjectRow, m: M
   // A stale Spec doesn't count: nothing revises one, so it would hold the milestone for ever. It still shows in Documents.
   if ((await artifacts.list(project.id)).some((row) => row.milestone === n && row.status === 'stale' && STALE_BLOCKS.includes(row.type))) return;
 
+  const played = await runPlayGate(deps, project, n);
+  if (played.kind === 'unavailable') {
+    await hold(store, project, n, 'play', `Milestone ${n}'s game can't be played here`, played.why, 'Fix what stops the engine playing the game on this machine, such as a missing Chrome (chrome.binary in ~/.aiteam/config.yaml), then retry. No QA round starts until the game has been played.');
+    return;
+  }
+  if (played.kind === 'failed') {
+    const failing = `The game doesn't run: ${problemLine(played.problems[0]!)}.`;
+    if (m.verify_round >= m.verify_cap) {
+      await holdQaCap(store, project, n, m.verify_round, m.verify_cap, failing);
+      return;
+    }
+    // The round is spent with the Bug that records it, so a crash can't charge it twice or file a Bug for free.
+    const { bug, ticket } = await playBug(deps, project, n, m.verify_round + 1, played);
+    await artifacts.commit(project, { message: `milestone ${n}: the game does not run`, publish: [bug, ticket] }, async (s, rows) => {
+      const row = rows.find(({ artifact_id }) => artifact_id === ticket.id);
+      if (!row) throw new Error(`${ticket.id} was not published with ${bug.id}`);
+      await s.patchMilestone(project.id, n, { verify_round: m.verify_round + 1 });
+      await ensureTask(s, ticketTask(project, n, row, ticket.fields as TicketFields));
+    });
+    return;
+  }
+
   const round = m.verify_round + 1;
   const inputs = [await latestPin(deps, project, specId(n)), await latestPin(deps, project, techId(n)), await latestPin(deps, project, testPlanId(n))];
   await store.atomically(async (s) => {
@@ -194,21 +236,7 @@ async function verify(deps: EngineDeps, project: ProjectRow, m: MilestoneRow, ta
     return;
   }
   const failing = criteria.filter(({ status }) => status !== 'passing' && status !== 'waived').map(({ ac_id }) => ac_id);
-  await raiseHold(store, project, `qa_cap:M${n}`, {
-    milestone: n,
-    type: 'question',
-    ref: { kind: 'qa_cap', milestone: n },
-    title: `Milestone ${n} still fails after ${round} QA rounds`,
-    asked_by: 'engine',
-    why: `These criteria don't pass: ${failing.join(', ')}. The milestone has used its ${cap} rounds.`,
-    blocks: [`Milestone ${n}`],
-    evidence: [],
-    recommendation: 'Give it three more rounds if the failures look close to fixed, otherwise halt and look at the Bug reports.',
-    options: [
-      { id: 'more', label: 'Three more rounds' },
-      { id: 'halt', label: 'Halt' },
-    ],
-  });
+  await holdQaCap(store, project, n, round, cap, `These criteria don't pass: ${failing.join(', ')}.`);
 }
 
 async function afterMilestoneReview(deps: EngineDeps, project: ProjectRow, m: MilestoneRow, tasks: TaskRow[]): Promise<void> {

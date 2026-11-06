@@ -162,7 +162,8 @@ async function effectOf(deps: EngineDeps, runner: Runner, project: ProjectRow, i
         after: async (s) => {
           const m = await s.getMilestone(project.id, ref.milestone);
           await s.patchMilestone(project.id, ref.milestone, { verify_cap: (m?.verify_cap ?? 0) + 3 });
-          await s.setMilestonePhase(project.id, ref.milestone, 'build');
+          // The play gate raises this hold from build, which has no move to build.
+          if (m?.phase === 'verify') await s.setMilestonePhase(project.id, ref.milestone, 'build');
         },
       };
     default:

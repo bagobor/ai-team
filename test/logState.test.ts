@@ -39,6 +39,18 @@ describe('applyEvent', () => {
     expect(rows[0]?.text).toEqual(expect.any(String));
   });
 
+  it('shows what the play gate found', () => {
+    const { rows } = apply(
+      event('play.result', { milestone: 1, outcome: 'failed', problems: [{ kind: 'exception', detail: 'boom' }, { kind: 'blank', detail: 'All white' }] }, null),
+      event('play.result', { milestone: 1, outcome: 'unavailable', why: 'Chrome was not found at /nope' }, null),
+      event('play.result', { milestone: 1, outcome: 'passed', problems: [] }, null),
+    );
+
+    expect(rows[0]).toMatchObject({ kind: 'test', bold: 'play M1', text: 'failed: exception: boom; blank: All white', tone: 'bad' });
+    expect(rows[1]).toMatchObject({ text: 'unavailable: Chrome was not found at /nope', tone: 'bad' });
+    expect(rows[2]).toMatchObject({ text: 'passed', tone: 'good' });
+  });
+
   it('says why a document changed when the event carries a reason', () => {
     const { rows } = apply(event('lineage.repinned', { id: 'TECH-M1', rationale: 'Only wording moved' }), event('artifact.status', { id: 'M1-T-1', status: 'superseded', rationale: 'Replaced' }));
 

@@ -21,6 +21,7 @@ const PROFILE = {
   toolchains: ['node 22'],
   network_allow: ['registry.npmjs.org'],
   setup: 'npm ci',
+  play: null,
   stakeholder_note: 'Note',
 };
 const SPEC = { body: '# Milestone one\n', criteria: CRITERIA, stakeholder_note: 'Note' };
@@ -102,7 +103,27 @@ describe('appliers', () => {
       const [row] = await publish(e, await apply(e, 'environment_profile', PROFILE, { inputs: ['ROADMAP@1'], worktree: tempDir() }));
 
       expect(row).toMatchObject({ artifact_id: 'ENV-PROFILE', status: 'proposed', owner_role: 'tech_lead', derived_from: ['ROADMAP@1'] });
-      expect((await read('ENV-PROFILE')).fields.data).toEqual({ commands: PROFILE.commands, toolchains: PROFILE.toolchains, network_allow: PROFILE.network_allow, setup: 'npm ci' });
+      expect((await read('ENV-PROFILE')).fields.data).toEqual({ commands: PROFILE.commands, toolchains: PROFILE.toolchains, network_allow: PROFILE.network_allow, setup: 'npm ci', play: null });
+    });
+
+    it('takes a play block', async () => {
+      const play = { root: 'dist', entry: 'index.html', keys: ['ArrowLeft', 'Space', 'KeyZ'] };
+      await publish(e, await apply(e, 'environment_profile', { ...PROFILE, play }, { worktree: tempDir() }));
+
+      expect((await read('ENV-PROFILE')).fields.data).toMatchObject({ play });
+    });
+
+    it.each([
+      ['a root outside the repo', { play: { root: '../x', entry: 'index.html', keys: ['Space'] } }, /play.root/],
+      ['an absolute root', { play: { root: '/tmp', entry: 'index.html', keys: ['Space'] } }, /play.root/],
+      ['an entry that is not a page', { play: { root: '.', entry: 'index.txt', keys: ['Space'] } }, /play.entry/],
+      ['an entry outside the root', { play: { root: '.', entry: '../index.html', keys: ['Space'] } }, /play.entry/],
+      ['a key that is not one', { play: { root: '.', entry: 'index.html', keys: ['Fire'] } }, /Fire is not a key/],
+      ['no keys', { play: { root: '.', entry: 'index.html', keys: [] } }, /at least one key/],
+      ['no play at all', { play: undefined }, /play/],
+    ])('rejects a profile with %s', async (_name, change, evidence) => {
+      const result = await apply(e, 'environment_profile', { ...PROFILE, ...change }, { worktree: tempDir() });
+      expect(evidenceOf(result)).toMatch(evidence);
     });
 
     it('rejects an Environment Profile whose smoke command fails, with its output', async () => {

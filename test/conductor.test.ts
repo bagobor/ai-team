@@ -4,6 +4,7 @@ import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { sectionText } from '../src/artifacts/format.ts';
 import { ArtifactStore } from '../src/artifacts/store.ts';
+import type { PlayResult } from '../src/checks/play.ts';
 import { openDb } from '../src/db/open.ts';
 import { applyOutput } from '../src/engine/apply/index.ts';
 import { fileChangeRequest } from '../src/engine/change-requests.ts';
@@ -21,6 +22,7 @@ import { addAttemptWorktree, ensureIntegrationBranch, snapshotAttempt } from '..
 import { isWithin, worktreePath } from '../src/paths.ts';
 import { CRITERIA, projectOf } from './helpers/apply.ts';
 import { eventTypes, makeEngine, ticket, type TestEngine } from './helpers/engine.ts';
+import { fakePlayer, playResult } from './helpers/play.ts';
 import { commitAll, makeRepo, porcelain, revParse, run, tempDir } from './helpers/repo.ts';
 
 const DISCOVERY = {
@@ -30,7 +32,7 @@ const DISCOVERY = {
   stakeholder_note: 'Please look at the roadmap',
 };
 const ONE_MILESTONE = { ...DISCOVERY, roadmap: { body: '# Roadmap\n', milestones: [{ n: 1, title: 'Only', goal: 'All of it' }] } };
-const PROFILE = { body: '# Environment\n', commands: { build: 'true', test: 'true', lint: 'true', smoke: 'echo smoke-ok' }, toolchains: ['node 22'], network_allow: [], setup: null, stakeholder_note: 'The toolchain is ready' };
+const PROFILE = { body: '# Environment\n', commands: { build: 'true', test: 'true', lint: 'true', smoke: 'echo smoke-ok' }, toolchains: ['node 22'], network_allow: [], setup: null, play: null, stakeholder_note: 'The toolchain is ready' };
 const SPEC = { body: '# Milestone one\n\n## Scope\n\nSmall.\n', criteria: CRITERIA, stakeholder_note: 'The spec is small' };
 const HUMAN = { id: 'AC-2', text: 'Dodging feels fair', verification: { method: 'human' as const, how: 'Play two minutes; you should never die without seeing the shot coming' } };
 const draft = (key: string, ac_refs: string[]) => ({ key, title: key, specialty: 'engineer', ac_refs, touches: ['src/**'], depends_on: [], definition_of_done: ['true'], inputs: [], size: 'S', body: 'Do it.\n' });
@@ -1165,6 +1167,187 @@ describe('flow', () => {
     await h.store.answerInbox((await pending(h, 'engine_error')).id, { option: 'halt' });
     await h.conductor.tick();
     expect(await phaseOf(h)).toBe('halted');
+  });
+});
+
+describe('the play gate', () => {
+  const PAGE = '<!doctype html><title>Game</title><canvas></canvas>\n';
+  const FIXED = '<!doctype html><title>Game</title><canvas id="fixed"></canvas>\n';
+  const PLAY = { root: '.', entry: 'index.html', keys: ['Space'] };
+  const PLAY_PROFILE = { ...PROFILE, commands: { ...PROFILE.commands, test: 'test -f index.html' }, play: PLAY };
+  const BOOM = playResult([
+    { kind: 'exception', detail: 'boom at game.js:3' },
+    { kind: 'console', detail: 'Uncaught TypeError: x is undefined' },
+  ]);
+
+  async function playing(results: PlayResult | PlayResult[], opts: { unavailable?: string; profile?: unknown } = {}) {
+    const h = await harness();
+    const player = fakePlayer(results, opts);
+    h.player = player;
+    await toBuild(h, { profile: opts.profile ?? PLAY_PROFILE });
+    return { h, player };
+  }
+
+  // The tick after the merge is the one that finds every ticket closed.
+  async function mergeGame(h: Harness, id = 'M1-T-1', page = PAGE): Promise<void> {
+    await mergeTicket(h, id, { 'index.html': page });
+    await h.conductor.tick();
+  }
+
+  const milestoneOf = async (h: Harness) => (await h.store.getMilestone(h.project.id, 1))!;
+  const bugIds = async (h: Harness) => (await h.artifacts.list(h.project.id)).filter(({ type }) => type === 'bug').map(({ artifact_id }) => artifact_id);
+
+  it('runs the play gate before the QA round', async () => {
+    const { h, player } = await playing(playResult());
+    const smoke = vi.spyOn(player, 'smoke');
+    await mergeGame(h);
+
+    expect(player.calls).toHaveLength(1);
+    expect(player.calls[0]!.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/index\.html$/);
+    expect(player.calls[0]!.body).toBe(PAGE);
+    expect(smoke).toHaveBeenCalledWith(player.calls[0]!.url, ['Space']);
+    expect(await taskIds(h)).toContain('M1-QA-1');
+    expect(await milestonePhase(h)).toBe('verify');
+  });
+
+  it('files a Bug when the game does not run', async () => {
+    const { h } = await playing(BOOM);
+    await mergeGame(h);
+
+    const bug = await h.artifacts.read(h.project, 'BUG-M1-1');
+    expect(bug.body).toContain('boom at game.js:3');
+    expect(bug.body).toContain('- exception: boom at game.js:3\n- console: Uncaught TypeError: x is undefined\n');
+    expect(await h.artifacts.latest(h.project.id, 'BUG-M1-1')).toMatchObject({ status: 'approved', approved_by: 'engine' });
+    expect(await byTicket(h, 'M1-B-1')).toMatchObject({ kind: 'ticket', role_id: 'engineer', state: 'queued', ac_refs: ['AC-1', 'AC-2'], dod: ['test -f index.html'], touches: ['**'] });
+    expect(await milestoneOf(h)).toMatchObject({ phase: 'build', verify_round: 1 });
+    expect(await taskIds(h)).not.toContain('M1-QA-1');
+  });
+
+  it('plays once for a round, not again while its Bug is open', async () => {
+    const { h, player } = await playing(BOOM);
+    await mergeGame(h);
+    await h.conductor.tick();
+    await h.conductor.tick();
+
+    expect(player.calls).toHaveLength(1);
+    expect(await milestoneOf(h)).toMatchObject({ phase: 'build', verify_round: 1 });
+    expect(await bugIds(h)).toEqual(['BUG-M1-1']);
+  });
+
+  it('files a Bug when the build fails, with nothing played', async () => {
+    const { h, player } = await playing(playResult(), { profile: { ...PLAY_PROFILE, commands: { ...PLAY_PROFILE.commands, build: 'echo build-broke; exit 4' } } });
+    await mergeGame(h);
+
+    expect(player.calls).toEqual([]);
+    expect((await h.artifacts.read(h.project, 'BUG-M1-1')).body).toContain('build-broke');
+    expect(await milestoneOf(h)).toMatchObject({ phase: 'build', verify_round: 1 });
+  });
+
+  it('runs the gate again once the Bug is fixed', async () => {
+    const { h, player } = await playing([BOOM, playResult()]);
+    await mergeGame(h);
+    await mergeGame(h, 'M1-B-1', FIXED);
+
+    expect(player.calls.map(({ body }) => body)).toEqual([PAGE, FIXED]);
+    expect(await taskIds(h)).toContain('M1-QA-2');
+    expect(await taskIds(h)).not.toContain('M1-QA-1');
+    expect(await milestoneOf(h)).toMatchObject({ phase: 'verify', verify_round: 2 });
+  });
+
+  it('stops at the round cap with a hold', async () => {
+    const { h, player } = await playing(BOOM);
+    await h.store.patchMilestone(h.project.id, 1, { verify_cap: 1 });
+    await mergeGame(h);
+    await mergeGame(h, 'M1-B-1');
+
+    const hold = await pending(h, 'qa_cap');
+    expect(hold.dedupe_key).toBe('qa_cap:M1:1');
+    expect(hold.why).toMatch(/doesn't run/);
+    expect(hold.why).toContain('boom at game.js:3');
+    expect(hold.why).not.toContain('Uncaught TypeError');
+    expect(hold.options.map(({ id }) => id)).toEqual(['more', 'halt']);
+    expect(await milestoneOf(h)).toMatchObject({ phase: 'build', verify_round: 1 });
+    expect(await bugIds(h)).toEqual(['BUG-M1-1']);
+    await h.conductor.tick();
+    expect(player.calls).toHaveLength(2);
+
+    // LC-1: the hold was raised from build, so its answer must not try to move the milestone to build again.
+    await h.store.answerInbox(hold.id, { option: 'more' });
+    await h.conductor.tick();
+
+    expect(await inboxOf(h, 'engine_error')).toEqual([]);
+    expect(player.calls).toHaveLength(3);
+    expect(await milestoneOf(h)).toMatchObject({ phase: 'build', verify_cap: 4, verify_round: 2 });
+    expect(await taskIds(h)).toContain('M1-B-2');
+  });
+
+  it('holds when Chrome is unavailable', async () => {
+    const { h, player } = await playing(playResult(), { unavailable: 'Chrome was not found at /nope. Set chrome.binary in ~/.aiteam/config.yaml' });
+    await mergeGame(h);
+
+    const hold = await pending(h, 'play');
+    expect(hold).toMatchObject({ dedupe_key: 'play:M1:1', title: "Milestone 1's game can't be played here" });
+    expect(hold.why).toContain('/nope');
+    expect(hold.why).toContain('chrome.binary');
+    expect(hold.options.map(({ id }) => id)).toEqual(['retry', 'halt']);
+    expect(player.calls).toEqual([]);
+    expect(await milestoneOf(h)).toMatchObject({ phase: 'build', verify_round: 0 });
+    await h.conductor.tick();
+    expect(await inboxOf(h, 'play')).toHaveLength(1);
+
+    h.player = fakePlayer(playResult());
+    await h.store.answerInbox(hold.id, { option: 'retry' });
+    await h.conductor.tick();
+
+    expect(await taskIds(h)).toContain('M1-QA-1');
+    expect(await milestoneOf(h)).toMatchObject({ phase: 'verify', verify_round: 1 });
+  });
+
+  it('holds, and files no Bug, when Chrome fails to start', async () => {
+    const { h } = await playing(playResult([{ kind: 'browser', detail: 'Chrome at /x exited before DevTools opened' }]));
+    await mergeGame(h);
+
+    expect((await pending(h, 'play')).why).toContain('/x');
+    expect(await bugIds(h)).toEqual([]);
+    expect(await taskIds(h)).not.toContain('M1-B-1');
+    expect(await milestoneOf(h)).toMatchObject({ phase: 'build', verify_round: 0 });
+  });
+
+  it('holds when the engine has no player at all', async () => {
+    const h = await harness();
+    await toBuild(h, { profile: PLAY_PROFILE });
+    await mergeGame(h);
+
+    expect((await pending(h, 'play')).why).toMatch(/play/);
+    expect(await taskIds(h)).not.toContain('M1-QA-1');
+  });
+
+  it('skips the gate without a play block', async () => {
+    const h = await harness();
+    const player = fakePlayer(playResult());
+    h.player = player;
+    await toVerify(h);
+
+    expect(player.calls).toEqual([]);
+    expect(await taskIds(h)).toContain('M1-QA-1');
+  });
+
+  it('serves the build output when play.root is dist', async () => {
+    const profile = { ...PLAY_PROFILE, commands: { ...PLAY_PROFILE.commands, build: 'mkdir -p dist && sed s/Game/Built/ index.html > dist/index.html' }, play: { ...PLAY, root: 'dist' } };
+    const { h, player } = await playing(playResult(), { profile });
+    await mergeGame(h);
+
+    expect(player.calls).toHaveLength(1);
+    expect(player.calls[0]!.url).toMatch(/\/index\.html$/);
+    expect(player.calls[0]!.body).toBe(PAGE.replace('Game', 'Built'));
+  });
+
+  it('leaves nothing behind after the play gate', async () => {
+    const { h } = await playing(BOOM);
+    await mergeGame(h);
+
+    expect(existsSync(worktreePath(h.paths, 'p', 'M1-play', 1))).toBe(false);
+    expect(run(h.repoPath, 'branch', '--list', 'aiteam/play/*')).toBe('');
   });
 });
 

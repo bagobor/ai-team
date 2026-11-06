@@ -9,6 +9,7 @@
     "toolchains",
     "network_allow",
     "setup",
+    "play",
     "stakeholder_note"
   ],
   "properties": {
@@ -56,6 +57,34 @@
         "string",
         "null"
       ]
+    },
+    "play": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "description": "How a person plays the product in a browser. `root` is the directory to serve after the build command runs, such as `.` or `dist`. `entry` is the page under it. `keys` are the keys the game uses, by `KeyboardEvent.code`. Use null only when nothing runs in a browser.",
+      "additionalProperties": false,
+      "required": [
+        "root",
+        "entry",
+        "keys"
+      ],
+      "properties": {
+        "root": {
+          "type": "string"
+        },
+        "entry": {
+          "type": "string"
+        },
+        "keys": {
+          "type": "array",
+          "description": "ArrowLeft, ArrowRight, ArrowUp, ArrowDown, Space, Enter, Escape, ShiftLeft, KeyA to KeyZ, Digit0 to Digit9.",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
     },
     "stakeholder_note": {
       "type": "string"
