@@ -44,11 +44,14 @@ describe('applyEvent', () => {
       event('play.result', { milestone: 1, outcome: 'failed', problems: [{ kind: 'exception', detail: 'boom' }, { kind: 'blank', detail: 'All white' }] }, null),
       event('play.result', { milestone: 1, outcome: 'unavailable', why: 'Chrome was not found at /nope' }, null),
       event('play.result', { milestone: 1, outcome: 'passed', problems: [] }, null),
+      event('play.result', { milestone: 1, outcome: 'failed', problems: [{ kind: 'load', detail: 'The build command failed.\n$ npm run build\nerror TS2304' }] }, null),
     );
 
     expect(rows[0]).toMatchObject({ kind: 'test', bold: 'play M1', text: 'failed: exception: boom; blank: All white', tone: 'bad' });
     expect(rows[1]).toMatchObject({ text: 'unavailable: Chrome was not found at /nope', tone: 'bad' });
     expect(rows[2]).toMatchObject({ text: 'passed', tone: 'good' });
+    // A build's whole output is in the Bug. One row of the log takes its first line.
+    expect(rows[3]).toMatchObject({ text: 'failed: load: The build command failed.' });
   });
 
   it('says why a document changed when the event carries a reason', () => {

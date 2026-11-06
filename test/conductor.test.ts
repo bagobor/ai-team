@@ -1342,6 +1342,15 @@ describe('the play gate', () => {
     expect(player.calls[0]!.body).toBe(PAGE.replace('Game', 'Built'));
   });
 
+  it('plays an entry whose name a URL would misread', async () => {
+    const { h, player } = await playing(playResult(), { profile: { ...PLAY_PROFILE, play: { ...PLAY, entry: 'play #1.html' } } });
+    await mergeTicket(h, 'M1-T-1', { 'play #1.html': PAGE });
+    await h.conductor.tick();
+
+    expect(player.calls[0]!.url).toMatch(/\/play%20%231\.html$/);
+    expect(player.calls[0]!.body).toBe(PAGE);
+  });
+
   it('leaves nothing behind after the play gate', async () => {
     const { h } = await playing(BOOM);
     await mergeGame(h);

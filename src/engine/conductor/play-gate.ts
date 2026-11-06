@@ -95,7 +95,9 @@ async function playHead(deps: EngineDeps, project: ProjectRow, n: number, profil
     if (!site.ok) return { kind: 'failed', headSha, problems: [{ kind: 'load', detail: site.why }] };
     const server = await serveStatic(site.root);
     try {
-      const played = await player.smoke(server.url + play.entry, play.keys);
+      // A file name may hold a space, # or %, which a URL reads as something else.
+      const page = play.entry.split('/').map(encodeURIComponent).join('/');
+      const played = await player.smoke(server.url + page, play.keys);
       return judged(headSha, played.problems, played.ok);
     } finally {
       await server.close();

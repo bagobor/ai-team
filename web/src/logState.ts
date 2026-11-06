@@ -44,9 +44,10 @@ function checkRow(p: Payload): RowParts {
   return { kind: 'test', bold: text(run.command), text: `${checkOutcome(run)}${took}`, tone: run.exitCode === 0 ? 'good' : 'bad' };
 }
 
-// The play gate's outcome, with what went wrong when the game didn't run or couldn't be played.
+// The play gate's outcome, with what went wrong when the game didn't run or couldn't be played. A build's output
+// runs to many lines, all of them in the Bug, so a row takes each problem's first.
 function playRow(p: Payload): RowParts {
-  const problems = Array.isArray(p.problems) ? p.problems.map((problem: { kind?: unknown; detail?: unknown } | null) => `${text(problem?.kind)}: ${text(problem?.detail)}`) : [];
+  const problems = Array.isArray(p.problems) ? p.problems.map((problem: { kind?: unknown; detail?: unknown } | null) => `${text(problem?.kind)}: ${text(problem?.detail).trim().split(/\r?\n/)[0]}`) : [];
   const said = p.outcome === 'unavailable' ? text(p.why) : problems.join('; ');
   const bold = typeof p.milestone === 'number' ? `play M${p.milestone}` : 'play';
   return { kind: 'test', bold, text: said ? `${text(p.outcome)}: ${said}` : text(p.outcome), tone: p.outcome === 'passed' ? 'good' : 'bad' };

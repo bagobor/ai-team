@@ -216,10 +216,11 @@ export function bugTicket(milestone: number, k: number, bug: { acs: string[]; ti
   const key = `B-${k}`;
   const id = ticketIdFor(milestone, key);
   const inputs = [`BUG-M${milestone}-${k}@1`, bug.techPin];
-  const passes = bug.acs.length === 1 ? `${bug.acs[0]} passes` : `${bug.acs.join(', ')} pass`;
+  // A milestone of human checks only leaves the play gate's Bug no criterion to name.
+  const passes = bug.acs.length === 0 ? '' : bug.acs.length === 1 ? `, so that ${bug.acs[0]} passes` : `, so that ${bug.acs.join(', ')} pass`;
   const { fields, body } = renderTicket(
     milestone,
-    { key, title: oneLine(bug.title), ac_refs: bug.acs, specialty: 'engineer', touches: bug.touches, depends_on: [], definition_of_done: bug.definition_of_done, inputs, size: 'S', body: `Fix what BUG-M${milestone}-${k} describes, so that ${passes}.\n` },
+    { key, title: oneLine(bug.title), ac_refs: bug.acs, specialty: 'engineer', touches: bug.touches, depends_on: [], definition_of_done: bug.definition_of_done, inputs, size: 'S', body: `Fix what BUG-M${milestone}-${k} describes${passes}.\n` },
     { id, dependsOn: [], inputs },
   );
   return { id, type: 'ticket', status: 'approved', ownerRole: 'tech_lead', approvedBy: 'engine', milestone, derivedFrom: [...inputs, bug.specPin], fields, body };

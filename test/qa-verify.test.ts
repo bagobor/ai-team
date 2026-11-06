@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import type { Criterion } from '../src/artifacts/acs.ts';
 import { renderArtifact, sectionsOf, sectionText } from '../src/artifacts/format.ts';
 import { applyOutput } from '../src/engine/apply/index.ts';
+import { bugTicket } from '../src/engine/apply/qa.ts';
 import { worktreePath } from '../src/paths.ts';
 import { parseTicket } from '../src/tickets/ticket.ts';
 import { addAttemptWorktree } from '../src/git/workspace.ts';
@@ -592,5 +593,18 @@ describe('qa_verify applier', () => {
       expect(existsSync(baseWorktree(ctx))).toBe(false);
       expect(baseBranch(ctx)).toBe('');
     });
+  });
+});
+
+describe('a Bug ticket', () => {
+  const draft = { title: 'The game does not run', touches: ['**'], definition_of_done: ['true'], techPin: 'TECH-M1@1', specPin: 'SPEC-M1@1' };
+
+  it('names every criterion it must make pass', () => {
+    expect(bugTicket(1, 2, { ...draft, acs: ['AC-1', 'AC-2'] }).body).toBe('Fix what BUG-M1-2 describes, so that AC-1, AC-2 pass.\n');
+  });
+
+  // The play gate's Bug names only automated criteria, and a milestone can have none.
+  it('reads plainly when there is no criterion to name', () => {
+    expect(bugTicket(1, 2, { ...draft, acs: [] }).body).toBe('Fix what BUG-M1-2 describes.\n');
   });
 });
