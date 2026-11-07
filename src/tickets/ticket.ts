@@ -74,8 +74,9 @@ export function parseTicket(markdown: string): Ticket {
   const fields = parseFields(match[1] ?? '');
 
   const milestone = fields.milestone;
-  if (typeof milestone !== 'number' || !Number.isInteger(milestone) || milestone < 1) {
-    throw new TicketError('Ticket field milestone must be a positive whole number');
+  // Milestone 0 is the prototypes before discovery.
+  if (typeof milestone !== 'number' || !Number.isInteger(milestone) || milestone < 0) {
+    throw new TicketError('Ticket field milestone must be a non-negative whole number');
   }
 
   const size = fields.size;

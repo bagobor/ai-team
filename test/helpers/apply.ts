@@ -49,13 +49,13 @@ export async function ticketTask(e: TestEngine, id: string, fields: Partial<NewT
 let tasks = 0;
 
 // The context an applier gets, for a task that really is in the store.
-export async function ctxFor(e: TestEngine, purpose: Purpose, output: unknown, opts: { inputs?: string[]; milestone?: number; worktree?: string; kind?: NewTask['kind']; role?: string; baseSha?: string; subject?: WorkOrder['subject'] } = {}): Promise<ApplyCtx> {
+export async function ctxFor(e: TestEngine, purpose: Purpose, output: unknown, opts: { inputs?: string[]; milestone?: number; worktree?: string; kind?: NewTask['kind']; role?: string; baseSha?: string; subject?: WorkOrder['subject']; ticketId?: string } = {}): Promise<ApplyCtx> {
   const project = await projectOf(e);
   const order: WorkOrder = { purpose, instructions: 'Do it', inputs: opts.inputs ?? [], checks: [], base: { kind: 'base' }, ...(opts.subject ? { subject: opts.subject } : {}) };
   tasks += 1;
   const task = await e.store.createTask({
     project_id: project.id,
-    ticket_id: `TASK-${tasks}`,
+    ticket_id: opts.ticketId ?? `TASK-${tasks}`,
     title: purpose,
     milestone: opts.milestone ?? 1,
     role_id: opts.role ?? 'pm',

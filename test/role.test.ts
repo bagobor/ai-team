@@ -61,7 +61,7 @@ describe('loadRole', () => {
   });
 
   it.each([
-    ['pm', ['discovery', 'milestone_spec', 'milestone_review', 'cr_recommendation']],
+    ['pm', ['discovery', 'milestone_spec', 'milestone_review', 'cr_recommendation', 'prototype_plan']],
     ['tech_lead', ['environment_profile', 'tech_design', 'revise_design', 'cr_recommendation']],
     ['eng_lead', ['ticket_scope', 'revise_scope', 'eng_review', 'cr_recommendation']],
     ['code_reviewer', ['code_review']],
@@ -136,7 +136,7 @@ describe('loadRole', () => {
 
   it('accepts a change request from each schema a worker can answer with', () => {
     const names = readdirSync(join(seedKnowledge, 'schemas'));
-    expect(names).toHaveLength(15);
+    expect(names).toHaveLength(16);
     for (const name of names) {
       const schema = JSON.parse(readFileSync(join(seedKnowledge, 'schemas', name), 'utf8')) as { required: string[]; properties: Record<string, unknown> };
       expect(schema.properties.change_requests, name).toBeDefined();

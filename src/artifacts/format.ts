@@ -11,6 +11,7 @@ export const ARTIFACT_TYPES = [
   'tech_design',
   'test_plan',
   'ticket_scope',
+  'prototype_plan',
   'ticket',
   'bug',
   'change_report',

@@ -11,7 +11,7 @@ const SIZES: readonly string[] = ['S', 'M', 'L'];
 const SECTIONS: readonly string[] = ['Overview', 'Components', 'Complexity', 'Performance', 'Test strategy', 'Risks'];
 const blank = (text: string): boolean => text.trim() === '';
 // The engine owns the headings, so a line of the model's that starts one would add a section a pin could name.
-const headed = (field: string, text: string): string[] => (/^\s*#/m.test(text) ? [`${field} has a line that starts with #; headings are not allowed`] : []);
+export const headed = (field: string, text: string): string[] => (/^\s*#/m.test(text) ? [`${field} has a line that starts with #; headings are not allowed`] : []);
 
 // Models wrote all of it. The schema keeps the shapes right, so these are the rules a schema cannot say, and each message names what to fix.
 export function structureProblems(s: TechStructure): string[] {

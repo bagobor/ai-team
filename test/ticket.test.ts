@@ -32,12 +32,21 @@ describe('parseTicket', () => {
     expect(parseTicket(withField(t1, 'inputs', '[SPEC-M1@2#ac-1, BRIEF]')).inputs).toEqual(['SPEC-M1@2#ac-1', 'BRIEF']);
   });
 
+  // A prototype is milestone 0, and the runner parses its ticket like any other.
+  it('accepts milestone 0', () => {
+    expect(parseTicket(withField(t1, 'milestone', '0')).milestone).toBe(0);
+  });
+
+  it.each(['-1', '1.5', 'one'])('says what a milestone must be when it is %s', (yaml) => {
+    expect(() => parseTicket(withField(t1, 'milestone', yaml))).toThrow('Ticket field milestone must be a non-negative whole number');
+  });
+
   it.each(['definition_of_done', 'touches'])('rejects an empty %s', (f) => {
     expect(() => parseTicket(withField(t1, f, '[]'))).toThrow(new RegExp(f));
   });
 
   it.each([
-    ['milestone', '0'],
+    ['milestone', '-1'],
     ['milestone', '1.5'],
     ['milestone', 'one'],
     ['size', 'XL'],

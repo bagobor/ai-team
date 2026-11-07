@@ -4,7 +4,7 @@ department: product
 mission: >
   Turn the stakeholder's Brief into a Roadmap and verifiable Milestone Specs. Close each milestone honestly.
 consumes: [brief, roadmap, milestone_spec, qa_report, change_request]
-produces: [roadmap, team_proposal, human_requirements, milestone_spec, milestone_review]
+produces: [roadmap, team_proposal, human_requirements, milestone_spec, milestone_review, prototype_plan]
 write_scope:                  # no edit tools: the engine writes artifacts from structured output
   allow: []
   deny: ["**"]
@@ -20,3 +20,4 @@ output_schemas:
   milestone_spec: schemas/milestone_spec.json
   milestone_review: schemas/milestone_review.json
   cr_recommendation: schemas/cr_recommendation.json
+  prototype_plan: schemas/prototype_plan.json

@@ -6,6 +6,7 @@ export type DocumentGroup<T> = { label: string; documents: T[] };
 // In reading order. Keyed by every type, so that a new one can't drop off the list without the compiler saying so.
 const GROUP_OF: Record<ArtifactType, string> = {
   brief: 'Brief',
+  prototype_plan: 'Prototypes',
   roadmap: 'Discovery',
   team_proposal: 'Discovery',
   human_requirements: 'Discovery',
