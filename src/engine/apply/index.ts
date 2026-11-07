@@ -8,6 +8,7 @@ import { applyDiscovery, applyEnvironmentProfile } from './discovery.ts';
 import { applyMilestoneReview, applyMilestoneSpec } from './milestone.ts';
 import { applyQaVerify } from './qa.ts';
 import { applyCodeReview, applyCrRecommendation } from './review.ts';
+import { applyReviseScope, applyTicketScope } from './scope.ts';
 
 export type ApplyCtx = {
   deps: EngineDeps;
@@ -40,6 +41,8 @@ const APPLIERS: Record<Purpose, Applier> = {
   cr_recommendation: applyCrRecommendation,
   revise_design: applyReviseDesign,
   revise_test_plan: applyReviseTestPlan,
+  ticket_scope: applyTicketScope,
+  revise_scope: applyReviseScope,
 };
 
 // An applier's refusal is the worker's failed attempt. An applier's exception is the engine's bug, and escalates.

@@ -1,6 +1,6 @@
 import { isDeepStrictEqual } from 'node:util';
 import { isHumanCheck } from '../../artifacts/acs.ts';
-import { ArtifactError, parsePin, sectionText, formatPin, type ArtifactDoc, type ArtifactStatus } from '../../artifacts/format.ts';
+import { ArtifactError, parsePin, sectionText, formatPin, type ArtifactDoc, type ArtifactStatus, type ArtifactType } from '../../artifacts/format.ts';
 import type { NewVersion, StatusChange } from '../../artifacts/store.ts';
 import { scriptProblems, type PlayScript } from '../../checks/play.ts';
 import { proposesCurrent } from '../change-requests.ts';
@@ -11,7 +11,8 @@ import { approvedProfile } from './discovery.ts';
 import { techId, testPlanId } from './ids.ts';
 import type { Applier, ApplyCtx } from './index.ts';
 import { withRaised } from './raised.ts';
-import { validateTickets, type TicketDraft } from './tickets.ts';
+import { structureOf, type ComponentSpec } from './tech-structure.ts';
+import { validateTickets, type TicketBatch, type TicketDraft } from './tickets.ts';
 
 // A play script proves a criterion only a browser can show, so an entry needs commands, a script, or both.
 export type Coverage = { ac: string; commands: string[]; notes: string; regression?: boolean; play?: PlayScript };
@@ -66,14 +67,15 @@ function coverageProblems(acIds: string[], coverage: Coverage[], humanIds: strin
 
 const hasPlayBlock = async (ctx: ApplyCtx): Promise<boolean> => ((await approvedProfile(ctx))?.play ?? null) !== null;
 
-const designDoc = (ctx: ApplyCtx, body: string, status: ArtifactStatus = 'approved'): NewVersion => ({
-  id: techId(ctx.task.milestone),
-  type: 'tech_design',
+// A document its owner's worker wrote, approved for that owner and derived from what the worker read.
+export const ownedDoc = (ctx: ApplyCtx, doc: { id: string; type: ArtifactType; owner: string }, body: string, status: ArtifactStatus = 'approved'): NewVersion => ({
+  id: doc.id,
+  type: doc.type,
   status,
-  ownerRole: 'tech_lead',
-  approvedBy: 'owner:tech_lead',
+  ownerRole: doc.owner,
+  approvedBy: `owner:${doc.owner}`,
   milestone: ctx.task.milestone,
-  derivedFrom: ctx.order.inputs.filter((pin) => parsePin(pin).id !== techId(ctx.task.milestone)),
+  derivedFrom: ctx.order.inputs.filter((pin) => parsePin(pin).id !== doc.id),
   body,
 });
 
@@ -89,16 +91,32 @@ const testPlanDoc = (ctx: ApplyCtx, body: string, coverage: Coverage[], globs: s
   fields: { data: { coverage, protected: globs } },
 });
 
+// The product tickets a document comes with: each one valid, and every criterion with a ticket. The Tech Design's
+// older path and the Eng Lead's scope both publish theirs through here.
+export async function checkedTickets(ctx: ApplyCtx, tickets: TicketDraft[], batch: TicketBatch, body: string): Promise<{ ok: true; docs: NewVersion[] } | { ok: false; evidence: string }> {
+  const acIds = (await lockedCriteria(ctx)).map(({ ac_id }) => ac_id);
+  const validated = await validateTickets(ctx, ctx.task.milestone, tickets, acIds, await knownTickets(ctx), batch, body);
+  const problems = [...(validated.ok ? [] : [validated.evidence]), ...uncovered(acIds, tickets.flatMap(({ ac_refs }) => ac_refs))];
+  return validated.ok && problems.length === 0 ? validated : { ok: false, evidence: problems.join('\n') };
+}
+
+// The components the Eng Lead's tickets are held to. The engine scopes tickets only once a Tech Design with a structure
+// is in, so one without is the engine's bug.
+export async function designComponents(ctx: ApplyCtx): Promise<ComponentSpec[]> {
+  const id = techId(ctx.task.milestone);
+  const structure = structureOf(await ctx.deps.artifacts.read(ctx.project, id));
+  if (!structure) throw new Error(`${id} has no components to scope tickets against`);
+  return structure.components;
+}
+
 export const applyTechDesign: Applier = async (ctx) => {
   const { body, tickets } = ctx.output as DesignOutput;
   const { milestone } = ctx.task;
-  const acIds = (await lockedCriteria(ctx)).map(({ ac_id }) => ac_id);
 
-  const validated = await validateTickets(ctx, milestone, tickets, acIds, await knownTickets(ctx), 'T', body);
-  const problems = [...(validated.ok ? [] : [validated.evidence]), ...uncovered(acIds, tickets.flatMap(({ ac_refs }) => ac_refs))];
-  if (!validated.ok || problems.length > 0) return { ok: false, evidence: problems.join('\n') };
+  const checked = await checkedTickets(ctx, tickets, { prefix: 'T', docId: techId(milestone), owner: 'tech_lead' }, body);
+  if (!checked.ok) return checked;
 
-  return withRaised(ctx, { message: `milestone ${milestone}: tech design`, publish: [designDoc(ctx, body), ...validated.docs] });
+  return withRaised(ctx, { message: `milestone ${milestone}: tech design`, publish: [ownedDoc(ctx, { id: techId(milestone), type: 'tech_design', owner: 'tech_lead' }, body), ...checked.docs] });
 };
 
 export const applyTestPlan: Applier = async (ctx) => {
@@ -107,7 +125,7 @@ export const applyTestPlan: Applier = async (ctx) => {
   const criteria = await lockedCriteria(ctx);
   const acIds = automatedIds(criteria);
 
-  const validated = await validateTickets(ctx, milestone, harness_tickets, acIds, await knownTickets(ctx), 'Q', body);
+  const validated = await validateTickets(ctx, milestone, harness_tickets, acIds, await knownTickets(ctx), { prefix: 'Q', docId: testPlanId(milestone), owner: 'tech_lead' }, body);
   const problems = [...(validated.ok ? [] : [validated.evidence]), ...coverageProblems(acIds, coverage, humanCheckIds(criteria), await hasPlayBlock(ctx)), ...protectedProblems(globs)];
   if (!validated.ok || problems.length > 0) return { ok: false, evidence: problems.join('\n') };
 
@@ -235,15 +253,24 @@ function movedFlags(revised: Coverage[], replaced: ArtifactDoc, docId: string): 
     });
 }
 
-const applyRevise =
-  (prefix: Prefix): Applier =>
+// What a revise publishes again and who owns the tickets it decides. On the T side that owner owns the document too; the
+// Test Plan is QA's, but its harness tickets are the Tech Lead's. With components, new tickets are held to the Tech Design's.
+export type ReviseTarget = { docId: (milestone: number) => string; type: ArtifactType; owner: string; components?: boolean };
+
+const TARGETS: Record<Prefix, ReviseTarget> = {
+  T: { docId: techId, type: 'tech_design', owner: 'tech_lead' },
+  Q: { docId: testPlanId, type: 'test_plan', owner: 'tech_lead' },
+};
+
+export const applyRevise =
+  (prefix: Prefix, target: ReviseTarget = TARGETS[prefix]): Applier =>
   async (ctx) => {
     const output = ctx.output as ReviseOutput;
     const { milestone } = ctx.task;
     const criteria = await lockedCriteria(ctx);
     // The Tech Design builds a human check like any other criterion, but only the Test Plan skips it.
     const acIds = prefix === 'T' ? criteria.map(({ ac_id }) => ac_id) : automatedIds(criteria);
-    const docId = prefix === 'T' ? techId(milestone) : testPlanId(milestone);
+    const docId = target.docId(milestone);
     const body = output.unaffected ? null : output.body;
 
     // The version this one replaces is read first: its coverage limits the flags a revision may set, and, since a revision has no way to name protected paths, its globs carry over.
@@ -277,7 +304,8 @@ const applyRevise =
       for (const dep of ticket.dependsOn) if (superseded.has(dep)) problems.push(`Ticket ${ticket.id} stays but depends on ${dep}, which this revision supersedes`);
     }
 
-    const validated = await validateTickets(ctx, milestone, output.tickets, acIds, await knownTickets(ctx), prefix, body ?? undefined);
+    const batch: TicketBatch = { prefix, docId, owner: target.owner, ...(target.components ? { components: await designComponents(ctx) } : {}) };
+    const validated = await validateTickets(ctx, milestone, output.tickets, acIds, await knownTickets(ctx), batch, body ?? undefined);
     const newDocs = validated.ok ? validated.docs : [];
     if (!validated.ok) problems.push(validated.evidence);
     for (const doc of newDocs) for (const dep of doc.fields!.depends_on as string[]) if (superseded.has(dep)) problems.push(`Ticket ${doc.id} depends on ${dep}, which this revision supersedes`);
@@ -294,13 +322,13 @@ const applyRevise =
       if (!ticket.row) continue; // Added by hand, so it has no artifact to change.
       const decision = decisions.get(ticket.id);
       if (decision?.decision === 'superseded') status.push({ id: ticket.id, status: 'superseded', rationale: decision.rationale });
-      else status.push({ id: ticket.id, status: 'approved', approvedBy: 'owner:tech_lead', derivedFrom: await repinned(ctx, ticket.row, docId, body), rationale: decision?.rationale ?? `Closed before this revision of ${docId}` });
+      else status.push({ id: ticket.id, status: 'approved', approvedBy: `owner:${target.owner}`, derivedFrom: await repinned(ctx, ticket.row, docId, body), rationale: decision?.rationale ?? `Closed before this revision of ${docId}` });
     }
 
     const globs = replaced === undefined ? [] : protectedGlobs(replaced);
     // The revising model is shown the plan without its regression flags, so an entry that leaves one out keeps the replaced version's while its commands and play script stay the same, and only an explicit false clears it.
     const coverage = replaced === undefined || carried === undefined ? [] : keepingFlags(carried, replaced);
-    const publish = [...(body === null ? [] : [prefix === 'T' ? designDoc(ctx, body, settled) : testPlanDoc(ctx, body, coverage, globs, settled)]), ...newDocs];
+    const publish = [...(body === null ? [] : [prefix === 'T' ? ownedDoc(ctx, { id: docId, type: target.type, owner: target.owner }, body, settled) : testPlanDoc(ctx, body, coverage, globs, settled)]), ...newDocs];
     return withRaised(ctx, { message: `milestone ${milestone}: revise ${docId}`, publish, status }, async (s) => {
       for (const id of superseded) {
         const task = await s.getTaskByTicket(ctx.project.id, id);

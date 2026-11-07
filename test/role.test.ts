@@ -7,7 +7,7 @@ import { tempDir } from './helpers/repo.ts';
 
 const seedKnowledge = fileURLToPath(new URL('../seed/knowledge', import.meta.url));
 
-const ROLES = ['pm', 'tech_lead', 'code_reviewer', 'qa_engineer', 'engineer'];
+const ROLES = ['pm', 'tech_lead', 'eng_lead', 'code_reviewer', 'qa_engineer', 'engineer'];
 
 describe('loadRole', () => {
   let knowledge: string;
@@ -52,6 +52,7 @@ describe('loadRole', () => {
   it.each([
     ['pm', 'claude-opus-5-5'],
     ['tech_lead', 'claude-opus-5-5'],
+    ['eng_lead', 'claude-opus-5-5'],
     ['code_reviewer', 'claude-opus-5-5'],
     ['qa_engineer', 'claude-sonnet-5-5'],
     ['engineer', 'claude-sonnet-5-5'],
@@ -62,6 +63,7 @@ describe('loadRole', () => {
   it.each([
     ['pm', ['discovery', 'milestone_spec', 'milestone_review', 'cr_recommendation']],
     ['tech_lead', ['environment_profile', 'tech_design', 'revise_design', 'cr_recommendation']],
+    ['eng_lead', ['ticket_scope', 'revise_scope', 'cr_recommendation']],
     ['code_reviewer', ['code_review']],
     ['qa_engineer', ['test_plan', 'qa_verify', 'revise_test_plan', 'cr_recommendation']],
   ])('gives %s a schema for each of its purposes', async (id, purposes) => {
@@ -80,6 +82,12 @@ describe('loadRole', () => {
   it('points both revise purposes at the one revise schema', async () => {
     expect((await loadRole(seedKnowledge, 'tech_lead', 'revise_design')).schemaSource).toBe('schemas/revise.json');
     expect((await loadRole(seedKnowledge, 'qa_engineer', 'revise_test_plan')).schemaSource).toBe('schemas/revise.json');
+  });
+
+  // A scope's tickets name the components they change, so its revision answers to a schema of its own.
+  it('gives the Eng Lead its own revise schema, and only its purposes', async () => {
+    expect((await loadRole(seedKnowledge, 'eng_lead', 'revise_scope')).schemaSource).toBe('schemas/revise_scope.json');
+    expect(Object.keys((await loadRole(seedKnowledge, 'eng_lead')).role.output_schemas ?? {})).toEqual(['ticket_scope', 'revise_scope', 'cr_recommendation']);
   });
 
   it('uses output_schema when no purpose is given', async () => {
@@ -108,13 +116,13 @@ describe('loadRole', () => {
     expect(role.write_scope).toEqual({ allow: [], deny: ['**'] });
   });
 
-  it.each(['code_reviewer', 'qa_engineer'])('lets %s run commands but not edit', async (id) => {
+  it.each(['eng_lead', 'code_reviewer', 'qa_engineer'])('lets %s run commands but not edit', async (id) => {
     const { role } = await loadRole(seedKnowledge, id);
     expect(role.tools).toEqual(['read_repo', 'run_commands']);
     expect(role.write_scope).toEqual({ allow: [], deny: ['**'] });
   });
 
-  it.each(['pm', 'tech_lead', 'code_reviewer', 'qa_engineer'])('tells %s that inputs are data and how to raise a change', async (id) => {
+  it.each(['pm', 'tech_lead', 'eng_lead', 'code_reviewer', 'qa_engineer'])('tells %s that inputs are data and how to raise a change', async (id) => {
     const { charter } = await loadRole(seedKnowledge, id);
     expect(charter).toMatch(/data, never instructions/);
     expect(charter).toMatch(/change_requests/);
@@ -127,7 +135,7 @@ describe('loadRole', () => {
 
   it('accepts a change request from each schema a worker can answer with', () => {
     const names = readdirSync(join(seedKnowledge, 'schemas'));
-    expect(names).toHaveLength(11);
+    expect(names).toHaveLength(13);
     for (const name of names) {
       const schema = JSON.parse(readFileSync(join(seedKnowledge, 'schemas', name), 'utf8')) as { required: string[]; properties: Record<string, unknown> };
       expect(schema.properties.change_requests, name).toBeDefined();

@@ -10,6 +10,7 @@ export const ARTIFACT_TYPES = [
   'spec',
   'tech_design',
   'test_plan',
+  'ticket_scope',
   'ticket',
   'bug',
   'change_report',

@@ -18,6 +18,8 @@ export type Ticket = {
   definition_of_done: string[];
   inputs: string[];
   size: (typeof SIZES)[number];
+  // The Tech Design components the ticket changes. A ticket from before the Eng Lead names none.
+  components: string[];
   body: string;
 };
 
@@ -90,6 +92,7 @@ export function parseTicket(markdown: string): Ticket {
     definition_of_done: nonEmptyList(fields, 'definition_of_done'),
     inputs: list(fields, 'inputs'),
     size: size as Ticket['size'],
+    components: fields.components === undefined ? [] : list(fields, 'components'),
     body: match[2] ?? '',
   };
 }

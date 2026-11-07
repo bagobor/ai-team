@@ -13,6 +13,7 @@ const GROUP_OF: Record<ArtifactType, string> = {
   spec: 'Milestone specs',
   tech_design: 'Design',
   test_plan: 'Test',
+  ticket_scope: 'Tickets',
   ticket: 'Tickets',
   bug: 'Tickets',
   change_report: 'Reports',

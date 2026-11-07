@@ -9,7 +9,9 @@ export type Purpose =
   | 'milestone_review'
   | 'cr_recommendation'
   | 'revise_design'
-  | 'revise_test_plan';
+  | 'revise_test_plan'
+  | 'ticket_scope'
+  | 'revise_scope';
 
 export type TaskKind = 'ticket' | 'authoring' | 'code_review' | 'qa_verify';
 
