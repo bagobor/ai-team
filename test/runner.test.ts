@@ -797,6 +797,140 @@ describe('Runner', () => {
     });
   });
 
+  describe('test hooks', () => {
+    const app = { name: 'app', responsibility: 'The app', sources: ['src/**'], tests: ['test/**'], no_tests_reason: null, complexity: 'S', complexity_notes: 'Small' };
+    const structure = (components: object[] = [app]) => ({ components, complexity: { overall: 'S', rationale: 'Small' }, performance: [], test_strategy: 'Tests beside the code', risks: [] });
+    // The Tech Design the Tech Lead left behind, in the one field the engine reads.
+    const techDesign = async (e: TestEngine, data: unknown, status: 'approved' | 'stale' | 'proposed' = 'approved', milestone = 1) =>
+      e.artifacts.commit(await projectOf(e), {
+        message: 'tech design',
+        publish: [{ id: `TECH-M${milestone}`, type: 'tech_design', status, ownerRole: 'tech_lead', derivedFrom: [], milestone, body: '# Tech\n', fields: { data }, ...(status === 'proposed' ? {} : { approvedBy: 'owner:tech_lead' }) }],
+      });
+
+    it('fails a product ticket that changes a source without a test, and retries it with the reason', async () => {
+      const e = await engine({ steps: [okStep({ 'src/a.mjs': '' }), okStep({ 'src/a.mjs': '', 'test/a.test.mjs': '' })] });
+      await techDesign(e, structure());
+      const t = await e.addTicket(ticket({ id: 'M1-T-1', definition_of_done: ['touch dod-ran'] }));
+
+      await runToSettled(e, t.id);
+
+      const [a1, a2] = await e.store.listAttempts(t.id);
+      expect(a1).toMatchObject({ state: 'failed', failure_kind: 'tests_missing' });
+      expect(a1!.failure_evidence).toContain('- app: changed src/a.mjs; test globs: test/**');
+      expect(existsSync(join(a1!.worktree_path, 'dod-ran'))).toBe(false);
+      expect(taskText(e, t.ticket_id, 2)).toContain('test globs: test/**');
+      expect(a2).toMatchObject({ state: 'succeeded' });
+      expect(await task(e, t.id)).toMatchObject({ state: 'review' });
+      expect(await e.store.failedAttemptCount(t.id)).toBe(1);
+    });
+
+    it('escalates when every attempt lacks tests, as it does for a failed check', async () => {
+      const e = await engine({ config: { maxAttempts: 2 }, steps: [okStep({ 'src/a.mjs': '' }), okStep({ 'src/b.mjs': '' })] });
+      await techDesign(e, structure());
+      const t = await e.addTicket(ticket({ id: 'M1-T-1' }));
+
+      await runToSettled(e, t.id);
+
+      expect((await e.store.listAttempts(t.id)).map((a) => a.failure_kind)).toEqual(['tests_missing', 'tests_missing']);
+      expect(await task(e, t.id)).toMatchObject({ state: 'escalated', escalation_reason: 'attempts_exhausted' });
+    });
+
+    it('judges every component the attempt changed, not only the ones the ticket names', async () => {
+      const ui = { ...app, name: 'ui', sources: ['ui/**'], tests: ['ui-tests/**'] };
+      const e = await engine({ steps: [okStep({ 'src/a.mjs': '', 'test/a.test.mjs': '', 'ui/menu.mjs': '' })] });
+      await techDesign(e, structure([app, ui]));
+      const t = await e.addTicket(ticket({ id: 'M1-T-1', components: ['app'] }));
+
+      await runOnce(e, t.id);
+
+      const [a] = await e.store.listAttempts(t.id);
+      expect(a).toMatchObject({ state: 'failed', failure_kind: 'tests_missing' });
+      expect(a!.failure_evidence).toContain('- ui: changed ui/menu.mjs');
+      expect(a!.failure_evidence).not.toContain('- app:');
+    });
+
+    it('passes a ticket whose component has a reason for having no tests', async () => {
+      const e = await engine({ steps: [okStep({ 'src/a.mjs': '' })] });
+      await techDesign(e, structure([{ ...app, tests: [], no_tests_reason: 'The page is checked by hand' }]));
+      const t = await e.addTicket(ticket({ id: 'M1-T-1' }));
+
+      await runOnce(e, t.id);
+
+      expect(await task(e, t.id)).toMatchObject({ state: 'review' });
+    });
+
+    it('holds a bug ticket to the same rule', async () => {
+      const e = await engine({ steps: [okStep({ 'src/a.mjs': '' })] });
+      await techDesign(e, structure());
+      const t = await e.addTicket(ticket({ id: 'M1-B-1' }));
+
+      await runOnce(e, t.id);
+
+      expect((await e.store.listAttempts(t.id))[0]).toMatchObject({ state: 'failed', failure_kind: 'tests_missing' });
+    });
+
+    it('lets a harness ticket change sources without a test, since its tests are the point', async () => {
+      const e = await engine({ steps: [okStep({ 'src/a.mjs': '' })] });
+      await techDesign(e, structure());
+      const t = await e.addTicket(ticket({ id: 'M1-Q-1' }));
+
+      await runOnce(e, t.id);
+
+      expect(await task(e, t.id)).toMatchObject({ state: 'review' });
+    });
+
+    it('lets a prototype ticket, which belongs to milestone 0, change sources without a test', async () => {
+      const e = await engine({ steps: [okStep({ 'src/a.mjs': '' })] });
+      await techDesign(e, structure(), 'approved', 0);
+      const t = await e.addTicket(ticket({ id: 'M1-T-1' }));
+      await e.db.updateTable('tasks').set({ milestone: 0 }).where('id', '=', t.id).execute();
+
+      await runOnce(e, t.id);
+
+      expect(await task(e, t.id)).toMatchObject({ state: 'review' });
+    });
+
+    it('does not judge a ticket when there is no Tech Design for its milestone', async () => {
+      const e = await engine({ steps: [okStep({ 'src/a.mjs': '' })] });
+      await techDesign(e, structure(), 'approved', 2);
+      const t = await e.addTicket(ticket({ id: 'M1-T-1' }));
+
+      await runOnce(e, t.id);
+
+      expect(await task(e, t.id)).toMatchObject({ state: 'review' });
+    });
+
+    it('does not judge a ticket by a Tech Design with no structure', async () => {
+      const e = await engine({ steps: [okStep({ 'src/a.mjs': '' })] });
+      await techDesign(e, undefined);
+      const t = await e.addTicket(ticket({ id: 'M1-T-1' }));
+
+      await runOnce(e, t.id);
+
+      expect(await task(e, t.id)).toMatchObject({ state: 'review' });
+    });
+
+    it('does not judge a ticket by a Tech Design nobody has approved', async () => {
+      const e = await engine({ steps: [okStep({ 'src/a.mjs': '' })] });
+      await techDesign(e, structure(), 'proposed');
+      const t = await e.addTicket(ticket({ id: 'M1-T-1' }));
+
+      await runOnce(e, t.id);
+
+      expect(await task(e, t.id)).toMatchObject({ state: 'review' });
+    });
+
+    it('judges a ticket by a Tech Design that went stale, which the stakeholder still approved', async () => {
+      const e = await engine({ steps: [okStep({ 'src/a.mjs': '' })] });
+      await techDesign(e, structure(), 'stale');
+      const t = await e.addTicket(ticket({ id: 'M1-T-1' }));
+
+      await runOnce(e, t.id);
+
+      expect((await e.store.listAttempts(t.id))[0]).toMatchObject({ state: 'failed', failure_kind: 'tests_missing' });
+    });
+  });
+
   describe('tasks with a work order', () => {
     it('finishes an authoring task from checks to done when its output applies', async () => {
       const e = await engine({ steps: [discoveryStep()] });

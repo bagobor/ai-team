@@ -2,6 +2,7 @@ import { existsSync } from 'node:fs';
 import { mkdir, readdir, readFile, realpath, rm, stat } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import picomatch from 'picomatch';
+import type { PathChange } from '../checks/coverage.ts';
 import { isWithin } from '../paths.ts';
 import { commitStaged, ENGINE_CONFIG, engineGit, git, gitOk } from './git.ts';
 
@@ -114,6 +115,24 @@ export async function changedPaths(repoPath: string, wtPath: string, baseSha: st
   const location = await linkedLocation(repoPath, wtPath);
   const out = await gitOk(wtPath, [...location, 'diff', '--no-ext-diff', '--no-renames', '--name-only', '-z', baseSha, 'HEAD']);
   return out.split('\0').filter(Boolean);
+}
+
+// `-z` name-status output is a status and a path, each ended by a NUL. Without renames, a rename is a deletion and an addition.
+function parseStatuses(out: string): PathChange[] {
+  const fields = out.split('\0');
+  const changes: PathChange[] = [];
+  for (let i = 0; i + 1 < fields.length; i += 2) changes.push({ status: fields[i]!, path: fields[i + 1]! });
+  return changes;
+}
+
+export async function changedPathStatuses(repoPath: string, wtPath: string, baseSha: string): Promise<PathChange[]> {
+  const location = await linkedLocation(repoPath, wtPath);
+  return parseStatuses(await gitOk(wtPath, [...location, 'diff', '--no-ext-diff', '--no-renames', '--name-status', '-z', baseSha, 'HEAD']));
+}
+
+// What a range of commits changed, for a branch with no worktree to read it in.
+export async function diffStatuses(repoPath: string, from: string, to: string): Promise<PathChange[]> {
+  return parseStatuses(await gitOk(repoPath, ['diff', '--no-ext-diff', '--no-renames', '--name-status', '-z', from, to]));
 }
 
 // Where a branch left the base: the commit its work is measured from, wherever the base has moved since.

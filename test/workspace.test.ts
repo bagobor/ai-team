@@ -3,6 +3,8 @@ import { join } from 'node:path';
 import {
   addAttemptWorktree,
   changedPaths,
+  changedPathStatuses,
+  diffStatuses,
   ensureIntegrationBranch,
   mergeBase,
   overlayPaths,
@@ -185,6 +187,68 @@ describe('attempt worktrees', () => {
     await snapshotAttempt(repo, wt, 'names');
 
     expect(await changedPaths(repo, wt, base)).toEqual(['with space/naïve "quoted".txt']);
+  });
+
+  it('reports a status for each changed path, and a rename as a deletion and an addition', async () => {
+    writeFileSync(join(repo, 'edited.txt'), 'one\n');
+    writeFileSync(join(repo, 'deleted.txt'), 'one\n');
+    writeFileSync(join(repo, 'a.txt'), 'content long enough to count as a rename\n');
+    const start = commitAll(repo, 'files to change');
+    await addAttemptWorktree(repo, wt, BRANCH, start);
+
+    writeFileSync(join(wt, 'edited.txt'), 'two\n');
+    rmSync(join(wt, 'deleted.txt'));
+    writeFileSync(join(wt, 'new.txt'), 'new\n');
+    renameSync(join(wt, 'a.txt'), join(wt, 'b.txt'));
+    await snapshotAttempt(repo, wt, 'changes');
+
+    const changes = await changedPathStatuses(repo, wt, start);
+
+    expect([...changes].sort((a, b) => a.path.localeCompare(b.path))).toEqual([
+      { path: 'a.txt', status: 'D' },
+      { path: 'b.txt', status: 'A' },
+      { path: 'deleted.txt', status: 'D' },
+      { path: 'edited.txt', status: 'M' },
+      { path: 'new.txt', status: 'A' },
+    ]);
+    expect(changes.map(({ path }) => path).sort()).toEqual((await changedPaths(repo, wt, start)).sort());
+  });
+
+  it('reports the status of unusual file names exactly', async () => {
+    await addAttemptWorktree(repo, wt, BRANCH, base);
+    mkdirSync(join(wt, 'with space'));
+    writeFileSync(join(wt, 'with space', 'naïve "quoted".txt'), 'x');
+    await snapshotAttempt(repo, wt, 'names');
+
+    expect(await changedPathStatuses(repo, wt, base)).toEqual([{ path: 'with space/naïve "quoted".txt', status: 'A' }]);
+  });
+
+  it('reports no statuses when the worker changed nothing', async () => {
+    await addAttemptWorktree(repo, wt, BRANCH, base);
+    await snapshotAttempt(repo, wt, 'aiteam: T-1 a1');
+
+    expect(await changedPathStatuses(repo, wt, base)).toEqual([]);
+  });
+
+  it('lists what changed between two commits with a status each, renames as a deletion and an addition', async () => {
+    writeFileSync(join(repo, 'edited.txt'), 'one\n');
+    writeFileSync(join(repo, 'deleted.txt'), 'one\n');
+    writeFileSync(join(repo, 'a.txt'), 'content long enough to count as a rename\n');
+    const from = commitAll(repo, 'files to change');
+    writeFileSync(join(repo, 'edited.txt'), 'two\n');
+    rmSync(join(repo, 'deleted.txt'));
+    writeFileSync(join(repo, 'new.txt'), 'new\n');
+    renameSync(join(repo, 'a.txt'), join(repo, 'b.txt'));
+    const to = commitAll(repo, 'changes');
+
+    expect(await diffStatuses(repo, from, to)).toEqual([
+      { path: 'a.txt', status: 'D' },
+      { path: 'b.txt', status: 'A' },
+      { path: 'deleted.txt', status: 'D' },
+      { path: 'edited.txt', status: 'M' },
+      { path: 'new.txt', status: 'A' },
+    ]);
+    expect(await diffStatuses(repo, to, to)).toEqual([]);
   });
 
   it('finds the merge-base of a branch and the base', async () => {

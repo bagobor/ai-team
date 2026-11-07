@@ -167,6 +167,72 @@ describe('runChecks', () => {
     });
   });
 
+  describe('tests missing', () => {
+    const loop = { name: 'loop', sources: ['src/**'], tests: ['test/**'], no_tests_reason: null };
+
+    it("fails with tests_missing when a component's sources change and its tests do not", async () => {
+      await commitFiles('src/loop.js');
+      const r = await checks({ components: [loop], commands: ['touch ran'] });
+
+      expect(r).toMatchObject({ ok: false, kind: 'tests_missing', runs: [] });
+      const evidence = r.ok === false ? r.evidence : '';
+      expect(evidence).toMatch(/loop/);
+      expect(evidence).toMatch(/src\/loop\.js/);
+      expect(evidence).toMatch(/test\/\*\*/);
+      expect(existsSync(join(worktree, 'ran'))).toBe(false);
+    });
+
+    it('passes when the change adds a test', async () => {
+      await commitFiles('src/loop.js', 'test/loop.test.js');
+      const r = await checks({ components: [loop], commands: ['touch ran'] });
+
+      expect(r.ok).toBe(true);
+      expect(existsSync(join(worktree, 'ran'))).toBe(true);
+    });
+
+    it('names every untested component and leaves a tested one out', async () => {
+      await commitFiles('src/loop.js', 'ui/menu.js', 'api/route.js', 'api/test/route.test.js');
+      const components = [
+        loop,
+        { name: 'ui', sources: ['ui/**'], tests: ['ui-tests/**'], no_tests_reason: null },
+        { name: 'api', sources: ['api/**'], tests: ['api/test/**'], no_tests_reason: null },
+      ];
+      const r = await checks({ components });
+      const evidence = r.ok === false ? r.evidence : '';
+
+      expect(r).toMatchObject({ ok: false, kind: 'tests_missing' });
+      expect(evidence).toContain('- loop: changed src/loop.js');
+      expect(evidence).toContain('- ui: changed ui/menu.js');
+      expect(evidence).not.toContain('- api:');
+    });
+
+    it('lets a component with a reason for having no tests change freely', async () => {
+      await commitFiles('src/loop.js');
+      expect((await checks({ components: [{ ...loop, tests: [], no_tests_reason: 'the page is checked by hand' }] })).ok).toBe(true);
+    });
+
+    it('lets a change that touches no component through', async () => {
+      await commitFiles('docs/notes.md');
+      expect((await checks({ components: [loop] })).ok).toBe(true);
+    });
+
+    it('scope_violation still wins over tests_missing', async () => {
+      await commitFiles('src/loop.js', 'docs/b.md');
+      const r = await checks({ components: [loop], writeScope: { allow: ['src/**'], deny: [] } });
+
+      expect(r).toMatchObject({ ok: false, kind: 'scope_violation', violations: ['docs/b.md'] });
+    });
+
+    it('no_changes still wins over tests_missing', async () => {
+      expect(await checks({ components: [loop] })).toMatchObject({ ok: false, kind: 'no_changes' });
+    });
+
+    it.each([undefined, []])('no components (%j) means no hook', async (components) => {
+      await commitFiles('src/loop.js');
+      expect((await checks(components === undefined ? {} : { components })).ok).toBe(true);
+    });
+  });
+
   describe('commands', () => {
     beforeEach(() => commitFiles('src/a.ts'));
 

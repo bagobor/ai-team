@@ -5,14 +5,15 @@ import picomatch from 'picomatch';
 import { workerEnv } from '../adapters/env.ts';
 import type { ProtectedPath } from '../engine/protected.ts';
 import type { EventType } from '../events.ts';
-import { changedPaths } from '../git/workspace.ts';
+import { changedPathStatuses } from '../git/workspace.ts';
 import { killGroup, killGroupNow, spawnGroup } from '../proc.ts';
+import { componentCoverage, untestedEvidence, type CoverageComponent } from './coverage.ts';
 
 export type CheckRun = { command: string; exitCode: number | null; timedOut: boolean; durationMs: number; outputTail: string };
 
 export type ChecksResult =
   | { ok: true; runs: CheckRun[] }
-  | { ok: false; kind: 'no_changes' | 'scope_violation' | 'check_failed'; runs: CheckRun[]; evidence: string; violations?: string[] };
+  | { ok: false; kind: 'no_changes' | 'scope_violation' | 'tests_missing' | 'check_failed'; runs: CheckRun[]; evidence: string; violations?: string[] };
 
 export type ChecksInput = {
   repoPath: string;
@@ -21,6 +22,8 @@ export type ChecksInput = {
   writeScope: { allow: string[]; deny: string[] };
   // Only QA's harness tickets may change these, whatever their role allows.
   protectedPaths?: ProtectedPath[];
+  // The Tech Design's components. When given, each one whose sources the attempt changed needs a test change too.
+  components?: CoverageComponent[];
   commands: string[];
   denyRead: string[];
   timeoutS: number;
@@ -196,7 +199,8 @@ export async function runSandboxed(i: SandboxedInput): Promise<SandboxedResult> 
 }
 
 export async function runChecks(i: ChecksInput): Promise<ChecksResult> {
-  const paths = await changedPaths(i.repoPath, i.worktree, i.baseSha);
+  const changes = await changedPathStatuses(i.repoPath, i.worktree, i.baseSha);
+  const paths = changes.map(({ path }) => path);
   if (paths.length === 0) {
     return { ok: false, kind: 'no_changes', runs: [], evidence: `The attempt changed nothing since ${i.baseSha}.` };
   }
@@ -211,6 +215,11 @@ export async function runChecks(i: ChecksInput): Promise<ChecksResult> {
       ...(outside.length > 0 ? [`These paths are outside the write scope:\n${outside.join('\n')}`] : []),
     ];
     return { ok: false, kind: 'scope_violation', runs: [], violations, evidence: lines.join('\n') };
+  }
+
+  if (i.components) {
+    const evidence = untestedEvidence(componentCoverage(changes, i.components), i.components);
+    if (evidence !== '') return { ok: false, kind: 'tests_missing', runs: [], evidence };
   }
 
   const { ok, runs, evidence } = await runSandboxed(i);

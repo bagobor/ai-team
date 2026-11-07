@@ -3,7 +3,9 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { Kysely } from 'kysely';
 import type { AttemptHandle, AttemptResult, FailureKind, WorkerAdapter } from '../adapters/types.ts';
+import { formatPin } from '../artifacts/format.ts';
 import type { ArtifactChange, ArtifactStore } from '../artifacts/store.ts';
+import type { CoverageComponent } from '../checks/coverage.ts';
 import type { Player } from '../checks/play.ts';
 import { runChecks, runSandboxed } from '../checks/run-checks.ts';
 import type { Config } from '../config.ts';
@@ -16,9 +18,10 @@ import { manifestDir, stateRepoDir, transcriptPath, workerDenyRead, worktreePath
 import { processStartTime } from '../proc.ts';
 import { loadRole, type Role } from '../roles/role.ts';
 import { parseTicket } from '../tickets/ticket.ts';
-import { ENV_PROFILE } from './apply/ids.ts';
+import { ENV_PROFILE, techId } from './apply/ids.ts';
 import { applyOutput } from './apply/index.ts';
 import { raisedRequests } from './apply/raised.ts';
+import { structureOf } from './apply/tech-structure.ts';
 import { IllegalTransition } from './fsm.ts';
 import { isHarnessTicket, protectedPaths, type ProtectedPath } from './protected.ts';
 import { reviewInputs } from './review-inputs.ts';
@@ -46,6 +49,7 @@ export type AttemptFailureKind =
   | FailureKind
   | 'check_failed'
   | 'scope_violation'
+  | 'tests_missing'
   | 'no_changes'
   | 'context_over_budget'
   | 'engine_error'
@@ -408,6 +412,17 @@ export class Runner {
     return isHarnessTicket(task.ticket_id) ? [] : protectedPaths(this.deps, project, task.milestone);
   }
 
+  // What a ticket's changes are held to. QA's harness tickets are tests themselves, a prototype (milestone 0) has no design,
+  // and a Tech Design from before the structure has no components. One gone stale was still approved, as with the profile.
+  private async componentsFor(project: ProjectRow, task: TaskRow): Promise<CoverageComponent[] | undefined> {
+    if (task.kind !== 'ticket' || task.milestone === 0 || isHarnessTicket(task.ticket_id)) return undefined;
+    const { artifacts } = this.deps;
+    const id = techId(task.milestone);
+    const row = await artifacts.latest(project.id, id);
+    if (row?.status !== 'approved' && row?.status !== 'stale') return undefined;
+    return structureOf(await artifacts.read(project, formatPin({ id, version: row.version })))?.components;
+  }
+
   private async orderText(project: ProjectRow, task: TaskRow, order: WorkOrder): Promise<TaskText> {
     const diff = order.purpose === 'code_review' ? await this.reviewDiff(project, order) : undefined;
     return {
@@ -529,12 +544,14 @@ export class Runner {
     const { headSha } = await snapshotAttempt(project.repo_path, attempt.worktree_path, `aiteam: ${task.ticket_id} attempt ${attempt.k}`);
 
     const reporter = this.commandReporter(project, task.id, attempt.id);
+    const components = await this.componentsFor(project, task);
     const checks = await runChecks({
       repoPath: project.repo_path,
       worktree: attempt.worktree_path,
       baseSha: work.baseSha,
       writeScope: role.write_scope,
       protectedPaths: await this.protectedFrom(project, task),
+      ...(components ? { components } : {}),
       commands: task.dod,
       denyRead: workerDenyRead(paths, homedir()),
       timeoutS: config.checkTimeoutS,
