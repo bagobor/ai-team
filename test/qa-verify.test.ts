@@ -947,4 +947,9 @@ describe('a Bug ticket', () => {
   it('reads plainly when there is no criterion to name', () => {
     expect(bugTicket(1, 2, { ...draft, acs: [] }).body).toBe('Fix what BUG-M1-2 describes.\n');
   });
+
+  // The engine files it, but it is a product ticket like the others, so the Eng Lead's scope revision decides it.
+  it('belongs to the Eng Lead', () => {
+    expect(bugTicket(1, 2, { ...draft, acs: ['AC-1'] })).toMatchObject({ ownerRole: 'eng_lead', approvedBy: 'engine' });
+  });
 });

@@ -141,7 +141,7 @@
         ],
         "properties": {
           "key": {
-            "description": "T-n when revising a Tech Design, Q-n when revising a Test Plan, with a number no ticket of this milestone has used, even a superseded one.",
+            "description": "Q-n, with a number no ticket of this milestone has used, even a superseded one.",
             "type": "string"
           },
           "title": {

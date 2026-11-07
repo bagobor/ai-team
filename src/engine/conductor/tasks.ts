@@ -1,5 +1,5 @@
 import { parsePin } from '../../artifacts/format.ts';
-import { ENV_PROFILE } from '../apply/ids.ts';
+import { ENV_PROFILE, techId } from '../apply/ids.ts';
 import { IllegalTransition } from '../fsm.ts';
 import type { InboxOption, InboxRow, NewInboxItem } from '../inbox.ts';
 import type { EngineDeps, Runner } from '../runner.ts';
@@ -31,6 +31,9 @@ export const RETRY_OR_HALT: InboxOption[] = [
 
 export const pinOf = (row: Pick<ArtifactVersionRow, 'artifact_id' | 'version'>) => `${row.artifact_id}@${row.version}`;
 export const isClosed = (task: Pick<TaskRow, 'state'>) => task.state === 'done' || task.state === 'cancelled';
+// A scope is held to the Tech Design's components, so it waits for the design that will stand: not a stale one, nor one being revised.
+export const designMoving = (rows: Pick<ArtifactVersionRow, 'artifact_id' | 'status'>[], tasks: Pick<TaskRow, 'milestone' | 'purpose' | 'state'>[], n: number): boolean =>
+  rows.some((row) => row.artifact_id === techId(n) && row.status === 'stale') || tasks.some(({ milestone, purpose, state }) => milestone === n && purpose === 'revise_design' && !isClosed({ state }));
 export const isTerminal = (project: Pick<ProjectRow, 'phase'>) => project.phase === 'closed' || project.phase === 'halted';
 export const roundId = (base: string, round: number) => (round <= 1 ? base : `${base}-r${round}`);
 

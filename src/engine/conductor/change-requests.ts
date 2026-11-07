@@ -7,7 +7,7 @@ import type { InboxRow } from '../inbox.ts';
 import { isHarnessTicket } from '../protected.ts';
 import type { EngineDeps, Runner } from '../runner.ts';
 import type { ArtifactVersionRow, ProjectRow, Store } from '../store.ts';
-import { ensureTask, isClosed, lastSucceeded, pinOf, recommendationTask, reviseInputs, reviseTask } from './tasks.ts';
+import { designMoving, ensureTask, isClosed, lastSucceeded, pinOf, recommendationTask, reviseInputs, reviseTask } from './tasks.ts';
 
 type Deps = Pick<EngineDeps, 'store' | 'artifacts'>;
 
@@ -150,10 +150,9 @@ async function reviseStale(deps: Deps, project: ProjectRow): Promise<void> {
   }
 
   const tasks = await store.listTasks(project.id);
-  // The scope is held to the Tech Design's components, so it is revised against the design that will stand, not one being revised.
-  const designMoving = rows.some((row) => row.artifact_id === techId(n) && row.status === 'stale') || tasks.some(({ milestone, purpose, state }) => milestone === n && purpose === 'revise_design' && !isClosed({ state }));
+  const moving = designMoving(rows, tasks, n);
   for (const docId of stale) {
-    if (docId === scopeId(n) && designMoving) continue;
+    if (docId === scopeId(n) && moving) continue;
     const earlier = tasks.filter(({ ticket_id }) => ticket_id.startsWith(`M${n}-REVISE-${docId}-`));
     if (earlier.some((task) => !isClosed(task))) continue;
     const doc = await artifacts.latest(project.id, docId);

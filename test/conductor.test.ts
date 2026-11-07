@@ -482,6 +482,26 @@ describe('flow', () => {
     expect(await milestonePhase(h)).toBe('design');
   });
 
+  it('creates M1-SCOPE only once the design stops moving', async () => {
+    const h = await harness();
+    await toDesign(h);
+    await finish(h, 'M1-TECH', DESIGN);
+    await finish(h, 'M1-TESTPLAN', TEST_PLAN);
+    await h.artifacts.commit(h.project, { message: 'stale', status: [{ id: 'TECH-M1', status: 'stale' }] });
+    await h.conductor.tick();
+    expect(await taskIds(h)).toContain('M1-REVISE-TECH-M1-1');
+    expect(await taskIds(h)).not.toContain('M1-SCOPE');
+
+    // Approved again, but its revision is still open and could yet change it.
+    await h.artifacts.commit(h.project, { message: 'approved', status: [{ id: 'TECH-M1', status: 'approved' }] });
+    await h.conductor.tick();
+    expect(await taskIds(h)).not.toContain('M1-SCOPE');
+
+    await finish(h, 'M1-REVISE-TECH-M1-1', KEPT_DESIGN);
+    await h.conductor.tick();
+    expect(orderOf(await byTicket(h, 'M1-SCOPE')).inputs).toContain('TECH-M1@1');
+  });
+
   it('moves to build when M1-SCOPE is done and creates the ticket tasks', async () => {
     const h = await harness();
     await toDesign(h);
@@ -926,7 +946,8 @@ describe('flow', () => {
     await last.store.answerInbox(only.id, { action: 'approve' });
     await last.conductor.tick();
     expect(await phaseOf(last)).toBe('closed');
-  });
+    // Two projects taken to CP4: about 5 s alone, and near the default 15 s under the whole suite's load.
+  }, 30_000);
 
   it('asks and holds when the fast-forward is refused, with nothing half-done', async () => {
     const h = await harness();
@@ -1399,7 +1420,9 @@ describe('the play gate', () => {
     await finish(h, 'M1-REVISE-SCOPE-M1-1', revised([stillValid('M1-B-1')]));
 
     expect(await statusOf(h, 'M1-B-1')).toBe('approved');
-    expect((await h.artifacts.latest(h.project.id, 'M1-B-1'))!.derived_from).toContain('SPEC-M1@2');
+    const bug = (await h.artifacts.latest(h.project.id, 'M1-B-1'))!;
+    expect(bug.derived_from).toContain('SPEC-M1@2');
+    expect(bug).toMatchObject({ owner_role: 'eng_lead', approved_by: 'owner:eng_lead' });
   });
 
   // The setup passes at design, before the game is merged, and fails once it is.

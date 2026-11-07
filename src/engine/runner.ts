@@ -22,10 +22,10 @@ import { raisedRequests } from './apply/raised.ts';
 import { IllegalTransition } from './fsm.ts';
 import { isHarnessTicket, protectedPaths, type ProtectedPath } from './protected.ts';
 import { reviewInputs } from './review-inputs.ts';
-import { roleInputs, writeReference, type Reference } from './role-inputs.ts';
+import { roleInputs, writeReference, type Reference, type Views } from './role-inputs.ts';
 import type { AttemptPatch, AttemptRow, ProjectRow, Store, TaskRow } from './store.ts';
 import type { TryServer } from './try-server.ts';
-import type { WorkOrder } from './workorder.ts';
+import type { Purpose, WorkOrder } from './workorder.ts';
 
 export type EngineDeps = {
   db: Kysely<DB>;
@@ -100,6 +100,15 @@ type ChangeReportOutput = {
 const EVENT_STRING_CAP = 4000;
 const INITIAL_BACKOFF_S = 300;
 const MAX_BACKOFF_S = 3600;
+
+// The roles that read a document without rewriting it may get its whole text in a file: QA judges the build against the
+// Tech Design's sections, and the Eng Lead splits the work by its components and the Test Plan's coverage. A replan is a
+// scope revision. Every other role reads its inputs whole in the manifest.
+const VIEWS: Partial<Record<Purpose, Views>> = {
+  qa_verify: { design: 'sections' },
+  ticket_scope: { design: 'components', plan: 'coverage' },
+  revise_scope: { design: 'components', plan: 'coverage' },
+};
 
 function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
@@ -407,7 +416,7 @@ export class Runner {
       doneCommands: order.checks,
       acRefs: task.ac_refs,
       protectedPaths: [],
-      ...(order.purpose === 'milestone_review' ? await reviewInputs(this.deps, project, task.milestone, order.inputs) : await roleInputs(this.deps, project, order.inputs, { designInFile: order.purpose === 'qa_verify' })),
+      ...(order.purpose === 'milestone_review' ? await reviewInputs(this.deps, project, task.milestone, order.inputs) : await roleInputs(this.deps, project, order.inputs, VIEWS[order.purpose])),
       ...(diff ? { diff } : {}),
       ...(order.comment ? { comment: order.comment } : {}),
     };

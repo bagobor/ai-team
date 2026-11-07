@@ -33,8 +33,8 @@ const NOTES_COMMITTED = '# My notes\n\nWhat I want from this tool.\n';
 const NOTES_EDITED = `${NOTES_COMMITTED}\nAn unfinished thought about Kelvin.\n`;
 const UNTRACKED = 'scratch-notes.txt';
 const UNTRACKED_TEXT = 'Nothing to do with this work.\n';
-const DESIGN_TASKS = ['M1-TECH', 'M1-TESTPLAN'];
-const ROLES: Record<string, string> = { pm: 'claude-opus-5-5', tech_lead: 'claude-opus-5-5', engineer: 'claude-sonnet-5-5', code_reviewer: 'claude-opus-5-5', qa_engineer: 'claude-sonnet-5-5' };
+const DESIGN_TASKS = ['M1-TECH', 'M1-TESTPLAN', 'M1-SCOPE'];
+const ROLES: Record<string, string> = { pm: 'claude-opus-5-5', tech_lead: 'claude-opus-5-5', eng_lead: 'claude-opus-5-5', engineer: 'claude-sonnet-5-5', code_reviewer: 'claude-opus-5-5', qa_engineer: 'claude-sonnet-5-5' };
 // Each of these needs a person to think. This run can't, so it stops and says what it found.
 const STOPS: InboxRef['kind'][] = ['escalation', 'smoke', 'base_conflict', 'base_refused', 'qa_cap', 'engine_error'];
 const ENDED_PROJECT_PHASES = ['closed', 'halted'];
@@ -513,7 +513,7 @@ async function checkAfterMerge(killedTask: number | undefined): Promise<void> {
     }
   });
 
-  check('8. The revisions ran', ['M1-REVISE-TECH-M1-1', 'M1-REVISE-TEST-PLAN-M1-1'].every((id) => taskOf(tasks, id)?.state === 'done'), tasks.filter(({ ticket_id }) => ticket_id.includes('REVISE')).map(({ ticket_id, state }) => `${ticket_id} ${state}`).join(', '));
+  check('8. The revisions ran', ['M1-REVISE-TECH-M1-1', 'M1-REVISE-SCOPE-M1-1', 'M1-REVISE-TEST-PLAN-M1-1'].every((id) => taskOf(tasks, id)?.state === 'done'), tasks.filter(({ ticket_id }) => ticket_id.includes('REVISE')).map(({ ticket_id, state }) => `${ticket_id} ${state}`).join(', '));
 
   await guarded('10. main after CP4', async () => {
     const files = (await git('ls-tree', '-r', '--name-only', base)).output.split('\n');

@@ -69,6 +69,17 @@ export function designProblems(body: string, s: TechStructure): string[] {
 
 const cell = (text: string): string => oneLine(text).replaceAll('|', '\\|');
 const code = (globs: string[]): string => globs.map((glob) => `\`${oneLine(glob)}\``).join(', ');
+const codeCell = (globs: string[]): string => globs.map((glob) => `\`${cell(glob)}\``).join(', ');
+
+// What a ticket is held to, a row for each component: the name a ticket gives, the files it owns and where its tests live.
+export function componentTable(components: ComponentSpec[]): string {
+  const tests = ({ tests, no_tests_reason }: ComponentSpec) => (tests.length > 0 ? codeCell(tests) : `none: ${cell(no_tests_reason ?? '')}`);
+  return [
+    '| Component | Sources | Tests | Complexity |',
+    '| --- | --- | --- | --- |',
+    ...components.map((component) => `| ${cell(component.name.trim())} | ${codeCell(component.sources)} | ${tests(component)} | ${component.complexity} |`),
+  ].join('\n');
+}
 
 function componentSection(component: ComponentSpec): string[] {
   const tests = component.tests.length > 0 ? code(component.tests) : `none (${oneLine(component.no_tests_reason ?? '')})`;

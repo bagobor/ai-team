@@ -8,7 +8,7 @@ import type { ApplyCtx } from './index.ts';
 import type { ComponentSpec } from './tech-structure.ts';
 import { oneLine } from './text.ts';
 
-// Only the Eng Lead's schemas ask for components, so a draft from a Tech Design or a Test Plan has none.
+// Only the Eng Lead's schemas ask for components, so a harness ticket from a Test Plan, or a Bug's ticket, has none.
 export type TicketDraft = Omit<Ticket, 'id' | 'milestone' | 'components'> & { key: string; components?: string[] };
 
 // The document a batch of tickets comes with and the role that owns them. A batch with components holds each ticket to
@@ -19,7 +19,9 @@ export const ticketIdFor = (milestone: number, key: string): string => `M${miles
 
 export function renderTicket(milestone: number, draft: TicketDraft, ids: { id: string; dependsOn: string[]; inputs: string[] }): { fields: Record<string, unknown>; body: string } {
   const { title, ac_refs, specialty, touches, definition_of_done, size, components, body } = draft;
-  return { fields: { title, milestone, ac_refs, specialty, touches, depends_on: ids.dependsOn, definition_of_done, inputs: ids.inputs, size, ...(components === undefined ? {} : { components }) }, body };
+  // The hooks hold a ticket to its components by name, so each is stored once, trimmed, as validation matched it.
+  const names = components === undefined ? {} : { components: [...new Set(components.map((name) => name.trim()))] };
+  return { fields: { title, milestone, ac_refs, specialty, touches, depends_on: ids.dependsOn, definition_of_done, inputs: ids.inputs, size, ...names }, body };
 }
 
 // The tests a ticket's components keep, which the engine's hooks hold its change to.

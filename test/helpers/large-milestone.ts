@@ -60,11 +60,13 @@ export async function publishLargeSpec(e: TestEngine, { ownCriteriaSection = tru
   return project;
 }
 
-// The Tech Design, the Test Plan, then the Eng Lead's scope with the milestone's ten tickets.
+// The Tech Design, the Test Plan, then the Eng Lead's scope with the milestone's ten tickets. The scope reads what the
+// conductor gives it, the profile included, so a revision of it reads all of that again.
 export async function publishLargeDesign(e: TestEngine, design: typeof largeDesign = largeDesign): Promise<void> {
   await publish(e, await apply(e, 'tech_design', design, { inputs: ['SPEC-M1@1'], role: 'tech_lead' }));
   await publish(e, await apply(e, 'test_plan', largeTestPlan, { inputs: ['SPEC-M1@1'], role: 'qa_engineer' }));
-  await publish(e, await apply(e, 'ticket_scope', largeScope, { inputs: ['SPEC-M1@1', 'TECH-M1@1', 'TEST-PLAN-M1@1'], role: 'eng_lead' }));
+  const profile = await publishProfile(e);
+  await publish(e, await apply(e, 'ticket_scope', largeScope, { inputs: ['SPEC-M1@1', profile, 'TECH-M1@1', 'TEST-PLAN-M1@1'], role: 'eng_lead' }));
 }
 
 // About 660 tokens, as in the first real run.

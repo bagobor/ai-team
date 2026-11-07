@@ -326,7 +326,8 @@ export function bugTicket(milestone: number, k: number, bug: { acs: string[]; ti
     { key, title: oneLine(bug.title), ac_refs: bug.acs, specialty: 'engineer', touches: bug.touches, depends_on: [], definition_of_done: bug.definition_of_done, inputs, size: 'S', body: `Fix what BUG-M${milestone}-${k} describes${passes}.\n` },
     { id, dependsOn: [], inputs },
   );
-  return { id, type: 'ticket', status: 'approved', ownerRole: 'tech_lead', approvedBy: 'engine', milestone, derivedFrom: [...inputs, bug.specPin], fields, body };
+  // The engine files it, but it is a product ticket, so it is the Eng Lead's, whose scope revision decides it like the others.
+  return { id, type: 'ticket', status: 'approved', ownerRole: 'eng_lead', approvedBy: 'engine', milestone, derivedFrom: [...inputs, bug.specPin], fields, body };
 }
 
 function bugDoc(milestone: number, k: number, reportId: string, verdict: Verdict, filed: QaBug | undefined, title: string, touches: string[]): NewVersion {

@@ -1,7 +1,7 @@
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Criterion } from '../src/artifacts/acs.ts';
-import { ensureTask, qaTask, recommendationTask, reviseInputs, reviseTask, scopeTask, specTask, techTask, testPlanTask, type TaskSpec } from '../src/engine/conductor/tasks.ts';
+import { ensureTask, qaTask, recommendationTask, replanTask, reviseInputs, reviseTask, scopeTask, specTask, techTask, testPlanTask, type TaskSpec } from '../src/engine/conductor/tasks.ts';
 import type { AttemptRow, ProjectRow } from '../src/engine/store.ts';
 import type { TaskManifest } from '../src/manifest/build.ts';
 import { manifestDir } from '../src/paths.ts';
@@ -18,7 +18,9 @@ const QA_REFUSED = { results: [], bugs: [], summary: 'Nothing' };
 const REVISED_PLAN = { unaffected: false, rationale: 'The Spec moved', body: '# Test plan\n', coverage: largeCoverage, ticket_decisions: [], tickets: [] };
 const REVISE_REFUSED = { unaffected: false, rationale: 'The Spec moved', body: '# Test plan\n', coverage: null, ticket_decisions: [], tickets: [] };
 const STILL_RIGHT = { unaffected: true, rationale: 'Still right', design: null };
-const SCOPE_STILL_RIGHT = { unaffected: true, rationale: 'Still right', body: null, coverage: null, ticket_decisions: largeTickets.map(({ key }) => ({ ticket: `M1-${key}`, decision: 'still_valid', rationale: 'Yes' })), tickets: [] };
+// No ticket covers a criterion, so the engine refuses it and keeps the worktree.
+const SCOPE_REFUSED = { body: 'Nothing yet.\n', tickets: [], stakeholder_note: 'Nothing' };
+const SCOPE_STILL_RIGHT ={ unaffected: true, rationale: 'Still right', body: null, coverage: null, ticket_decisions: largeTickets.map(({ key }) => ({ ticket: `M1-${key}`, decision: 'still_valid', rationale: 'Yes' })), tickets: [] };
 const CHANGE_REQUEST = { id: 'CR-1', type: 'change_request' as const, status: 'proposed' as const, ownerRole: 'pm', derivedFrom: [], body: 'Change it' };
 const RECOMMENDATION = { decision: 'approve', rationale: 'It costs little' };
 
@@ -41,13 +43,6 @@ describe('what a role reads on a milestone of 10 tickets and 30 criteria', () =>
     expect(attempt).toMatchObject({ failure_kind: null });
     expect(manifest.contextBudget).toBe(12_000);
     expect(manifest.totalTokens).toBeLessThanOrEqual(ROOM_BEFORE_M4);
-  }
-
-  // The Eng Lead reads the Spec, the Tech Design and the Test Plan whole, so on this milestone it fits its budget but leaves
-  // less than M4's room. The task report raises it.
-  function expectWithinBudget({ attempt, manifest }: { attempt: AttemptRow; manifest: TaskManifest }): void {
-    expect(attempt).toMatchObject({ failure_kind: null });
-    expect(manifest.totalTokens).toBeLessThanOrEqual(manifest.contextBudget);
   }
 
   const taskText = (ticketId: string) => readFileSync(join(manifestDir(e.paths, 'p', ticketId, 1), 'task.md'), 'utf8');
@@ -199,21 +194,68 @@ describe('what a role reads on a milestone of 10 tickets and 30 criteria', () =>
     });
   });
 
-  // The Eng Lead reads the most of any author: the Spec, the profile, the Tech Design and the Test Plan.
+  // The Eng Lead reads the most of any author: the Spec, the profile, the Tech Design and the Test Plan. So it gets the
+  // design's components and the plan's coverage in the manifest, and the whole of each in a file.
   describe('Ticket scope', () => {
-    it('fits the budget, and its output still applies', async () => {
-      const project = await engineWith('M1-SCOPE', largeScope);
+    async function scopeOn(output: unknown, design = largeDesign) {
+      const project = await engineWith('M1-SCOPE', output);
       const profile = await publishProfile(e);
-      await publish(e, await apply(e, 'tech_design', largeDesign, { inputs: ['SPEC-M1@1', profile], role: 'tech_lead' }));
+      await publish(e, await apply(e, 'tech_design', design, { inputs: ['SPEC-M1@1', profile], role: 'tech_lead' }));
       await publish(e, await apply(e, 'test_plan', largeTestPlan, { inputs: ['SPEC-M1@1', profile], role: 'qa_engineer' }));
       const inputs = ['SPEC-M1@1', profile, 'TECH-M1@1', 'TEST-PLAN-M1@1'];
+      return { project, inputs, ...(await workOn(scopeTask(project, 1, inputs))) };
+    }
 
-      const ran = await workOn(scopeTask(project, 1, inputs));
+    it('fits the budget with room left for M4, and its output still applies', async () => {
+      const { project, inputs, ...ran } = await scopeOn(largeScope);
 
-      expectWithinBudget(ran);
+      expectRoomForM4(ran);
       expect(ran.state).toBe('done');
       expect(await e.artifacts.latest(project.id, 'SCOPE-M1')).toMatchObject({ status: 'approved', derived_from: inputs });
       for (const ac of ids) expect(taskText('M1-SCOPE')).toContain(textOf(ac));
+    });
+
+    it('fits the budget with room left for M4 beside a Tech Design the size of a real one', async () => {
+      const ran = await scopeOn(largeScope, proseDesign);
+
+      expectRoomForM4(ran);
+      expect(ran.state).toBe('done');
+    });
+
+    it('finds each component and its globs in the manifest, and the whole Tech Design in a file', async () => {
+      const { attempt } = await scopeOn(SCOPE_REFUSED, proseDesign);
+
+      expect(attempt.state).toBe('invalid_output');
+      const text = taskText('M1-SCOPE');
+      expect(text).toContain('<input pin="TECH-M1@1">');
+      expect(text).toContain('.aiteam-reference/tech-design.md');
+      expect(text).toContain('| part-1 | `src/part-1/**` | `test/part-1/**` | S |');
+      expect(text).toContain('| part-10 | `src/part-10/**` | `test/part-10/**` | S |');
+      expect(text).not.toContain('design-prose-marker');
+      expect(designOf(attempt)).toContain(proseDesign.body.trim());
+      expect(designOf(attempt)).toContain('## Components');
+    });
+
+    it('finds what QA checks and protects in the manifest, and the whole Test Plan in a file', async () => {
+      const project = await engineWith('M1-SCOPE', SCOPE_REFUSED);
+      const profile = await publishProfile(e);
+      await publish(e, await apply(e, 'tech_design', largeDesign, { inputs: ['SPEC-M1@1', profile], role: 'tech_lead' }));
+      await publish(e, await apply(e, 'test_plan', { ...largeTestPlan, protected: ['test/acceptance/**'] }, { inputs: ['SPEC-M1@1', profile], role: 'qa_engineer' }));
+
+      const { attempt } = await workOn(scopeTask(project, 1, ['SPEC-M1@1', profile, 'TECH-M1@1', 'TEST-PLAN-M1@1']));
+
+      const text = taskText('M1-SCOPE');
+      expect(text).toContain('<input pin="TEST-PLAN-M1@1">');
+      expect(text).toContain('.aiteam-reference/test-plan.md');
+      expect(text).toContain('`test/acceptance/**`');
+      for (const ac of ids) expect(text).toContain(`- ${ac} (1 command)\n`);
+      expect(text).not.toContain('plan-prose-marker');
+      expect(text).not.toContain(planNoteOf('AC-1'));
+      expect(text).not.toContain('command-marker');
+      const plan = readFileSync(join(attempt.worktree_path, '.aiteam-reference', 'test-plan.md'), 'utf8');
+      expect(plan).toContain('plan-prose-marker');
+      for (const ac of ids) expect(plan).toContain(planNoteOf(ac));
+      expectAllCommands(referenceOf(attempt));
     });
   });
 
@@ -275,12 +317,26 @@ describe('what a role reads on a milestone of 10 tickets and 30 criteria', () =>
       expect(ran.state).toBe('done');
     });
 
-    it('of the ticket scope fits the budget and decides every ticket', async () => {
+    it('of the ticket scope fits the budget with room left for M4 and decides every ticket', async () => {
       const { project, ...ran } = await reviseOf('SCOPE-M1', 'M1-REVISE-SCOPE-M1-1', SCOPE_STILL_RIGHT, 'revise_scope');
 
-      expectWithinBudget(ran);
+      expectRoomForM4(ran);
       expect(ran.state).toBe('done');
       expect(await e.artifacts.latest(project.id, 'M1-T-10')).toMatchObject({ status: 'approved', approved_by: 'owner:eng_lead' });
+      expect(taskText('M1-REVISE-SCOPE-M1-1')).toContain('| part-1 | `src/part-1/**` | `test/part-1/**` | S |');
+    });
+
+    it('of the ticket scope after CP4 fits the budget with room left for M4 beside a Tech Design the size of a real one', async () => {
+      const project = await engineWith('M1-REPLAN-1', SCOPE_STILL_RIGHT);
+      await publishLargeDesign(e, proseDesign);
+      const scope = (await e.artifacts.latest(project.id, 'SCOPE-M1'))!;
+      const open = largeTickets.map(({ key }) => `M1-${key}`);
+
+      const ran = await workOn(replanTask(project, 1, 1, await reviseInputs(e, project, scope), 'The second part is too slow', open));
+
+      expectRoomForM4(ran);
+      expect(ran.state).toBe('done');
+      expect(taskText('M1-REPLAN-1')).not.toContain('design-prose-marker');
     });
   });
 

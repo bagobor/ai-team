@@ -11,7 +11,7 @@ import type { EngineDeps, Runner } from '../runner.ts';
 import type { MilestoneRow, ProjectRow, Store, TaskRow } from '../store.ts';
 import { withHeadWorktree } from './head-worktree.ts';
 import { playBug, problemLine, runPlayGate } from './play-gate.ts';
-import { ensureTask, isClosed, latestPin, milestoneReviewTask, noteOf, pinOf, qaTask, raiseHold, RETRY_OR_HALT, roundId, roundOf, scopeTask, specTask, techTask, testPlanTask, ticketTask, openHold, type TaskSpec, type TicketFields } from './tasks.ts';
+import { designMoving, ensureTask, isClosed, latestPin, milestoneReviewTask, noteOf, pinOf, qaTask, raiseHold, RETRY_OR_HALT, roundId, roundOf, scopeTask, specTask, techTask, testPlanTask, ticketTask, openHold, type TaskSpec, type TicketFields } from './tasks.ts';
 import { offerTry, removeTryWorktree, serveTryAgain } from './try.ts';
 
 type HoldKind = 'smoke' | 'base_conflict' | 'base_refused' | 'play';
@@ -143,9 +143,10 @@ async function design(deps: EngineDeps, project: ProjectRow, { n }: MilestoneRow
   }
   if (tech.state !== 'done' || plan.state !== 'done') return;
 
-  // The Eng Lead splits the work into tickets from the Tech Design's components, with the Test Plan in view.
+  // The Eng Lead splits the work into tickets from the Tech Design's components, with the Test Plan in view, once the design stops moving.
   const scope = byId(tasks, `M${n}-SCOPE`);
   if (!scope) {
+    if (designMoving(await deps.artifacts.list(project.id), tasks, n)) return;
     const inputs = [await latestPin(deps, project, specId(n)), await latestPin(deps, project, ENV_PROFILE), await latestPin(deps, project, techId(n)), await latestPin(deps, project, testPlanId(n))];
     await store.atomically((s) => ensureTask(s, scopeTask(project, n, inputs)));
     return;

@@ -197,6 +197,12 @@ describe('tickets', () => {
     expect(doc!.body).toBe('Do the thing.\n\n## Tests\n\n- core: test/core/**, test/core.test.ts\n');
   });
 
+  // The engine's hooks read the names from the ticket, so they have to be the Tech Design's, each once.
+  it('stores each component name once, trimmed', async () => {
+    const [doc] = await accepted([draft('T-1', { components: [' core', 'ui ', 'core'] })], SCOPE);
+    expect(doc!.fields?.components).toEqual(['core', 'ui']);
+  });
+
   it('a ticket without components still parses', async () => {
     const [doc] = await accepted([draft('T-1')]);
     expect(doc!.fields).not.toHaveProperty('components');
