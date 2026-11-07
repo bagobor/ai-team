@@ -187,7 +187,8 @@ describe('the whole M2 flow', () => {
 
     await e.drive(() => pending('cr'));
     await answer('cr', { action: 'approve' });
-    await e.drive(async () => (await stateOf('M1-REVISE-TECH-M1-1')) === 'done' && (await stateOf('M1-REVISE-TEST-PLAN-M1-1')) === 'done');
+    // The scope is revised once the Tech Design is, against the design that stands.
+    await e.drive(async () => (await stateOf('M1-REVISE-TECH-M1-1')) === 'done' && (await stateOf('M1-REVISE-SCOPE-M1-1')) === 'done' && (await stateOf('M1-REVISE-TEST-PLAN-M1-1')) === 'done');
     expect(await stateOf('M1-T-1')).toBe('running');
 
     writeFileSync(gate, '');

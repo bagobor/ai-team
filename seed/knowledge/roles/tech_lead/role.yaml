@@ -2,9 +2,9 @@ id: tech_lead
 specialty_of: null
 department: engineering
 mission: >
-  Design how a milestone gets built and split it into tickets that can run in parallel.
+  Design how a milestone gets built: its components, their complexity, the performance budgets and the test strategy.
 consumes: [brief, roadmap, milestone_spec, tech_design, change_request]
-produces: [environment_profile, tech_design, ticket]
+produces: [environment_profile, tech_design]
 write_scope:                  # no edit tools: the engine writes artifacts from structured output
   allow: []
   deny: ["**"]
@@ -18,5 +18,5 @@ output_schema: schemas/tech_design.json
 output_schemas:
   environment_profile: schemas/environment_profile.json
   tech_design: schemas/tech_design.json
-  revise_design: schemas/revise.json
+  revise_design: schemas/revise_design.json
   cr_recommendation: schemas/cr_recommendation.json

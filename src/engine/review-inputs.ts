@@ -10,8 +10,8 @@ import type { CriterionRow, ProjectRow } from './store.ts';
 
 // Nothing before the review bounds what QA writes, and running out of room here would stop a finished milestone.
 // The rest is the PM's own, which may include a table of the criteria under its own heading.
-// It gave up 100 when the Tech Design's pointer came in.
-const QA_WORDS_TOKENS = 2400;
+// It gave up 100 when the Tech Design's pointer came in, and 50 more when that pointer listed the structured design's six sections.
+const QA_WORDS_TOKENS = 2350;
 
 // The longest texts give way first, so a short note always survives whole.
 function limitFor(lengths: number[], room: number): number {

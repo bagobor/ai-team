@@ -30,10 +30,20 @@ export const largeTickets = Array.from({ length: TICKET_COUNT }, (_, t) => ({
   inputs: [`SPEC-M1@1#ac-${t * 3 + 1}`],
   size: 'S',
   body: 'Do it.\n',
+  components: [`part-${t + 1}`],
 }));
-export const largeDesign = { body: '# Design\n', tickets: largeTickets };
+// One component per ticket. No ticket of these runs, so their test globs only have to be well formed.
+const largeStructure = {
+  components: Array.from({ length: TICKET_COUNT }, (_, t) => ({ name: `part-${t + 1}`, responsibility: `Part ${t + 1} of the milestone.`, sources: [`src/part-${t + 1}/**`], tests: [`test/part-${t + 1}/**`], no_tests_reason: null, complexity: 'S', complexity_notes: 'A few files' })),
+  complexity: { overall: 'M', rationale: 'Ten small parts' },
+  performance: [{ metric: 'Test time', target: 'Under a minute', how_measured: 'npm test', component: null }],
+  test_strategy: 'Each part has its own tests, and the Test Plan checks the criteria.',
+  risks: [],
+};
+export const largeDesign = { body: 'Ten small parts.\n', ...largeStructure, stakeholder_note: 'Ten parts' };
 // The first real project's Tech Designs ran from 7,000 to 12,000 characters of prose.
-export const proseDesign = { body: `# Design\n\n## Power-ups\n\ndesign-prose-marker ${words(6000)}\n\n## Boss\n\n${words(6000)}\n`, tickets: largeTickets };
+export const proseDesign = { body: `design-prose-marker ${words(6000)}\n\n${words(6000)}\n`, ...largeStructure, stakeholder_note: 'Ten parts' };
+export const largeScope = { body: 'One ticket per part.\n', tickets: largeTickets, stakeholder_note: 'Ten tickets' };
 export const largeTestPlan = { body: `# Test plan\n\nplan-prose-marker ${words(1500)}\n`, coverage: largeCoverage, harness_tickets: [], protected: [] };
 
 // Each document comes from its real applier, so these are the sizes and shapes a real milestone leaves behind.
@@ -50,9 +60,11 @@ export async function publishLargeSpec(e: TestEngine, { ownCriteriaSection = tru
   return project;
 }
 
-export async function publishLargeDesign(e: TestEngine, design = largeDesign): Promise<void> {
+// The Tech Design, the Test Plan, then the Eng Lead's scope with the milestone's ten tickets.
+export async function publishLargeDesign(e: TestEngine, design: typeof largeDesign = largeDesign): Promise<void> {
   await publish(e, await apply(e, 'tech_design', design, { inputs: ['SPEC-M1@1'], role: 'tech_lead' }));
   await publish(e, await apply(e, 'test_plan', largeTestPlan, { inputs: ['SPEC-M1@1'], role: 'qa_engineer' }));
+  await publish(e, await apply(e, 'ticket_scope', largeScope, { inputs: ['SPEC-M1@1', 'TECH-M1@1', 'TEST-PLAN-M1@1'], role: 'eng_lead' }));
 }
 
 // About 660 tokens, as in the first real run.

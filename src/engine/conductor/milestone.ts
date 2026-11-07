@@ -11,13 +11,13 @@ import type { EngineDeps, Runner } from '../runner.ts';
 import type { MilestoneRow, ProjectRow, Store, TaskRow } from '../store.ts';
 import { withHeadWorktree } from './head-worktree.ts';
 import { playBug, problemLine, runPlayGate } from './play-gate.ts';
-import { ensureTask, isClosed, latestPin, milestoneReviewTask, noteOf, pinOf, qaTask, raiseHold, RETRY_OR_HALT, roundId, roundOf, specTask, techTask, testPlanTask, ticketTask, openHold, type TaskSpec, type TicketFields } from './tasks.ts';
+import { ensureTask, isClosed, latestPin, milestoneReviewTask, noteOf, pinOf, qaTask, raiseHold, RETRY_OR_HALT, roundId, roundOf, scopeTask, specTask, techTask, testPlanTask, ticketTask, openHold, type TaskSpec, type TicketFields } from './tasks.ts';
 import { offerTry, removeTryWorktree, serveTryAgain } from './try.ts';
 
 type HoldKind = 'smoke' | 'base_conflict' | 'base_refused' | 'play';
 
 const HOLD_KINDS = ['smoke', 'base_conflict', 'base_refused', 'qa_cap', 'play'] as const;
-const STALE_BLOCKS: readonly string[] = ['tech_design', 'test_plan', 'ticket'];
+const STALE_BLOCKS: readonly string[] = ['tech_design', 'test_plan', 'ticket_scope', 'ticket'];
 
 const byId = (tasks: TaskRow[], id: string) => tasks.find(({ ticket_id }) => ticket_id === id);
 
@@ -143,6 +143,15 @@ async function design(deps: EngineDeps, project: ProjectRow, { n }: MilestoneRow
   }
   if (tech.state !== 'done' || plan.state !== 'done') return;
 
+  // The Eng Lead splits the work into tickets from the Tech Design's components, with the Test Plan in view.
+  const scope = byId(tasks, `M${n}-SCOPE`);
+  if (!scope) {
+    const inputs = [await latestPin(deps, project, specId(n)), await latestPin(deps, project, ENV_PROFILE), await latestPin(deps, project, techId(n)), await latestPin(deps, project, testPlanId(n))];
+    await store.atomically((s) => ensureTask(s, scopeTask(project, n, inputs)));
+    return;
+  }
+  if (scope.state !== 'done') return;
+
   const smoke = await runSmoke(deps, project, n);
   if (!smoke.ok) {
     await hold(store, project, n, 'smoke', `The smoke check failed before milestone ${n}'s tickets`, smoke.why, 'Fix the toolchain or the smoke command, then retry. No ticket starts until it passes.');
@@ -174,7 +183,7 @@ async function build(deps: EngineDeps, runner: Runner, project: ProjectRow, m: M
   }
 
   if (!own.filter(({ kind }) => kind === 'ticket').every(isClosed)) return;
-  if (own.some(({ purpose, state }) => (purpose === 'revise_design' || purpose === 'revise_test_plan') && !isClosed({ state }))) return;
+  if (own.some(({ purpose, state }) => (purpose === 'revise_design' || purpose === 'revise_scope' || purpose === 'revise_test_plan') && !isClosed({ state }))) return;
   if (tasks.some(({ purpose, state }) => purpose === 'cr_recommendation' && !isClosed({ state }))) return;
   // A stale Spec doesn't count: nothing revises one, so it would hold the milestone for ever. It still shows in Documents.
   if ((await artifacts.list(project.id)).some((row) => row.milestone === n && row.status === 'stale' && STALE_BLOCKS.includes(row.type))) return;

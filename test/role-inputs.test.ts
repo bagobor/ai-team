@@ -1,14 +1,14 @@
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Criterion } from '../src/artifacts/acs.ts';
-import { ensureTask, qaTask, recommendationTask, reviseInputs, reviseTask, specTask, techTask, testPlanTask, type TaskSpec } from '../src/engine/conductor/tasks.ts';
+import { ensureTask, qaTask, recommendationTask, reviseInputs, reviseTask, scopeTask, specTask, techTask, testPlanTask, type TaskSpec } from '../src/engine/conductor/tasks.ts';
 import type { AttemptRow, ProjectRow } from '../src/engine/store.ts';
 import type { TaskManifest } from '../src/manifest/build.ts';
 import { manifestDir } from '../src/paths.ts';
 import { roleInputs } from '../src/engine/role-inputs.ts';
 import { apply, CRITERIA, projectOf, publish } from './helpers/apply.ts';
 import { makeEngine, okStep, resultStep, runOnce, ticket, type TestEngine } from './helpers/engine.ts';
-import { command, ids, largeCoverage, largeDesign, largeTestPlan, largeTickets, noteOf, planNoteOf, pmRowOf, proseDesign, publishLargeDesign, publishLargeSpec, publishProfile, ROOM_BEFORE_M4, textOf } from './helpers/large-milestone.ts';
+import { command, ids, largeCoverage, largeDesign, largeScope, largeTestPlan, largeTickets, noteOf, planNoteOf, pmRowOf, proseDesign, publishLargeDesign, publishLargeSpec, publishProfile, ROOM_BEFORE_M4, textOf } from './helpers/large-milestone.ts';
 import { commitAll, porcelain, run, tempDir } from './helpers/repo.ts';
 
 const QA_PINS = ['SPEC-M1@1', 'TECH-M1@1', 'TEST-PLAN-M1@1'];
@@ -17,7 +17,8 @@ const QA_OUTPUT = { results: ids.map((ac) => ({ ac, status: 'passing', commands:
 const QA_REFUSED = { results: [], bugs: [], summary: 'Nothing' };
 const REVISED_PLAN = { unaffected: false, rationale: 'The Spec moved', body: '# Test plan\n', coverage: largeCoverage, ticket_decisions: [], tickets: [] };
 const REVISE_REFUSED = { unaffected: false, rationale: 'The Spec moved', body: '# Test plan\n', coverage: null, ticket_decisions: [], tickets: [] };
-const STILL_RIGHT = { unaffected: true, rationale: 'Still right', body: null, coverage: null, ticket_decisions: largeTickets.map(({ key }) => ({ ticket: `M1-${key}`, decision: 'still_valid', rationale: 'Yes' })), tickets: [] };
+const STILL_RIGHT = { unaffected: true, rationale: 'Still right', design: null };
+const SCOPE_STILL_RIGHT = { unaffected: true, rationale: 'Still right', body: null, coverage: null, ticket_decisions: largeTickets.map(({ key }) => ({ ticket: `M1-${key}`, decision: 'still_valid', rationale: 'Yes' })), tickets: [] };
 const CHANGE_REQUEST = { id: 'CR-1', type: 'change_request' as const, status: 'proposed' as const, ownerRole: 'pm', derivedFrom: [], body: 'Change it' };
 const RECOMMENDATION = { decision: 'approve', rationale: 'It costs little' };
 
@@ -40,6 +41,13 @@ describe('what a role reads on a milestone of 10 tickets and 30 criteria', () =>
     expect(attempt).toMatchObject({ failure_kind: null });
     expect(manifest.contextBudget).toBe(12_000);
     expect(manifest.totalTokens).toBeLessThanOrEqual(ROOM_BEFORE_M4);
+  }
+
+  // The Eng Lead reads the Spec, the Tech Design and the Test Plan whole, so on this milestone it fits its budget but leaves
+  // less than M4's room. The task report raises it.
+  function expectWithinBudget({ attempt, manifest }: { attempt: AttemptRow; manifest: TaskManifest }): void {
+    expect(attempt).toMatchObject({ failure_kind: null });
+    expect(manifest.totalTokens).toBeLessThanOrEqual(manifest.contextBudget);
   }
 
   const taskText = (ticketId: string) => readFileSync(join(manifestDir(e.paths, 'p', ticketId, 1), 'task.md'), 'utf8');
@@ -115,7 +123,7 @@ describe('what a role reads on a milestone of 10 tickets and 30 criteria', () =>
 
       const text = taskText('M1-QA-1');
       expect(text).toContain('.aiteam-reference/tech-design.md');
-      expect(text).toContain('- Power-ups\n- Boss');
+      expect(text).toContain('- Overview\n- Components\n- Complexity\n- Performance\n- Test strategy\n- Risks');
       expect(text).not.toContain('design-prose-marker');
       expect(designOf(attempt)).toContain(proseDesign.body.trim());
       expectAllCommands(referenceOf(attempt));
@@ -176,7 +184,7 @@ describe('what a role reads on a milestone of 10 tickets and 30 criteria', () =>
       expect(await e.artifacts.latest(project.id, 'TECH-M1')).toMatchObject({ derived_from: inputs });
     });
 
-    it('still sees every criterion it must cover with a ticket', async () => {
+    it('still sees every criterion it designs for', async () => {
       const project = await engineWith('M1-TECH', largeDesign);
       const inputs = ['SPEC-M1@1', await publishProfile(e)];
 
@@ -188,6 +196,24 @@ describe('what a role reads on a milestone of 10 tickets and 30 criteria', () =>
       expect(text).toContain('profile-marker');
       for (const ac of ids) expect(text).toContain(textOf(ac));
       expect(text).not.toContain('command-marker');
+    });
+  });
+
+  // The Eng Lead reads the most of any author: the Spec, the profile, the Tech Design and the Test Plan.
+  describe('Ticket scope', () => {
+    it('fits the budget, and its output still applies', async () => {
+      const project = await engineWith('M1-SCOPE', largeScope);
+      const profile = await publishProfile(e);
+      await publish(e, await apply(e, 'tech_design', largeDesign, { inputs: ['SPEC-M1@1', profile], role: 'tech_lead' }));
+      await publish(e, await apply(e, 'test_plan', largeTestPlan, { inputs: ['SPEC-M1@1', profile], role: 'qa_engineer' }));
+      const inputs = ['SPEC-M1@1', profile, 'TECH-M1@1', 'TEST-PLAN-M1@1'];
+
+      const ran = await workOn(scopeTask(project, 1, inputs));
+
+      expectWithinBudget(ran);
+      expect(ran.state).toBe('done');
+      expect(await e.artifacts.latest(project.id, 'SCOPE-M1')).toMatchObject({ status: 'approved', derived_from: inputs });
+      for (const ac of ids) expect(taskText('M1-SCOPE')).toContain(textOf(ac));
     });
   });
 
@@ -217,7 +243,7 @@ describe('what a role reads on a milestone of 10 tickets and 30 criteria', () =>
   });
 
   describe('a revision', () => {
-    async function reviseOf(id: string, ticketId: string, output: unknown, purpose: 'revise_design' | 'revise_test_plan') {
+    async function reviseOf(id: string, ticketId: string, output: unknown, purpose: 'revise_design' | 'revise_scope' | 'revise_test_plan') {
       const project = await engineWith(ticketId, output);
       await publishLargeDesign(e);
       const doc = (await e.artifacts.latest(project.id, id))!;
@@ -247,6 +273,14 @@ describe('what a role reads on a milestone of 10 tickets and 30 criteria', () =>
 
       expectRoomForM4(ran);
       expect(ran.state).toBe('done');
+    });
+
+    it('of the ticket scope fits the budget and decides every ticket', async () => {
+      const { project, ...ran } = await reviseOf('SCOPE-M1', 'M1-REVISE-SCOPE-M1-1', SCOPE_STILL_RIGHT, 'revise_scope');
+
+      expectWithinBudget(ran);
+      expect(ran.state).toBe('done');
+      expect(await e.artifacts.latest(project.id, 'M1-T-10')).toMatchObject({ status: 'approved', approved_by: 'owner:eng_lead' });
     });
   });
 

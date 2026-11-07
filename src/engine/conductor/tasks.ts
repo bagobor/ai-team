@@ -173,7 +173,19 @@ export function techTask(project: ProjectRow, n: number, inputs: string[]): Task
     milestone: n,
     role_id: 'tech_lead',
     kind: 'authoring',
-    order: workOrder('tech_design', `Write the Tech Design for milestone ${n} and split the work into tickets. Every acceptance criterion must be covered by a ticket.`, inputs, INTEGRATION),
+    order: workOrder('tech_design', `Write the Tech Design for milestone ${n}: its components, each with the globs of its sources and of its tests, the complexity, the performance budgets and how each is measured, the test strategy, and the risks. Do not split the work into tickets: the Eng Lead does that from your components.`, inputs, INTEGRATION),
+  };
+}
+
+export function scopeTask(project: ProjectRow, n: number, inputs: string[]): TaskSpec {
+  return {
+    project,
+    ticket_id: `M${n}-SCOPE`,
+    title: `Milestone ${n}: Ticket scope`,
+    milestone: n,
+    role_id: 'eng_lead',
+    kind: 'authoring',
+    order: workOrder('ticket_scope', `Split milestone ${n} into tickets from the Tech Design's components. Every acceptance criterion must be covered by a ticket. Each ticket names its components and adds or updates their tests.`, inputs, BASE),
   };
 }
 
@@ -185,7 +197,7 @@ export function testPlanTask(project: ProjectRow, n: number, inputs: string[]): 
     milestone: n,
     role_id: 'qa_engineer',
     kind: 'authoring',
-    order: workOrder('test_plan', `Write the Test Plan for milestone ${n}. Name the commands that verify each automated acceptance criterion. Add a harness ticket only for test tooling those commands need that the product won't include. The Tech Lead is splitting the product into tickets at the same time, and those tickets build the product and everything its criteria ask it to include, such as its tests.`, inputs, INTEGRATION),
+    order: workOrder('test_plan', `Write the Test Plan for milestone ${n}. Name the commands that verify each automated acceptance criterion. Add a harness ticket only for test tooling those commands need that the product won't include. The Eng Lead splits the product into tickets after the Tech Design and this plan are in, and those tickets build the product and everything its criteria ask it to include, such as its tests.`, inputs, INTEGRATION),
   };
 }
 
@@ -221,13 +233,13 @@ export function replanTask(project: ProjectRow, n: number, k: number, inputs: st
     ticket_id: `M${n}-REPLAN-${k}`,
     title: `Milestone ${n}: Replan after the stakeholder's comment`,
     milestone: n,
-    role_id: 'tech_lead',
+    role_id: 'eng_lead',
     kind: 'authoring',
-    order: workOrder('revise_design', `The stakeholder asked for changes at the end of milestone ${n}. Revise the Tech Design and add the tickets their comment calls for.${decideTickets(open)}`, inputs, INTEGRATION, { comment }),
+    order: workOrder('revise_scope', `The stakeholder asked for changes at the end of milestone ${n}. Revise the ticket scope and add the tickets their comment calls for. If the design itself must change, raise a Change Request against TECH-M${n}.${decideTickets(open)}`, inputs, INTEGRATION, { comment }),
   };
 }
 
-export function reviseTask(project: ProjectRow, n: number, doc: ArtifactVersionRow, k: number, purpose: 'revise_design' | 'revise_test_plan', inputs: string[], open: string[]): TaskSpec {
+export function reviseTask(project: ProjectRow, n: number, doc: ArtifactVersionRow, k: number, purpose: 'revise_design' | 'revise_scope' | 'revise_test_plan', inputs: string[], open: string[]): TaskSpec {
   return {
     project,
     ticket_id: `M${n}-REVISE-${doc.artifact_id}-${k}`,

@@ -192,6 +192,11 @@ describe('tickets', () => {
     expect(parseTicket(file)).toMatchObject({ components: ['core', 'ui'], body: doc!.body });
   });
 
+  it('lists a component once however the ticket spaces its name', async () => {
+    const [doc] = await accepted([draft('T-1', { components: ['core', ' core '] })], SCOPE);
+    expect(doc!.body).toBe('Do the thing.\n\n## Tests\n\n- core: test/core/**, test/core.test.ts\n');
+  });
+
   it('a ticket without components still parses', async () => {
     const [doc] = await accepted([draft('T-1')]);
     expect(doc!.fields).not.toHaveProperty('components');

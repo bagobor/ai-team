@@ -2,7 +2,7 @@ import type { StatusChange, NewVersion } from '../../artifacts/store.ts';
 import type { Criterion } from '../../artifacts/acs.ts';
 import { ensureIntegrationBranch } from '../../git/workspace.ts';
 import { openTickets } from '../apply/design.ts';
-import { ENV_PROFILE, reviewId, specId, techId } from '../apply/ids.ts';
+import { ENV_PROFILE, reviewId, scopeId, specId } from '../apply/ids.ts';
 import { oneLine, quoted } from '../apply/text.ts';
 import { rejectChangeRequest } from '../change-requests.ts';
 import type { CheckMark, InboxAnswer, InboxRow } from '../inbox.ts';
@@ -101,9 +101,10 @@ async function answerCp4(deps: EngineDeps, runner: Runner, project: ProjectRow, 
   const record = recordMarks(project, item, n, marks);
   if (choice === 'request_changes') {
     const k = (await deps.store.listTasks(project.id)).filter(({ ticket_id }) => ticket_id.startsWith(`M${n}-REPLAN-`)).length + 1;
-    const tech = await deps.artifacts.latest(project.id, techId(n));
-    if (!tech) throw new Error(`Milestone ${n} has no Tech Design to replan`);
-    const inputs = await reviseInputs(deps, project, tech);
+    // The Eng Lead replans the tickets; a change to the design itself goes through a Change Request.
+    const scope = await deps.artifacts.latest(project.id, scopeId(n));
+    if (!scope) throw new Error(`Milestone ${n} has no ticket scope to replan`);
+    const inputs = await reviseInputs(deps, project, scope);
     const open = await openTickets(deps, project, n, 'T');
     // The replan reads only this comment, so what failed has to be in it.
     const failed = marks.filter(({ status }) => status === 'failing');

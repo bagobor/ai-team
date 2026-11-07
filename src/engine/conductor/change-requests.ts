@@ -1,7 +1,7 @@
 import type { ArtifactDoc } from '../../artifacts/format.ts';
 import { ownerOf, applyChangeRequest, ChangeRequestError, criterionText, flagsRegression, movedSince, rejectChangeRequest, requestOf, TargetMovedError, touchesCriterionText } from '../change-requests.ts';
 import { openTickets } from '../apply/design.ts';
-import { techId, testPlanId } from '../apply/ids.ts';
+import { scopeId, techId, testPlanId } from '../apply/ids.ts';
 import { recommendationOf } from '../apply/review.ts';
 import type { InboxRow } from '../inbox.ts';
 import { isHarnessTicket } from '../protected.ts';
@@ -133,30 +133,35 @@ async function cancelSuperseded(deps: Deps, runner: Runner, project: ProjectRow)
   }
 }
 
-// A stale ticket is revised through the document that owns it, even a closed one, because QA waits until nothing is stale.
+// A stale ticket is revised through the document that owns it, even a closed one, because QA waits until nothing is stale:
+// the Eng Lead's scope owns the product tickets, and the Test Plan the harness ones. The Tech Design owns no tickets.
 async function reviseStale(deps: Deps, project: ProjectRow): Promise<void> {
   const { store, artifacts } = deps;
   const current = (await store.listMilestones(project.id)).find(({ phase }) => phase !== 'merged');
   if (!current) return;
   const { n } = current;
 
+  const rows = await artifacts.list(project.id);
   const stale = new Set<string>();
-  for (const row of await artifacts.list(project.id)) {
+  for (const row of rows) {
     if (row.milestone !== n || row.status !== 'stale') continue;
-    if (row.type === 'tech_design' || row.type === 'test_plan') stale.add(row.artifact_id);
-    else if (row.type === 'ticket') stale.add(isHarnessTicket(row.artifact_id) ? testPlanId(n) : techId(n));
+    if (row.type === 'tech_design' || row.type === 'ticket_scope' || row.type === 'test_plan') stale.add(row.artifact_id);
+    else if (row.type === 'ticket') stale.add(isHarnessTicket(row.artifact_id) ? testPlanId(n) : scopeId(n));
   }
 
   const tasks = await store.listTasks(project.id);
+  // The scope is held to the Tech Design's components, so it is revised against the design that will stand, not one being revised.
+  const designMoving = rows.some((row) => row.artifact_id === techId(n) && row.status === 'stale') || tasks.some(({ milestone, purpose, state }) => milestone === n && purpose === 'revise_design' && !isClosed({ state }));
   for (const docId of stale) {
+    if (docId === scopeId(n) && designMoving) continue;
     const earlier = tasks.filter(({ ticket_id }) => ticket_id.startsWith(`M${n}-REVISE-${docId}-`));
     if (earlier.some((task) => !isClosed(task))) continue;
     const doc = await artifacts.latest(project.id, docId);
     if (!doc) continue;
-    const isDesign = docId === techId(n);
-    const open = await openTickets(deps, project, n, isDesign ? 'T' : 'Q');
     const inputs = await reviseInputs(deps, project, doc);
-    await ensureTask(store, reviseTask(project, n, doc, earlier.length + 1, isDesign ? 'revise_design' : 'revise_test_plan', inputs, open));
+    if (docId === techId(n)) await ensureTask(store, reviseTask(project, n, doc, earlier.length + 1, 'revise_design', inputs, []));
+    else if (docId === scopeId(n)) await ensureTask(store, reviseTask(project, n, doc, earlier.length + 1, 'revise_scope', inputs, await openTickets(deps, project, n, 'T')));
+    else await ensureTask(store, reviseTask(project, n, doc, earlier.length + 1, 'revise_test_plan', inputs, await openTickets(deps, project, n, 'Q')));
   }
 }
 

@@ -8,15 +8,17 @@ import { isHarnessTicket, protectedGlobs, protectedProblems } from '../protected
 import type { EngineDeps } from '../runner.ts';
 import type { ArtifactVersionRow, CriterionRow, ProjectRow, TaskRow } from '../store.ts';
 import { approvedProfile } from './discovery.ts';
-import { techId, testPlanId } from './ids.ts';
+import { scopeId, techId, testPlanId } from './ids.ts';
 import type { Applier, ApplyCtx } from './index.ts';
 import { withRaised } from './raised.ts';
-import { structureOf, type ComponentSpec } from './tech-structure.ts';
+import { designProblems, renderTechDesign, structureOf, type ComponentSpec, type TechStructure } from './tech-structure.ts';
 import { validateTickets, type TicketBatch, type TicketDraft } from './tickets.ts';
 
 // A play script proves a criterion only a browser can show, so an entry needs commands, a script, or both.
 export type Coverage = { ac: string; commands: string[]; notes: string; regression?: boolean; play?: PlayScript };
-type DesignOutput = { body: string; tickets: TicketDraft[] };
+type DesignOutput = { body: string } & TechStructure;
+// A design revision decides no tickets: the Eng Lead's scope revision, which waits for this one, does that.
+type ReviseDesignOutput = { unaffected: boolean; rationale: string; design: DesignOutput | null };
 type TestPlanOutput = { body: string; coverage: Coverage[]; protected: string[]; harness_tickets: TicketDraft[] };
 type Decision = { ticket: string; decision: 'still_valid' | 'superseded'; rationale: string };
 // A revision rewrites every entry, so its play script is the replaced entry's unless the revision gives one, or null to clear it.
@@ -91,8 +93,8 @@ const testPlanDoc = (ctx: ApplyCtx, body: string, coverage: Coverage[], globs: s
   fields: { data: { coverage, protected: globs } },
 });
 
-// The product tickets a document comes with: each one valid, and every criterion with a ticket. The Tech Design's
-// older path and the Eng Lead's scope both publish theirs through here.
+// The product tickets a document comes with: each one valid, and every criterion with a ticket. The Eng Lead's scope
+// publishes its tickets through here.
 export async function checkedTickets(ctx: ApplyCtx, tickets: TicketDraft[], batch: TicketBatch, body: string): Promise<{ ok: true; docs: NewVersion[] } | { ok: false; evidence: string }> {
   const acIds = (await lockedCriteria(ctx)).map(({ ac_id }) => ac_id);
   const validated = await validateTickets(ctx, ctx.task.milestone, tickets, acIds, await knownTickets(ctx), batch, body);
@@ -100,23 +102,51 @@ export async function checkedTickets(ctx: ApplyCtx, tickets: TicketDraft[], batc
   return validated.ok && problems.length === 0 ? validated : { ok: false, evidence: problems.join('\n') };
 }
 
-// The components the Eng Lead's tickets are held to. The engine scopes tickets only once a Tech Design with a structure
+// The components the Eng Lead's tickets are held to: those of the Tech Design its work order pinned, which is the one the
+// worker read, or the latest when the order pins none. The engine scopes tickets only once a Tech Design with a structure
 // is in, so one without is the engine's bug.
 export async function designComponents(ctx: ApplyCtx): Promise<ComponentSpec[]> {
   const id = techId(ctx.task.milestone);
-  const structure = structureOf(await ctx.deps.artifacts.read(ctx.project, id));
-  if (!structure) throw new Error(`${id} has no components to scope tickets against`);
+  const pinned = ctx.order.inputs.map(parsePin).find((pin) => pin.id === id && pin.version !== undefined);
+  const pin = pinned ? `${id}@${pinned.version}` : id;
+  const structure = structureOf(await ctx.deps.artifacts.read(ctx.project, pin));
+  if (!structure) throw new Error(`${pin} has no components to scope tickets against`);
   return structure.components;
 }
 
+const structureFrom = ({ components, complexity, performance, test_strategy, risks }: TechStructure): TechStructure => ({ components, complexity, performance, test_strategy, risks });
+
+// The structure is the data, and the body is the engine's rendering of it under fixed headings.
+const designDoc = (ctx: ApplyCtx, { body, ...rest }: DesignOutput, status: ArtifactStatus): NewVersion => {
+  const structure = structureFrom(rest);
+  return { ...ownedDoc(ctx, { id: techId(ctx.task.milestone), type: 'tech_design', owner: 'tech_lead' }, renderTechDesign(body, structure), status), fields: { data: structure } };
+};
+
 export const applyTechDesign: Applier = async (ctx) => {
-  const { body, tickets } = ctx.output as DesignOutput;
+  const output = ctx.output as DesignOutput;
   const { milestone } = ctx.task;
 
-  const checked = await checkedTickets(ctx, tickets, { prefix: 'T', docId: techId(milestone), owner: 'tech_lead' }, body);
-  if (!checked.ok) return checked;
+  const problems = designProblems(output.body, structureFrom(output));
+  if (problems.length > 0) return { ok: false, evidence: problems.join('\n') };
 
-  return withRaised(ctx, { message: `milestone ${milestone}: tech design`, publish: [ownedDoc(ctx, { id: techId(milestone), type: 'tech_design', owner: 'tech_lead' }, body), ...checked.docs] });
+  return withRaised(ctx, { message: `milestone ${milestone}: tech design`, publish: [designDoc(ctx, output, 'approved')] });
+};
+
+export const applyReviseDesign: Applier = async (ctx) => {
+  const { unaffected, rationale, design } = ctx.output as ReviseDesignOutput;
+  const { milestone } = ctx.task;
+  const docId = techId(milestone);
+
+  if (!unaffected) {
+    if (design === null) return { ok: false, evidence: 'An affected Tech Design needs its new design; give design, or set unaffected and say why' };
+    const problems = designProblems(design.body, structureFrom(design));
+    if (problems.length > 0) return { ok: false, evidence: problems.join('\n') };
+  }
+
+  const settled = (await inputsMoved(ctx, docId)) ? 'stale' : 'approved';
+  const message = `milestone ${milestone}: revise ${docId}`;
+  if (unaffected || design === null) return withRaised(ctx, { message, status: [{ id: docId, status: settled, derivedFrom: ctx.order.inputs.filter((pin) => parsePin(pin).id !== docId), rationale }] });
+  return withRaised(ctx, { message, publish: [designDoc(ctx, design, settled)] });
 };
 
 export const applyTestPlan: Applier = async (ctx) => {
@@ -138,7 +168,7 @@ const CLOSED = ['done', 'cancelled'];
 const isClosed = ({ task }: TicketOfDoc) => task !== undefined && CLOSED.includes(task.state);
 
 // A revise speaks for its own document's tickets. Otherwise the two revisions that can run together would both decide
-// the same tickets, and the QA Engineer could cancel the Tech Lead's work.
+// the same tickets, and the QA Engineer could cancel the Eng Lead's work.
 async function ticketsOfDoc(deps: Pick<EngineDeps, 'store' | 'artifacts'>, project: ProjectRow, milestone: number, prefix: Prefix): Promise<TicketOfDoc[]> {
   const mine = (id: string) => isHarnessTicket(id) === (prefix === 'Q');
   const rows = (await deps.artifacts.list(project.id)).filter((row) => row.type === 'ticket' && row.milestone === milestone && mine(row.artifact_id));
@@ -188,7 +218,7 @@ const CANCEL_IF = ['queued', 'ready', 'blocked', 'escalated', 'review', 'qa'];
 
 // The work order froze what the worker read, so a source approved again since then is one it never saw. The document
 // then stays stale, and the next round reads the newer version.
-async function inputsMoved(ctx: ApplyCtx, docId: string): Promise<boolean> {
+export async function inputsMoved(ctx: ApplyCtx, docId: string): Promise<boolean> {
   for (const text of ctx.order.inputs) {
     const { id, version } = parsePin(text);
     if (id === docId || version === undefined) continue;
@@ -253,12 +283,12 @@ function movedFlags(revised: Coverage[], replaced: ArtifactDoc, docId: string): 
     });
 }
 
-// What a revise publishes again and who owns the tickets it decides. On the T side that owner owns the document too; the
-// Test Plan is QA's, but its harness tickets are the Tech Lead's. With components, new tickets are held to the Tech Design's.
+// What a revise publishes again and who owns the tickets it decides. On the T side that is the Eng Lead's scope, and its
+// new tickets are held to the Tech Design's components; the Test Plan is QA's, but its harness tickets are the Tech Lead's.
 export type ReviseTarget = { docId: (milestone: number) => string; type: ArtifactType; owner: string; components?: boolean };
 
 const TARGETS: Record<Prefix, ReviseTarget> = {
-  T: { docId: techId, type: 'tech_design', owner: 'tech_lead' },
+  T: { docId: scopeId, type: 'ticket_scope', owner: 'eng_lead', components: true },
   Q: { docId: testPlanId, type: 'test_plan', owner: 'tech_lead' },
 };
 
@@ -268,7 +298,7 @@ export const applyRevise =
     const output = ctx.output as ReviseOutput;
     const { milestone } = ctx.task;
     const criteria = await lockedCriteria(ctx);
-    // The Tech Design builds a human check like any other criterion, but only the Test Plan skips it.
+    // The scope builds a human check like any other criterion, but only the Test Plan skips it.
     const acIds = prefix === 'T' ? criteria.map(({ ac_id }) => ac_id) : automatedIds(criteria);
     const docId = target.docId(milestone);
     const body = output.unaffected ? null : output.body;
@@ -337,5 +367,4 @@ export const applyRevise =
     });
   };
 
-export const applyReviseDesign = applyRevise('T');
 export const applyReviseTestPlan = applyRevise('Q');

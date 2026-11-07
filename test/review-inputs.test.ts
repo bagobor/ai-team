@@ -88,7 +88,7 @@ describe('the Milestone Review inputs', () => {
     expect(attempt).toMatchObject({ state: 'invalid_output' });
     const text = taskText();
     expect(text).toContain('.aiteam-reference/tech-design.md');
-    expect(text).toContain('- Power-ups\n- Boss');
+    expect(text).toContain('- Overview\n- Components\n- Complexity\n- Performance\n- Test strategy\n- Risks');
     expect(text).not.toContain('design-prose-marker');
     expect(readFileSync(join(attempt!.worktree_path, '.aiteam-reference', 'tech-design.md'), 'utf8')).toContain(proseDesign.body.trim());
     expect(existsSync(join(attempt!.worktree_path, '.aiteam-reference', 'verification.md'))).toBe(false);

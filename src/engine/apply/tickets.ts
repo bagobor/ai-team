@@ -148,8 +148,9 @@ export async function validateTickets(
     const named: ComponentSpec[] = [];
     if (components) {
       if ((draft.components ?? []).length === 0) say('components is empty');
-      for (const name of new Set(draft.components)) {
-        const component = components.find((candidate) => candidate.name.trim() === name.trim());
+      // Names are matched trimmed, so one spelt twice with different spacing is one component.
+      for (const name of new Set((draft.components ?? []).map((name) => name.trim()))) {
+        const component = components.find((candidate) => candidate.name.trim() === name);
         if (component) named.push(component);
         else say(`components names ${JSON.stringify(name)}, which the Tech Design does not have`);
       }

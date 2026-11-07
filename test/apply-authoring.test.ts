@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { sectionText } from '../src/artifacts/format.ts';
 import { applyOutput } from '../src/engine/apply/index.ts';
-import { structureProblems, type TechStructure } from '../src/engine/apply/tech-structure.ts';
+import { renderTechDesign, structureProblems, type TechStructure } from '../src/engine/apply/tech-structure.ts';
 import { loadRole } from '../src/roles/role.ts';
 import { stateRepoDir } from '../src/paths.ts';
 import { apply, CRITERIA, ctxFor, evidenceOf, lockSpec, projectOf, publish, specBody, ticketTask } from './helpers/apply.ts';
@@ -43,7 +43,6 @@ const draft = (key: string, ac_refs: string[], overrides: Record<string, unknown
   body: 'Do it.\n',
   ...overrides,
 });
-const DESIGN = { body: '# Design\n', tickets: [draft('T-1', ['AC-1']), draft('T-2', ['AC-2'])] };
 const coverage = (ac: string, commands = ['npm test']) => ({ ac, commands, notes: '' });
 const TEST_PLAN = { body: '# Test plan\n', coverage: [coverage('AC-1'), coverage('AC-2')], harness_tickets: [], protected: [] as string[] };
 const REVISE = { unaffected: false, rationale: 'The spec moved', body: '# Design two\n', coverage: null, ticket_decisions: [], tickets: [] };
@@ -56,6 +55,10 @@ const STRUCTURE: TechStructure = {
   risks: [],
 };
 const SCOPE = { body: '# Scope\n', tickets: [draft('T-1', ['AC-1'], { components: ['core'] }), draft('T-2', ['AC-2'], { components: ['ui'] })], stakeholder_note: 'Note' };
+const DESIGN = { body: 'Two small parts.\n', ...STRUCTURE, stakeholder_note: 'Note' };
+// A later Tech Design whose one component the first scope's tickets don't name.
+const OTHER: TechStructure = { ...STRUCTURE, components: [component('engine', ['test/engine/**'])], performance: [{ ...STRUCTURE.performance[0]!, component: 'engine' }] };
+const SEED = fileURLToPath(new URL('../seed/knowledge', import.meta.url));
 
 describe('appliers', () => {
   let e: TestEngine;
@@ -74,7 +77,7 @@ describe('appliers', () => {
     if (structure) expect(structureProblems(structure)).toEqual([]);
     return e.artifacts.commit(await projectOf(e), {
       message: 'the tech design',
-      publish: [{ id: 'TECH-M1', type: 'tech_design', status: 'approved', ownerRole: 'tech_lead', approvedBy: 'owner:tech_lead', milestone: 1, derivedFrom: ['SPEC-M1@1'], body: '# Design\n', ...(structure ? { fields: { data: structure } } : {}) }],
+      publish: [{ id: 'TECH-M1', type: 'tech_design', status: 'approved', ownerRole: 'tech_lead', approvedBy: 'owner:tech_lead', milestone: 1, derivedFrom: ['SPEC-M1@1'], ...(structure ? { body: renderTechDesign('Two small parts.', structure), fields: { data: structure } } : { body: '# Design\n' }) }],
     });
   };
 
@@ -261,35 +264,43 @@ describe('appliers', () => {
   describe('tech_design', () => {
     beforeEach(() => lockSpec(e));
 
-    it('publishes the approved design and its tickets', async () => {
-      const rows = await publish(e, await apply(e, 'tech_design', DESIGN, { inputs: ['SPEC-M1@1'] }));
+    it('publishes TECH-M1 with fields.data and the fixed headings, and no tickets', async () => {
+      const rows = await publish(e, await apply(e, 'tech_design', DESIGN, { inputs: ['SPEC-M1@1'], role: 'tech_lead' }));
 
-      expect(rows.map((row) => [row.artifact_id, row.status, row.approved_by])).toEqual([
-        ['TECH-M1', 'approved', 'owner:tech_lead'],
-        ['M1-T-1', 'approved', 'owner:tech_lead'],
-        ['M1-T-2', 'approved', 'owner:tech_lead'],
-      ]);
-      expect(rows[0]!.derived_from).toEqual(['SPEC-M1@1']);
-      expect(rows[1]!.derived_from).toEqual(['TECH-M1@1', 'SPEC-M1@1#ac-1']);
+      expect(rows.map((row) => [row.artifact_id, row.status, row.approved_by])).toEqual([['TECH-M1', 'approved', 'owner:tech_lead']]);
+      expect(rows[0]).toMatchObject({ type: 'tech_design', owner_role: 'tech_lead', derived_from: ['SPEC-M1@1'] });
+      const doc = await read('TECH-M1');
+      expect((doc.fields.data as TechStructure).components[0]!.name).toBe('core');
+      expect(doc.fields.data).toEqual(STRUCTURE);
+      expect(doc.body).toBe(renderTechDesign(DESIGN.body, STRUCTURE));
+      expect(sectionText(doc.body, 'core')).toContain('`src/core/**`');
     });
 
-    it('rejects a Tech Design that leaves a criterion without a ticket', async () => {
-      const result = await apply(e, 'tech_design', { ...DESIGN, tickets: [draft('T-1', ['AC-1'])] });
-      expect(evidenceOf(result)).toMatch(/AC-2/);
+    it('rejects a structure with a component missing tests and no reason', async () => {
+      const result = await apply(e, 'tech_design', { ...DESIGN, components: [component('core', [])] });
+      expect(evidenceOf(result)).toBe('component "core": tests is empty and there is no no_tests_reason');
     });
 
-    it('passes on what validateTickets finds', async () => {
-      const result = await apply(e, 'tech_design', { ...DESIGN, tickets: [draft('T-1', ['AC-1', 'AC-2'], { touches: ['/etc/**'] })] });
-      expect(evidenceOf(result)).toMatch(/T-1.*touches/);
+    it('lists every problem in the structure at once', async () => {
+      const result = await apply(e, 'tech_design', { ...DESIGN, components: [component('core', [])], performance: [], test_strategy: ' ' });
+      expect(evidenceOf(result).split('\n')).toEqual(['component "core": tests is empty and there is no no_tests_reason', 'performance is empty; give at least one entry', 'test_strategy is blank']);
     });
 
-    it('refuses a ticket id that a published ticket already has', async () => {
-      await publish(e, await apply(e, 'tech_design', DESIGN));
-      expect(evidenceOf(await apply(e, 'tech_design', DESIGN))).toMatch(/already exists/);
+    // The engine writes the headings, so a pin names the same sections in every Tech Design.
+    it('refuses a heading in the body', async () => {
+      expect(evidenceOf(await apply(e, 'tech_design', { ...DESIGN, body: 'Two parts.\n\n## Components\n\nMine.\n' }))).toBe('body has a line that starts with #; headings are not allowed');
     });
 
-    it('treats a milestone with nothing locked as the engine\'s bug', async () => {
-      await expect(apply(e, 'tech_design', DESIGN, { milestone: 2 })).rejects.toThrow(/locked/);
+    it('refuses text that hides the headings in a code block', async () => {
+      const result = await apply(e, 'tech_design', { ...DESIGN, body: 'Two parts.\n\n```\nnever closed\n' });
+      expect(evidenceOf(result)).toMatch(/code block.*Components/);
+    });
+
+    // The model answers to this schema, so a design with tickets could never be written.
+    it('is a shape the design schema allows, and it takes no tickets', async () => {
+      const design = new Ajv({ strict: false }).compile((await loadRole(SEED, 'tech_lead', 'tech_design')).schema);
+      expect(design(DESIGN), JSON.stringify(design.errors)).toBe(true);
+      expect(design({ ...DESIGN, tickets: [] })).toBe(false);
     });
   });
 
@@ -299,7 +310,7 @@ describe('appliers', () => {
       await structuredDesign();
     });
 
-    const scope = (output: Record<string, unknown> = {}) => apply(e, 'ticket_scope', { ...SCOPE, ...output }, { inputs: ['SPEC-M1@1', 'TECH-M1@1'], role: 'eng_lead' });
+    const scope = (output: Record<string, unknown> = {}, inputs = ['SPEC-M1@1', 'TECH-M1@1']) => apply(e, 'ticket_scope', { ...SCOPE, ...output }, { inputs, role: 'eng_lead' });
 
     it('publishes SCOPE-M1 and its tickets owned by eng_lead', async () => {
       const rows = await publish(e, await scope());
@@ -344,18 +355,43 @@ describe('appliers', () => {
 
     it("treats a Tech Design without components as the engine's bug", async () => {
       await structuredDesign(null);
-      await expect(scope()).rejects.toThrow(/TECH-M1/);
+      await expect(scope({}, ['SPEC-M1@1', 'TECH-M1@2'])).rejects.toThrow(/TECH-M1@2/);
+    });
+
+    // The worker read the Tech Design its order pinned, so its tickets answer to that version's components. A newer one
+    // is the next revision's to scope against.
+    it('holds the tickets to the pinned Tech Design and publishes the scope stale when a newer one is in', async () => {
+      await structuredDesign(OTHER);
+      const rows = await publish(e, await scope());
+
+      expect(rows.map((row) => [row.artifact_id, row.status])).toEqual([
+        ['SCOPE-M1', 'stale'],
+        ['M1-T-1', 'approved'],
+        ['M1-T-2', 'approved'],
+      ]);
+      expect(rows[0]!.derived_from).toEqual(['SPEC-M1@1', 'TECH-M1@1']);
+    });
+
+    it('refuses components the pinned version does not have, and reads the latest when nothing pins one', async () => {
+      await structuredDesign(OTHER);
+      const unknown = 'T-1: components names "core", which the Tech Design does not have';
+
+      expect(evidenceOf(await scope({}, ['SPEC-M1@1', 'TECH-M1@2']))).toContain(unknown);
+      expect(evidenceOf(await scope({}, ['SPEC-M1@1']))).toContain(unknown);
+      expect(evidenceOf(await scope({}, ['SPEC-M1@1', 'TECH-M1']))).toContain(unknown);
+
+      const rows = await publish(e, await scope({ tickets: [draft('T-1', ['AC-1', 'AC-2'], { components: ['engine'] })] }, ['SPEC-M1@1', 'TECH-M1@2#components']));
+      expect(rows[0]).toMatchObject({ artifact_id: 'SCOPE-M1', status: 'approved' });
     });
 
     // The model answers to these schemas, so a shape the engine takes but a schema forbids could never be written.
     it('is a shape the scope schemas allow', async () => {
-      const seed = fileURLToPath(new URL('../seed/knowledge', import.meta.url));
       const ajv = new Ajv({ strict: false });
-      const scoped = ajv.compile((await loadRole(seed, 'eng_lead', 'ticket_scope')).schema);
+      const scoped = ajv.compile((await loadRole(SEED, 'eng_lead', 'ticket_scope')).schema);
       expect(scoped(SCOPE), JSON.stringify(scoped.errors)).toBe(true);
       expect(scoped({ ...SCOPE, tickets: [draft('T-1', ['AC-1'])] })).toBe(false);
 
-      const revised = ajv.compile((await loadRole(seed, 'eng_lead', 'revise_scope')).schema);
+      const revised = ajv.compile((await loadRole(SEED, 'eng_lead', 'revise_scope')).schema);
       expect(revised({ ...REVISE, tickets: SCOPE.tickets }), JSON.stringify(revised.errors)).toBe(true);
       expect(revised({ ...REVISE, tickets: [draft('T-1', ['AC-1'])] })).toBe(false);
     });
@@ -658,28 +694,100 @@ describe('appliers', () => {
     });
   });
 
-  describe('revise', () => {
-    const decide = (ticket: string, decision = 'still_valid') => ({ ticket, decision, rationale: `${ticket} ${decision}` });
+  describe('revise_design', () => {
+    // A Tech Design that grew a component, written the way a revision gives it: no stakeholder note.
+    const REDESIGN = { body: 'Three parts now.\n', ...STRUCTURE, components: [...STRUCTURE.components, component('net', ['test/net/**'])] };
+    const KEPT = { unaffected: true, rationale: 'Only wording moved', design: null };
 
-    // The design and tasks a Conductor would have made, with the spec moved on under them.
+    // The design, scope and tasks a Conductor would have made, with the spec moved on under them.
     beforeEach(async () => {
       await lockSpec(e);
-      await publish(e, await apply(e, 'tech_design', DESIGN, { inputs: ['SPEC-M1@1'] }));
+      await publish(e, await apply(e, 'tech_design', DESIGN, { inputs: ['SPEC-M1@1'], role: 'tech_lead' }));
+      await publish(e, await apply(e, 'ticket_scope', SCOPE, { inputs: ['SPEC-M1@1', 'TECH-M1@1'], role: 'eng_lead' }));
+      await ticketTask(e, 'M1-T-1', { ac_refs: ['AC-1'] });
+      const moved = [{ ...CRITERIA[0]!, text: 'The first thing works better' }, CRITERIA[1]!];
+      await e.artifacts.commit(await projectOf(e), { message: 'the spec moves', publish: [{ id: 'SPEC-M1', type: 'spec', status: 'approved', ownerRole: 'pm', derivedFrom: [], milestone: 1, body: specBody(moved) }] });
+    });
+
+    const revise = (output: Record<string, unknown>, inputs = ['SPEC-M1@2', 'TECH-M1@1']) => apply(e, 'revise_design', { unaffected: false, rationale: 'The spec moved', design: null, ...output }, { inputs, role: 'tech_lead' });
+
+    it('re-pins on unaffected, logs the rationale and leaves the tickets alone', async () => {
+      expect((await latest('TECH-M1'))?.status).toBe('stale');
+      await publish(e, await revise(KEPT));
+
+      expect(await latest('TECH-M1')).toMatchObject({ version: 1, status: 'approved', derived_from: ['SPEC-M1@2'], stale_sections: [] });
+      expect(await latest('M1-T-1')).toMatchObject({ version: 1, status: 'stale' });
+      const events = await e.log.list({ projectId: (await projectOf(e)).id });
+      expect(events.filter((event) => event.type === 'lineage.repinned').map((event) => event.payload)).toEqual([{ id: 'TECH-M1', rationale: 'Only wording moved' }]);
+    });
+
+    it('publishes a new version from the design, and the tickets are the scope revision\'s to decide', async () => {
+      await publish(e, await revise({ design: REDESIGN }));
+
+      expect(await latest('TECH-M1')).toMatchObject({ version: 2, type: 'tech_design', status: 'approved', approved_by: 'owner:tech_lead', derived_from: ['SPEC-M1@2'] });
+      const doc = await read('TECH-M1');
+      expect(doc.fields.data).toEqual({ components: REDESIGN.components, complexity: STRUCTURE.complexity, performance: STRUCTURE.performance, test_strategy: STRUCTURE.test_strategy, risks: STRUCTURE.risks });
+      expect(doc.body).toBe(renderTechDesign(REDESIGN.body, doc.fields.data as TechStructure));
+      expect(await latest('M1-T-1')).toMatchObject({ version: 1, status: 'stale' });
+      expect(await latest('SCOPE-M1')).toMatchObject({ version: 1, status: 'stale' });
+    });
+
+    it('rejects an affected revision with no design', async () => {
+      expect(evidenceOf(await revise({}))).toMatch(/design/);
+    });
+
+    it('holds a new design to the rules a first one keeps', async () => {
+      expect(evidenceOf(await revise({ design: { ...REDESIGN, components: [component('core', [])] } }))).toBe('component "core": tests is empty and there is no no_tests_reason');
+      expect(evidenceOf(await revise({ design: { ...REDESIGN, body: '# Design two\n' } }))).toBe('body has a line that starts with #; headings are not allowed');
+    });
+
+    // The work order froze the inputs, so a Spec approved while the worker decided is one it never read.
+    it.each([
+      ['unaffected', KEPT, 1],
+      ['revised', { design: REDESIGN }, 2],
+    ])('leaves the design stale when the spec moved again while the worker decided, %s', async (_name, output, version) => {
+      const moved = [{ ...CRITERIA[0]!, text: 'The first thing works best' }, CRITERIA[1]!];
+      await e.artifacts.commit(await projectOf(e), { message: 'the spec moves again', publish: [{ id: 'SPEC-M1', type: 'spec', status: 'approved', ownerRole: 'pm', derivedFrom: [], milestone: 1, body: specBody(moved) }] });
+
+      await publish(e, await revise(output));
+
+      expect(await latest('TECH-M1')).toMatchObject({ version, status: 'stale', derived_from: ['SPEC-M1@2'] });
+    });
+
+    // The model answers to this schema, so a revision with tickets could never be written.
+    it('is a shape the revision schema allows, and it decides no tickets', async () => {
+      const revised = new Ajv({ strict: false }).compile((await loadRole(SEED, 'tech_lead', 'revise_design')).schema);
+      const output = { unaffected: false, rationale: 'r', design: REDESIGN };
+      expect(revised(output), JSON.stringify(revised.errors)).toBe(true);
+      expect(revised(KEPT), JSON.stringify(revised.errors)).toBe(true);
+      expect(revised({ ...output, ticket_decisions: [] })).toBe(false);
+      expect(revised({ ...output, tickets: [] })).toBe(false);
+    });
+  });
+
+  describe('revise_scope', () => {
+    const decide = (ticket: string, decision = 'still_valid') => ({ ticket, decision, rationale: `${ticket} ${decision}` });
+
+    // The scope and tasks a Conductor would have made, with the spec moved on under them.
+    beforeEach(async () => {
+      await lockSpec(e);
+      await structuredDesign();
+      await publish(e, await apply(e, 'ticket_scope', SCOPE, { inputs: ['SPEC-M1@1', 'TECH-M1@1'], role: 'eng_lead' }));
       await ticketTask(e, 'M1-T-1', { ac_refs: ['AC-1'] });
       await ticketTask(e, 'M1-T-2', { ac_refs: ['AC-2'] });
       const moved = [{ ...CRITERIA[0]!, text: 'The first thing works better' }, CRITERIA[1]!];
       await e.artifacts.commit(await projectOf(e), { message: 'the spec moves', publish: [{ id: 'SPEC-M1', type: 'spec', status: 'approved', ownerRole: 'pm', derivedFrom: [], milestone: 1, body: specBody(moved) }] });
     });
 
-    const revise = (output: Record<string, unknown>, inputs = ['SPEC-M1@2', 'TECH-M1@1']) => apply(e, 'revise_design', { ...REVISE, ...output }, { inputs });
+    const revise = (output: Record<string, unknown>, inputs = ['SPEC-M1@2', 'TECH-M1@1', 'SCOPE-M1@1']) => apply(e, 'revise_scope', { ...REVISE, body: '# Scope two\n', ...output }, { inputs, role: 'eng_lead' });
     const taskState = async (id: string) => (await e.store.getTaskByTicket((await projectOf(e)).id, id))?.state;
     const setState = async (id: string, ...states: Parameters<TestEngine['store']['setTaskState']>[1][]) => {
       const task = await e.store.getTaskByTicket((await projectOf(e)).id, id);
       for (const state of states) await e.store.setTaskState(task!.id, state);
     };
 
-    it('starts from a design and tickets the moved spec made stale', async () => {
-      expect((await latest('TECH-M1'))?.status).toBe('stale');
+    it('starts from a scope and tickets the moved spec made stale', async () => {
+      expect((await latest('SCOPE-M1'))?.status).toBe('stale');
       expect((await latest('M1-T-1'))?.status).toBe('stale');
       expect((await latest('M1-T-2'))?.status).toBe('approved');
     });
@@ -693,25 +801,24 @@ describe('appliers', () => {
       expect(evidenceOf(await revise({ ticket_decisions: [decide('M1-T-1'), decide('M1-T-2'), decide('M1-T-8')] }))).toMatch(/M1-T-8/);
     });
 
-    it('rejects an affected design with no body', async () => {
+    it('rejects an affected scope with no body', async () => {
       expect(evidenceOf(await revise({ body: null, ticket_decisions: [decide('M1-T-1'), decide('M1-T-2')] }))).toMatch(/body/);
     });
 
     it('passes on what validateTickets finds in new tickets', async () => {
-      const result = await revise({ ticket_decisions: [decide('M1-T-1'), decide('M1-T-2')], tickets: [draft('T-1', ['AC-1'])] });
+      const result = await revise({ ticket_decisions: [decide('M1-T-1'), decide('M1-T-2')], tickets: [draft('T-1', ['AC-1'], { components: ['core'] })] });
       expect(evidenceOf(result)).toMatch(/already exists/);
     });
 
-    it('re-pins on unaffected and logs the rationale', async () => {
+    it('re-pins on unaffected, keeps the tickets the Eng Lead\'s and logs the rationale', async () => {
       const rows = await publish(e, await revise({ unaffected: true, body: null, rationale: 'Only wording moved', ticket_decisions: [decide('M1-T-1'), decide('M1-T-2')] }));
 
-      const tech = await latest('TECH-M1');
-      expect(tech).toMatchObject({ version: 1, status: 'approved', derived_from: ['SPEC-M1@2'], stale_sections: [] });
-      expect(rows.find((row) => row.artifact_id === 'M1-T-1')).toMatchObject({ status: 'approved', derived_from: ['TECH-M1@1', 'SPEC-M1@2#ac-1'] });
+      expect(await latest('SCOPE-M1')).toMatchObject({ version: 1, status: 'approved', derived_from: ['SPEC-M1@2', 'TECH-M1@1'], stale_sections: [] });
+      expect(rows.find((row) => row.artifact_id === 'M1-T-1')).toMatchObject({ status: 'approved', approved_by: 'owner:eng_lead', derived_from: ['SCOPE-M1@1', 'SPEC-M1@2#ac-1'] });
 
       const events = await e.log.list({ projectId: (await projectOf(e)).id });
       const repinned = events.filter((event) => event.type === 'lineage.repinned').map((event) => event.payload);
-      expect(repinned).toContainEqual({ id: 'TECH-M1', rationale: 'Only wording moved' });
+      expect(repinned).toContainEqual({ id: 'SCOPE-M1', rationale: 'Only wording moved' });
       expect(repinned).toContainEqual({ id: 'M1-T-1', rationale: 'M1-T-1 still_valid' });
     });
 
@@ -719,39 +826,65 @@ describe('appliers', () => {
     it.each([
       ['unaffected', { unaffected: true, body: null }, 1],
       ['revised', {}, 2],
-    ])('leaves the design stale when the spec moved again while the worker decided, %s', async (_name, output, version) => {
+    ])('leaves the scope stale when the spec moved again while the worker decided, %s', async (_name, output, version) => {
       const moved = [{ ...CRITERIA[0]!, text: 'The first thing works best' }, CRITERIA[1]!];
       await e.artifacts.commit(await projectOf(e), { message: 'the spec moves again', publish: [{ id: 'SPEC-M1', type: 'spec', status: 'approved', ownerRole: 'pm', derivedFrom: [], milestone: 1, body: specBody(moved) }] });
 
       await publish(e, await revise({ ...output, ticket_decisions: [decide('M1-T-1'), decide('M1-T-2')] }));
 
-      expect(await latest('TECH-M1')).toMatchObject({ version, status: 'stale', derived_from: ['SPEC-M1@2'] });
+      expect(await latest('SCOPE-M1')).toMatchObject({ version, status: 'stale', derived_from: ['SPEC-M1@2', 'TECH-M1@1'] });
     });
 
-    it('publishes a new version and leaves nothing it decided on stale', async () => {
+    it('publishes a new version owned by eng_lead, re-pins its tickets on it and leaves TECH alone', async () => {
       await publish(e, await revise({ ticket_decisions: [decide('M1-T-1'), decide('M1-T-2')] }));
 
-      expect(await latest('TECH-M1')).toMatchObject({ version: 2, status: 'approved', approved_by: 'owner:tech_lead', derived_from: ['SPEC-M1@2'] });
-      expect(await latest('M1-T-1')).toMatchObject({ version: 1, status: 'approved', derived_from: ['TECH-M1@2', 'SPEC-M1@2#ac-1'] });
-      expect(await latest('M1-T-2')).toMatchObject({ version: 1, status: 'approved', derived_from: ['TECH-M1@2', 'SPEC-M1@2#ac-2'] });
+      expect(await latest('SCOPE-M1')).toMatchObject({ version: 2, type: 'ticket_scope', status: 'approved', owner_role: 'eng_lead', approved_by: 'owner:eng_lead', derived_from: ['SPEC-M1@2', 'TECH-M1@1'] });
+      expect(await latest('TECH-M1')).toMatchObject({ version: 1, type: 'tech_design' });
+      expect(await latest('M1-T-1')).toMatchObject({ version: 1, status: 'approved', approved_by: 'owner:eng_lead', derived_from: ['SCOPE-M1@2', 'SPEC-M1@2#ac-1'] });
+      expect(await latest('M1-T-2')).toMatchObject({ version: 1, status: 'approved', derived_from: ['SCOPE-M1@2', 'SPEC-M1@2#ac-2'] });
     });
 
     it('never edits an existing ticket: new work is a new ticket', async () => {
       const dir = stateRepoDir(e.paths, 'p');
       const before = (await readFile(join(dir, 'artifacts/ticket/M1-T-1.md'), 'utf8')).split('---\n')[2];
 
-      await publish(e, await revise({ ticket_decisions: [decide('M1-T-1', 'superseded'), decide('M1-T-2')], tickets: [draft('T-3', ['AC-1'], { body: 'New work\n' })] }));
+      await publish(e, await revise({ ticket_decisions: [decide('M1-T-1', 'superseded'), decide('M1-T-2')], tickets: [draft('T-3', ['AC-1'], { body: 'New work\n', components: ['core'] })] }));
 
       expect((await readFile(join(dir, 'artifacts/ticket/M1-T-1.md'), 'utf8')).split('---\n')[2]).toBe(before);
       expect(await latest('M1-T-1')).toMatchObject({ version: 1, status: 'superseded' });
-      expect(await latest('M1-T-3')).toMatchObject({ version: 1, status: 'approved', derived_from: ['TECH-M1@2', 'SPEC-M1@2#ac-1'] });
-      expect((await read('M1-T-3')).body).toBe('New work\n');
+      expect(await latest('M1-T-3')).toMatchObject({ version: 1, status: 'approved', derived_from: ['SCOPE-M1@2', 'SPEC-M1@2#ac-1'] });
+      expect((await read('M1-T-3')).body).toBe('New work\n\n## Tests\n\n- core: test/core/**\n');
+    });
+
+    it('holds a new ticket to the design\'s components and lists its tests', async () => {
+      const decisions = [decide('M1-T-1', 'superseded'), decide('M1-T-2')];
+      expect(evidenceOf(await revise({ ticket_decisions: decisions, tickets: [draft('T-3', ['AC-1'])] }))).toMatch(/T-3: components is empty/);
+      expect(evidenceOf(await revise({ ticket_decisions: decisions, tickets: [draft('T-3', ['AC-1'], { components: ['renderer'] })] }))).toContain('T-3: components names "renderer", which the Tech Design does not have');
+
+      await publish(e, await revise({ ticket_decisions: decisions, tickets: [draft('T-3', ['AC-1'], { components: ['core'] })] }));
+
+      expect(await latest('M1-T-3')).toMatchObject({ version: 1, status: 'approved', owner_role: 'eng_lead', approved_by: 'owner:eng_lead' });
+      const ticket = await read('M1-T-3');
+      expect(ticket.fields.components).toEqual(['core']);
+      expect(ticket.body).toBe('Do it.\n\n## Tests\n\n- core: test/core/**\n');
+    });
+
+    // As with a first scope, the worker read the Tech Design its order pinned; a newer one leaves the scope for the next revision.
+    it('holds new tickets to the pinned Tech Design and leaves the scope stale when a newer one is in', async () => {
+      await structuredDesign(OTHER);
+      const decisions = [decide('M1-T-1', 'superseded'), decide('M1-T-2')];
+
+      expect(evidenceOf(await revise({ ticket_decisions: decisions, tickets: [draft('T-3', ['AC-1'], { components: ['core'] })] }, ['SPEC-M1@2', 'TECH-M1@2', 'SCOPE-M1@1']))).toContain('T-3: components names "core", which the Tech Design does not have');
+
+      await publish(e, await revise({ ticket_decisions: decisions, tickets: [draft('T-3', ['AC-1'], { components: ['core'] })] }));
+      expect(await latest('SCOPE-M1')).toMatchObject({ version: 2, status: 'stale' });
+      expect(await latest('M1-T-3')).toMatchObject({ status: 'approved' });
     });
 
     it('cancels a superseded task that is not live and leaves a live one to the conductor', async () => {
       await setState('M1-T-2', 'ready', 'running');
 
-      await publish(e, await revise({ ticket_decisions: [decide('M1-T-1', 'superseded'), decide('M1-T-2', 'superseded')], tickets: [draft('T-3', ['AC-1', 'AC-2'])] }));
+      await publish(e, await revise({ ticket_decisions: [decide('M1-T-1', 'superseded'), decide('M1-T-2', 'superseded')], tickets: [draft('T-3', ['AC-1', 'AC-2'], { components: ['core', 'ui'] })] }));
 
       expect(await taskState('M1-T-1')).toBe('cancelled');
       expect(await taskState('M1-T-2')).toBe('running');
@@ -763,7 +896,7 @@ describe('appliers', () => {
       await publish(e, await revise({ ticket_decisions: [decide('M1-T-2')] }));
 
       expect(await taskState('M1-T-1')).toBe('done');
-      expect(await latest('M1-T-1')).toMatchObject({ status: 'approved', derived_from: ['TECH-M1@2', 'SPEC-M1@2#ac-1'] });
+      expect(await latest('M1-T-1')).toMatchObject({ status: 'approved', derived_from: ['SCOPE-M1@2', 'SPEC-M1@2#ac-1'] });
     });
 
     // The worker is told which tickets are open when its order is written, and a ticket that isn't stale can merge while it decides.
@@ -773,7 +906,7 @@ describe('appliers', () => {
       await publish(e, await revise({ ticket_decisions: [decide('M1-T-1'), decide('M1-T-2')] }));
 
       expect(await taskState('M1-T-1')).toBe('done');
-      expect(await latest('M1-T-1')).toMatchObject({ status: 'approved', derived_from: ['TECH-M1@2', 'SPEC-M1@2#ac-1'] });
+      expect(await latest('M1-T-1')).toMatchObject({ status: 'approved', derived_from: ['SCOPE-M1@2', 'SPEC-M1@2#ac-1'] });
     });
 
     it('never lets a late decision supersede a ticket that has merged', async () => {
@@ -791,16 +924,16 @@ describe('appliers', () => {
       const decisions = [decide('M1-T-1', 'superseded'), decide('M1-T-2'), decide('M1-T-3')];
       expect(evidenceOf(await revise({ ticket_decisions: decisions }))).toMatch(/M1-T-3.*M1-T-1/);
       const replaced = [decide('M1-T-1', 'superseded'), decide('M1-T-2'), decide('M1-T-3', 'superseded')];
-      const result = await revise({ ticket_decisions: replaced, tickets: [draft('T-4', ['AC-1'], { depends_on: ['T-1'] })] });
+      const result = await revise({ ticket_decisions: replaced, tickets: [draft('T-4', ['AC-1'], { depends_on: ['T-1'], components: ['core'] })] });
       expect(evidenceOf(result)).toMatch(/T-4.*M1-T-1/);
     });
 
-    it('rejects a design revise that leaves a criterion with no ticket', async () => {
+    it('rejects a scope revise that leaves a criterion with no ticket', async () => {
       const result = await revise({ ticket_decisions: [decide('M1-T-1', 'superseded'), decide('M1-T-2')] });
       expect(evidenceOf(result)).toMatch(/AC-1/);
     });
 
-    it('decides only its own tickets: Q for the Test Plan, the rest for the design', async () => {
+    it('decides only its own tickets: Q for the Test Plan, the rest for the scope', async () => {
       await publish(e, await apply(e, 'test_plan', { ...TEST_PLAN, harness_tickets: [draft('Q-1', ['AC-1'])] }, { inputs: ['SPEC-M1@2'] }));
       await ticketTask(e, 'M1-Q-1', { ac_refs: ['AC-1'] });
 
@@ -820,69 +953,6 @@ describe('appliers', () => {
       await publish(e, await apply(e, 'revise_test_plan', { ...output, coverage: TEST_PLAN.coverage }, { inputs: ['SPEC-M1@2', 'TEST-PLAN-M1@1'] }));
       expect(await latest('TEST-PLAN-M1')).toMatchObject({ version: 2, status: 'approved', derived_from: ['SPEC-M1@2'] });
       expect((await read('TEST-PLAN-M1')).fields.data).toEqual({ coverage: TEST_PLAN.coverage, protected: [] });
-    });
-  });
-
-  describe('revise_scope', () => {
-    const decide = (ticket: string, decision = 'still_valid') => ({ ticket, decision, rationale: `${ticket} ${decision}` });
-
-    // The scope and tasks a Conductor would have made, with the spec moved on under them.
-    beforeEach(async () => {
-      await lockSpec(e);
-      await structuredDesign();
-      await publish(e, await apply(e, 'ticket_scope', SCOPE, { inputs: ['SPEC-M1@1', 'TECH-M1@1'], role: 'eng_lead' }));
-      await ticketTask(e, 'M1-T-1', { ac_refs: ['AC-1'] });
-      await ticketTask(e, 'M1-T-2', { ac_refs: ['AC-2'] });
-      const moved = [{ ...CRITERIA[0]!, text: 'The first thing works better' }, CRITERIA[1]!];
-      await e.artifacts.commit(await projectOf(e), { message: 'the spec moves', publish: [{ id: 'SPEC-M1', type: 'spec', status: 'approved', ownerRole: 'pm', derivedFrom: [], milestone: 1, body: specBody(moved) }] });
-    });
-
-    const revise = (output: Record<string, unknown>, inputs = ['SPEC-M1@2', 'TECH-M1@1', 'SCOPE-M1@1']) => apply(e, 'revise_scope', { ...REVISE, body: '# Scope two\n', ...output }, { inputs, role: 'eng_lead' });
-
-    it('starts from a scope and tickets the moved spec made stale', async () => {
-      expect((await latest('SCOPE-M1'))?.status).toBe('stale');
-      expect((await latest('M1-T-1'))?.status).toBe('stale');
-      expect((await latest('M1-T-2'))?.status).toBe('approved');
-    });
-
-    it('rejects a revise output that leaves an open ticket undecided', async () => {
-      expect(evidenceOf(await revise({ ticket_decisions: [decide('M1-T-1')] }))).toMatch(/M1-T-2/);
-    });
-
-    it('re-pins on unaffected and keeps the tickets the Eng Lead\'s', async () => {
-      const rows = await publish(e, await revise({ unaffected: true, body: null, rationale: 'Only wording moved', ticket_decisions: [decide('M1-T-1'), decide('M1-T-2')] }));
-
-      expect(await latest('SCOPE-M1')).toMatchObject({ version: 1, status: 'approved', derived_from: ['SPEC-M1@2', 'TECH-M1@1'], stale_sections: [] });
-      expect(rows.find((row) => row.artifact_id === 'M1-T-1')).toMatchObject({ status: 'approved', approved_by: 'owner:eng_lead', derived_from: ['SCOPE-M1@1', 'SPEC-M1@2#ac-1'] });
-    });
-
-    it('publishes a new version owned by eng_lead and re-pins its tickets on it', async () => {
-      await publish(e, await revise({ ticket_decisions: [decide('M1-T-1'), decide('M1-T-2')] }));
-
-      expect(await latest('SCOPE-M1')).toMatchObject({ version: 2, type: 'ticket_scope', status: 'approved', owner_role: 'eng_lead', approved_by: 'owner:eng_lead', derived_from: ['SPEC-M1@2', 'TECH-M1@1'] });
-      expect(await latest('TECH-M1')).toMatchObject({ version: 1, type: 'tech_design' });
-      expect(await latest('M1-T-1')).toMatchObject({ version: 1, status: 'approved', approved_by: 'owner:eng_lead', derived_from: ['SCOPE-M1@2', 'SPEC-M1@2#ac-1'] });
-      expect(await latest('M1-T-2')).toMatchObject({ version: 1, status: 'approved', derived_from: ['SCOPE-M1@2', 'SPEC-M1@2#ac-2'] });
-    });
-
-    it('holds a new ticket to the design\'s components and lists its tests', async () => {
-      const decisions = [decide('M1-T-1', 'superseded'), decide('M1-T-2')];
-      expect(evidenceOf(await revise({ ticket_decisions: decisions, tickets: [draft('T-3', ['AC-1'])] }))).toMatch(/T-3: components is empty/);
-      expect(evidenceOf(await revise({ ticket_decisions: decisions, tickets: [draft('T-3', ['AC-1'], { components: ['renderer'] })] }))).toContain('T-3: components names "renderer", which the Tech Design does not have');
-
-      await publish(e, await revise({ ticket_decisions: decisions, tickets: [draft('T-3', ['AC-1'], { components: ['core'] })] }));
-
-      expect(await latest('M1-T-1')).toMatchObject({ status: 'superseded' });
-      expect(await latest('M1-T-3')).toMatchObject({ version: 1, status: 'approved', owner_role: 'eng_lead', approved_by: 'owner:eng_lead', derived_from: ['SCOPE-M1@2', 'SPEC-M1@2#ac-1'] });
-      const ticket = await read('M1-T-3');
-      expect(ticket.fields.components).toEqual(['core']);
-      expect(ticket.body).toBe('Do it.\n\n## Tests\n\n- core: test/core/**\n');
-      expect(await e.store.getTaskByTicket((await projectOf(e)).id, 'M1-T-1')).toMatchObject({ state: 'cancelled' });
-    });
-
-    it('rejects a scope revise that leaves a criterion with no ticket', async () => {
-      const result = await revise({ ticket_decisions: [decide('M1-T-1', 'superseded'), decide('M1-T-2')] });
-      expect(evidenceOf(result)).toMatch(/AC-1/);
     });
   });
 

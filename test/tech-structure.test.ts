@@ -49,6 +49,27 @@ describe('structureProblems', () => {
     expect(structureProblems(structure({ components: [component({ tests: ['  '] })] }))).toEqual(['component "loop": tests glob "  " is blank']);
   });
 
+  // A component's globs say which files are its own; a negation would make that set depend on the order they are read in.
+  it('refuses a negated source or test glob', () => {
+    expect(structureProblems(structure({ components: [component({ sources: ['src/**', '!src/vendor/**'] })] }))).toEqual(['component "loop": sources glob "!src/vendor/**" is negated; negated globs are not allowed']);
+    expect(structureProblems(structure({ components: [component({ tests: [' !test/slow/**'] })] }))).toEqual(['component "loop": tests glob " !test/slow/**" is negated; negated globs are not allowed']);
+  });
+
+  // The engine owns the rendered headings, so a model's line that starts one would add a section a pin could name.
+  it('refuses a heading line in any text the rendering keeps on its own line', () => {
+    const headed = '# Not a heading\nreally';
+    expect(structureProblems(structure({ components: [component({ responsibility: headed })] }))).toEqual(['component "loop": responsibility has a line that starts with #; headings are not allowed']);
+    expect(structureProblems(structure({ components: [component({ complexity_notes: 'Fine\n  ## Hot path' })] }))).toEqual(['component "loop": complexity_notes has a line that starts with #; headings are not allowed']);
+    expect(structureProblems(structure({ complexity: { overall: 'M', rationale: headed } }))).toEqual(['complexity.rationale has a line that starts with #; headings are not allowed']);
+    expect(structureProblems(structure({ test_strategy: 'Unit tests.\n\n## Play\n\nOne script.' }))).toEqual(['test_strategy has a line that starts with #; headings are not allowed']);
+    expect(structureProblems(structure({ risks: [{ risk: 'ok', mitigation: 'ok' }, { risk: '## Top risk', mitigation: 'Grid it' }] }))).toEqual(['risk 2: risk has a line that starts with #; headings are not allowed']);
+    expect(structureProblems(structure({ risks: [{ risk: 'Cost', mitigation: '\n# Grid it' }] }))).toEqual(['risk 1: mitigation has a line that starts with #; headings are not allowed']);
+  });
+
+  it('allows a # inside a line', () => {
+    expect(structureProblems(structure({ components: [component({ responsibility: 'Runs frame #1 and on.' })], test_strategy: 'Issue #4 tests first.' }))).toEqual([]);
+  });
+
   it('refuses a component with no sources', () => {
     expect(structureProblems(structure({ components: [component({ sources: [] })] }))).toEqual([expect.stringMatching(/component "loop": sources is empty/)]);
   });

@@ -5,85 +5,159 @@
   "additionalProperties": false,
   "required": [
     "body",
-    "tickets"
+    "components",
+    "complexity",
+    "performance",
+    "test_strategy",
+    "risks",
+    "stakeholder_note"
   ],
   "properties": {
     "body": {
+      "description": "The overview: the shape of the design and its tradeoffs, briefly. Plain text. No line may start with #: the engine writes the headings.",
       "type": "string"
     },
-    "tickets": {
+    "components": {
+      "description": "The parts the milestone builds or changes. At least one.",
       "type": "array",
       "items": {
         "type": "object",
         "additionalProperties": false,
         "required": [
-          "key",
-          "title",
-          "specialty",
-          "ac_refs",
-          "touches",
-          "depends_on",
-          "definition_of_done",
-          "inputs",
-          "size",
-          "body"
+          "name",
+          "responsibility",
+          "sources",
+          "tests",
+          "no_tests_reason",
+          "complexity",
+          "complexity_notes"
         ],
         "properties": {
-          "key": {
-            "description": "T-1, T-2 and so on.",
+          "name": {
+            "description": "A short name the Eng Lead's tickets use to say which component they change, unique in this design.",
             "type": "string"
           },
-          "title": {
+          "responsibility": {
+            "description": "What this component does and owns. Plain text. No line may start with #: the engine writes the headings.",
             "type": "string"
           },
-          "specialty": {
-            "description": "A role that can edit the repository. Use engineer unless the team has another.",
-            "type": "string"
-          },
-          "ac_refs": {
+          "sources": {
+            "description": "Globs relative to the repository root for the files this component owns, such as src/loop/** or index.html. At least one; no negated (!) globs.",
             "type": "array",
             "items": {
               "type": "string"
             }
           },
-          "touches": {
+          "tests": {
+            "description": "Globs for the files that hold this component's tests, such as test/loop/**. No negated (!) globs. Leave it empty only with a no_tests_reason.",
             "type": "array",
             "items": {
               "type": "string"
             }
           },
-          "depends_on": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
+          "no_tests_reason": {
+            "description": "Why this component has no tests of its own, when tests is empty; null otherwise.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
-          "definition_of_done": {
-            "description": "Exact shell commands that prove the ticket worked, each one as a shell would run it, never a description.",
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          },
-          "inputs": {
-            "description": "Artifact pins: an id, @ and its version, then optionally # and a section's slug, its heading in lower case with hyphens. For example SPEC-M1@1#ac-1 or SPEC-M1@1#what-it-must-do.",
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          },
-          "size": {
+          "complexity": {
             "enum": [
               "S",
               "M",
               "L"
             ]
           },
-          "body": {
+          "complexity_notes": {
+            "description": "What makes it that size, such as the algorithm's cost per frame. Plain text. No line may start with #: the engine writes the headings.",
             "type": "string"
           }
         }
       }
+    },
+    "complexity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "overall",
+        "rationale"
+      ],
+      "properties": {
+        "overall": {
+          "enum": [
+            "S",
+            "M",
+            "L"
+          ]
+        },
+        "rationale": {
+          "description": "Plain text. No line may start with #: the engine writes the headings.",
+          "type": "string"
+        }
+      }
+    },
+    "performance": {
+      "description": "The budgets the build must meet. At least one.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "metric",
+          "target",
+          "how_measured",
+          "component"
+        ],
+        "properties": {
+          "metric": {
+            "type": "string"
+          },
+          "target": {
+            "type": "string"
+          },
+          "how_measured": {
+            "description": "The command, script or check that measures it.",
+            "type": "string"
+          },
+          "component": {
+            "description": "The component the budget is for, or null for the whole build.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      }
+    },
+    "test_strategy": {
+      "description": "How the components are tested, and what the Test Plan and the play gate check instead. Plain text. No line may start with #: the engine writes the headings.",
+      "type": "string"
+    },
+    "risks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "risk",
+          "mitigation"
+        ],
+        "properties": {
+          "risk": {
+            "description": "Plain text. No line may start with #: the engine writes the headings.",
+            "type": "string"
+          },
+          "mitigation": {
+            "description": "Plain text. No line may start with #: the engine writes the headings.",
+            "type": "string"
+          }
+        }
+      }
+    },
+    "stakeholder_note": {
+      "description": "One or two sentences for the stakeholder on what this design means for them.",
+      "type": "string"
     },
     "change_requests": {
       "type": "array",

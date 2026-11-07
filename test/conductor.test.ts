@@ -48,9 +48,20 @@ const ONE_MILESTONE = { ...DISCOVERY, roadmap: { body: '# Roadmap\n', milestones
 const PROFILE = { body: '# Environment\n', commands: { build: 'true', test: 'true', lint: 'true', smoke: 'echo smoke-ok' }, toolchains: ['node 22'], network_allow: [], setup: null, play: null, stakeholder_note: 'The toolchain is ready' };
 const SPEC = { body: '# Milestone one\n\n## Scope\n\nSmall.\n', criteria: CRITERIA, stakeholder_note: 'The spec is small' };
 const HUMAN = { id: 'AC-2', text: 'Dodging feels fair', verification: { method: 'human' as const, how: 'Play two minutes; you should never die without seeing the shot coming' } };
-const draft = (key: string, ac_refs: string[]) => ({ key, title: key, specialty: 'engineer', ac_refs, touches: ['src/**'], depends_on: [], definition_of_done: ['true'], inputs: [], size: 'S', body: 'Do it.\n' });
-const ONE_TICKET = { body: '# Design\n', tickets: [draft('T-1', ['AC-1', 'AC-2'])] };
-const TWO_TICKETS = { body: '# Design\n', tickets: [draft('T-1', ['AC-1']), draft('T-2', ['AC-2'])] };
+const draft = (key: string, ac_refs: string[]) => ({ key, title: key, specialty: 'engineer', ac_refs, touches: ['src/**'], depends_on: [], definition_of_done: ['true'], inputs: [], size: 'S', body: 'Do it.\n', components: ['app'] });
+// One component for everything the scripted tickets write: src/<ticket>.txt, src/a.txt and the page. None of them adds a test.
+const DESIGN = {
+  body: 'One small app.\n',
+  components: [{ name: 'app', responsibility: 'Everything the milestone builds.', sources: ['src/**', '*.html'], tests: [], no_tests_reason: 'The scripted tickets add no tests; the Test Plan and the play gate check the app.', complexity: 'S', complexity_notes: 'A few files' }],
+  complexity: { overall: 'S', rationale: 'One small part' },
+  performance: [{ metric: 'Load time', target: 'Under a second', how_measured: 'The play gate', component: 'app' }],
+  test_strategy: 'The Test Plan commands, and the play gate where there is a page.',
+  risks: [],
+  stakeholder_note: 'One small app',
+};
+const KEPT_DESIGN = { unaffected: true, rationale: 'Still right', design: null };
+const ONE_TICKET = { body: '# Scope\n', tickets: [draft('T-1', ['AC-1', 'AC-2'])], stakeholder_note: 'One ticket' };
+const TWO_TICKETS = { body: '# Scope\n', tickets: [draft('T-1', ['AC-1']), draft('T-2', ['AC-2'])], stakeholder_note: 'Two tickets' };
 // `true` passes on any commit, so these entries are regression guards: a fresh entry has to fail on the milestone's base.
 const TEST_PLAN = { body: '# Test plan\n', coverage: CRITERIA.map(({ id }) => ({ ac: id, commands: ['true'], notes: '', regression: true })), harness_tickets: [], protected: [] };
 const APPROVE = { verdict: 'approve', summary: 'Fine', findings: [] };
@@ -199,7 +210,7 @@ async function addBrief(h: Harness): Promise<void> {
   await h.artifacts.commit(h.project, { message: 'brief', publish: [{ id: 'BRIEF', type: 'brief', status: 'approved', approvedBy: 'stakeholder', ownerRole: 'stakeholder', derivedFrom: [], body: '# Brief\n' }] });
 }
 
-type Flow = { discovery?: unknown; profile?: unknown; spec?: unknown; design?: unknown; plan?: unknown; qa?: unknown };
+type Flow = { discovery?: unknown; profile?: unknown; spec?: unknown; design?: unknown; plan?: unknown; scope?: unknown; qa?: unknown };
 
 // AC-2 is built like any criterion, but the Test Plan skips it and QA reports on AC-1 alone.
 const AUTOMATED_PASS = { ...PASS, results: PASS.results.slice(0, 1) };
@@ -231,8 +242,10 @@ async function toDesign(h: Harness, flow: Flow = {}): Promise<void> {
 
 async function toBuild(h: Harness, flow: Flow = {}): Promise<void> {
   await toDesign(h, flow);
-  await finish(h, 'M1-TECH', flow.design ?? ONE_TICKET);
+  await finish(h, 'M1-TECH', flow.design ?? DESIGN);
   await finish(h, 'M1-TESTPLAN', flow.plan ?? TEST_PLAN);
+  await h.conductor.tick();
+  await finish(h, 'M1-SCOPE', flow.scope ?? ONE_TICKET);
   await h.conductor.tick();
 }
 
@@ -447,22 +460,44 @@ describe('flow', () => {
     expect((await pending(h, 'cp2')).dedupe_key).toBe('cp2:M1:2');
   });
 
-  it('creates no ticket task before the design → build move', async () => {
+  it('creates M1-SCOPE only after M1-TECH and M1-TESTPLAN are done, with their pins among its inputs', async () => {
     const h = await harness();
     await toDesign(h);
     const [tech, plan] = [await byTicket(h, 'M1-TECH'), await byTicket(h, 'M1-TESTPLAN')];
     expect([tech.role_id, tech.purpose, orderOf(tech).base]).toEqual(['tech_lead', 'tech_design', { kind: 'integration' }]);
     expect([plan.role_id, plan.purpose, orderOf(plan).base]).toEqual(['qa_engineer', 'test_plan', { kind: 'integration' }]);
 
-    await finish(h, 'M1-TECH', ONE_TICKET);
+    await finish(h, 'M1-TECH', DESIGN);
     await h.conductor.tick();
-    expect(await ticketIds(h)).toEqual([]);
+    expect(await taskIds(h)).not.toContain('M1-SCOPE');
     expect(await milestonePhase(h)).toBe('design');
 
     await finish(h, 'M1-TESTPLAN', TEST_PLAN);
     await h.conductor.tick();
 
+    const scope = await byTicket(h, 'M1-SCOPE');
+    expect([scope.role_id, scope.kind, scope.purpose, orderOf(scope).base, orderOf(scope).inputs]).toEqual(['eng_lead', 'authoring', 'ticket_scope', { kind: 'base' }, ['SPEC-M1@1', 'ENV-PROFILE@1', 'TECH-M1@1', 'TEST-PLAN-M1@1']]);
+    expect(orderOf(scope).instructions).toBe("Split milestone 1 into tickets from the Tech Design's components. Every acceptance criterion must be covered by a ticket. Each ticket names its components and adds or updates their tests.");
+    expect(await ticketIds(h)).toEqual([]);
+    expect(await milestonePhase(h)).toBe('design');
+  });
+
+  it('moves to build when M1-SCOPE is done and creates the ticket tasks', async () => {
+    const h = await harness();
+    await toDesign(h);
+    await finish(h, 'M1-TECH', DESIGN);
+    await finish(h, 'M1-TESTPLAN', TEST_PLAN);
+    await h.conductor.tick();
+    await h.conductor.tick();
+    expect(await ticketIds(h)).toEqual([]);
+    expect(await milestonePhase(h)).toBe('design');
+
+    await finish(h, 'M1-SCOPE', ONE_TICKET);
+    await h.conductor.tick();
+
     const row = (await h.artifacts.latest(h.project.id, 'M1-T-1'))!;
+    expect(row).toMatchObject({ owner_role: 'eng_lead', approved_by: 'owner:eng_lead' });
+    expect(row.derived_from[0]).toBe('SCOPE-M1@1');
     expect(await byTicket(h, 'M1-T-1')).toMatchObject({ kind: 'ticket', role_id: 'engineer', dod: ['true'], touches: ['src/**'], depends_on: [], ac_refs: ['AC-1', 'AC-2'], ticket_path: row.path, ticket_sha: row.sha });
     expect(await milestonePhase(h)).toBe('build');
   });
@@ -579,7 +614,7 @@ describe('flow', () => {
 
   it('starts QA only when every ticket is done', async () => {
     const h = await harness();
-    await toBuild(h, { design: TWO_TICKETS });
+    await toBuild(h, { scope: TWO_TICKETS });
     await mergeTicket(h, 'M1-T-1');
     await h.conductor.tick();
     expect(await taskIds(h)).not.toContain('M1-QA-1');
@@ -788,7 +823,7 @@ describe('flow', () => {
 
   it('counts a cancelled ticket as finished for QA', async () => {
     const h = await harness();
-    await toBuild(h, { design: TWO_TICKETS });
+    await toBuild(h, { scope: TWO_TICKETS });
     await mergeTicket(h, 'M1-T-1');
     await h.runner.cancel((await byTicket(h, 'M1-T-2')).id);
     await h.conductor.tick();
@@ -1021,7 +1056,9 @@ describe('flow', () => {
     await h.conductor.tick();
 
     const replan = await byTicket(h, 'M1-REPLAN-1');
-    expect([replan.role_id, replan.purpose, orderOf(replan).comment, orderOf(replan).base]).toEqual(['tech_lead', 'revise_design', 'The second thing is too slow', { kind: 'integration' }]);
+    expect([replan.role_id, replan.purpose, orderOf(replan).comment, orderOf(replan).base]).toEqual(['eng_lead', 'revise_scope', 'The second thing is too slow', { kind: 'integration' }]);
+    expect(orderOf(replan).inputs).toEqual(['SPEC-M1@1', 'ENV-PROFILE@1', 'TECH-M1@1', 'TEST-PLAN-M1@1', 'SCOPE-M1@1']);
+    expect(orderOf(replan).instructions).toContain('raise a Change Request against TECH-M1');
     expect(await milestonePhase(h)).toBe('build');
     await h.conductor.tick();
     expect(await taskIds(h)).not.toContain('M1-QA-2');
@@ -1037,9 +1074,10 @@ describe('flow', () => {
     expect(second.dedupe_key).toBe('cp4:M1:2');
     expect(second.evidence.map(({ pin }) => pin)).toContain('MILESTONE-REVIEW-M1@2');
 
-    // The replan read neither Review, so approving the second one leaves the design alone.
+    // The replan read neither Review, so approving the second one leaves the scope and the design alone.
     await h.store.answerInbox(second.id, { action: 'approve' });
     await h.conductor.tick();
+    expect(await statusOf(h, 'SCOPE-M1')).toBe('approved');
     expect(await statusOf(h, 'TECH-M1')).toBe('approved');
     expect(await milestonePhase(h)).toBe('merged');
   });
@@ -1052,18 +1090,26 @@ describe('flow', () => {
     expect(await statusOf(h, 'TECH-M1')).toBe('stale');
     const first = await byTicket(h, 'M1-REVISE-TECH-M1-1');
     expect([first.role_id, first.purpose, orderOf(first).inputs]).toEqual(['tech_lead', 'revise_design', ['SPEC-M1@2', 'ENV-PROFILE@1', 'TECH-M1@1']]);
-    expect(orderOf(first).instructions).toContain('M1-T-1');
+    expect(orderOf(first).instructions).not.toContain('M1-T-1');
     const plan = await byTicket(h, 'M1-REVISE-TEST-PLAN-M1-1');
     expect([plan.role_id, plan.purpose]).toEqual(['qa_engineer', 'revise_test_plan']);
 
     await h.conductor.tick();
     expect(await taskIds(h)).not.toContain('M1-REVISE-TECH-M1-2');
 
-    await finish(h, 'M1-REVISE-TECH-M1-1', revised([stillValid('M1-T-1')]));
+    await finish(h, 'M1-REVISE-TECH-M1-1', KEPT_DESIGN);
     await finish(h, 'M1-REVISE-TEST-PLAN-M1-1', revised());
     await h.conductor.tick();
     expect(await statusOf(h, 'TECH-M1')).toBe('approved');
     expect((await h.artifacts.latest(h.project.id, 'TECH-M1'))!.version).toBe(1);
+
+    // The scope is split from the design, so its revision comes once the design's is in, and decides the tickets.
+    const scope = await byTicket(h, 'M1-REVISE-SCOPE-M1-1');
+    expect([scope.role_id, scope.purpose, orderOf(scope).inputs]).toEqual(['eng_lead', 'revise_scope', ['SPEC-M1@2', 'ENV-PROFILE@1', 'TECH-M1@1', 'TEST-PLAN-M1@1', 'SCOPE-M1@1']]);
+    expect(orderOf(scope).instructions).toContain('M1-T-1');
+    await finish(h, 'M1-REVISE-SCOPE-M1-1', revised([stillValid('M1-T-1')]));
+    await h.conductor.tick();
+    expect(await statusOf(h, 'SCOPE-M1')).toBe('approved');
 
     await ownerApplies(h, { ...scopeChange, proposed_text: 'Smaller still.' });
     expect(orderOf(await byTicket(h, 'M1-REVISE-TECH-M1-2')).inputs).toEqual(['SPEC-M1@3', 'ENV-PROFILE@1', 'TECH-M1@1']);
@@ -1076,7 +1122,7 @@ describe('flow', () => {
     await ownerApplies(h, { ...scopeChange, proposed_text: 'Smaller still.' });
     expect(await taskIds(h)).not.toContain('M1-REVISE-TECH-M1-2');
 
-    await finish(h, 'M1-REVISE-TECH-M1-1', revised([stillValid('M1-T-1')]));
+    await finish(h, 'M1-REVISE-TECH-M1-1', KEPT_DESIGN);
     await finish(h, 'M1-REVISE-TEST-PLAN-M1-1', revised());
     await h.conductor.tick();
 
@@ -1084,18 +1130,41 @@ describe('flow', () => {
     expect(await statusOf(h, 'TEST-PLAN-M1')).toBe('stale');
     expect(orderOf(await byTicket(h, 'M1-REVISE-TECH-M1-2')).inputs).toEqual(['SPEC-M1@3', 'ENV-PROFILE@1', 'TECH-M1@1']);
     expect(orderOf(await byTicket(h, 'M1-REVISE-TEST-PLAN-M1-2')).inputs).toContain('SPEC-M1@3');
+    // The design is still moving, so the scope waits for it.
+    expect(await taskIds(h)).not.toContain('M1-REVISE-SCOPE-M1-1');
     expect(await taskIds(h)).not.toContain('M1-QA-1');
   });
 
-  it('revises the owning document when only a ticket goes stale', async () => {
+  it('a stale ticket is re-planned by the eng lead on SCOPE-M1', async () => {
     const h = await harness();
     await toBuild(h);
     await h.artifacts.commit(h.project, { message: 'stale', status: [{ id: 'M1-T-1', status: 'stale' }] });
     await h.conductor.tick();
 
-    expect(await byTicket(h, 'M1-REVISE-TECH-M1-1')).toMatchObject({ role_id: 'tech_lead', purpose: 'revise_design' });
-    await finish(h, 'M1-REVISE-TECH-M1-1', revised([stillValid('M1-T-1')]));
+    const revise = await byTicket(h, 'M1-REVISE-SCOPE-M1-1');
+    expect([revise.role_id, revise.purpose, orderOf(revise).inputs]).toEqual(['eng_lead', 'revise_scope', ['SPEC-M1@1', 'ENV-PROFILE@1', 'TECH-M1@1', 'TEST-PLAN-M1@1', 'SCOPE-M1@1']]);
+    expect(orderOf(revise).instructions).toContain('M1-T-1');
+    expect(await taskIds(h)).not.toContain('M1-REVISE-TECH-M1-1');
+    await finish(h, 'M1-REVISE-SCOPE-M1-1', revised([stillValid('M1-T-1')]));
     expect(await statusOf(h, 'M1-T-1')).toBe('approved');
+  });
+
+  it('the scope revision waits while TECH-M1 has an open revise_design', async () => {
+    const h = await harness();
+    await toBuild(h);
+    await ownerApplies(h, scopeChange);
+    expect(await statusOf(h, 'SCOPE-M1')).toBe('stale');
+    expect(await byTicket(h, 'M1-REVISE-TECH-M1-1')).toMatchObject({ role_id: 'tech_lead', purpose: 'revise_design' });
+    expect(await taskIds(h)).not.toContain('M1-REVISE-SCOPE-M1-1');
+
+    // The design is approved again, but its revision is still open and could yet change it.
+    await h.artifacts.commit(h.project, { message: 'approved', status: [{ id: 'TECH-M1', status: 'approved' }] });
+    await h.conductor.tick();
+    expect(await taskIds(h)).not.toContain('M1-REVISE-SCOPE-M1-1');
+
+    await finish(h, 'M1-REVISE-TECH-M1-1', KEPT_DESIGN);
+    await h.conductor.tick();
+    expect(await byTicket(h, 'M1-REVISE-SCOPE-M1-1')).toMatchObject({ role_id: 'eng_lead', purpose: 'revise_scope' });
   });
 
   it('does not wait on a stale spec, which no one revises', async () => {
@@ -1324,8 +1393,10 @@ describe('the play gate', () => {
     await ownerApplies(h, scopeChange);
 
     expect(await statusOf(h, 'M1-B-1')).toBe('stale');
-    expect(orderOf(await byTicket(h, 'M1-REVISE-TECH-M1-1')).instructions).toContain('M1-B-1');
-    await finish(h, 'M1-REVISE-TECH-M1-1', revised([stillValid('M1-B-1')]));
+    await finish(h, 'M1-REVISE-TECH-M1-1', KEPT_DESIGN);
+    await h.conductor.tick();
+    expect(orderOf(await byTicket(h, 'M1-REVISE-SCOPE-M1-1')).instructions).toContain('M1-B-1');
+    await finish(h, 'M1-REVISE-SCOPE-M1-1', revised([stillValid('M1-B-1')]));
 
     expect(await statusOf(h, 'M1-B-1')).toBe('approved');
     expect((await h.artifacts.latest(h.project.id, 'M1-B-1'))!.derived_from).toContain('SPEC-M1@2');
@@ -1789,7 +1860,7 @@ describe('review focus: a change mid-flight', () => {
     expect(hasCommit(h, head, 'aiteam/m1')).toBe(false);
   });
 
-  it('merges it once the Tech Lead re-validates it', async () => {
+  it('merges it once the Eng Lead re-validates it', async () => {
     const h = await harness();
     await toBuild(h);
     const task = await byTicket(h, 'M1-T-1');
@@ -1800,7 +1871,9 @@ describe('review focus: a change mid-flight', () => {
     await h.conductor.tick();
     expect((await h.store.getTask(task.id))!.state).toBe('review');
 
-    await finish(h, 'M1-REVISE-TECH-M1-1', revised([stillValid('M1-T-1')]));
+    await finish(h, 'M1-REVISE-TECH-M1-1', KEPT_DESIGN);
+    await h.conductor.tick();
+    await finish(h, 'M1-REVISE-SCOPE-M1-1', revised([stillValid('M1-T-1')]));
     await h.conductor.tick();
 
     expect((await h.store.getTask(task.id))!.state).toBe('done');
@@ -1814,7 +1887,9 @@ describe('review focus: a change mid-flight', () => {
     await advanceTo(h, task.id, ['ready', 'running']);
     await stakeholderApplies(h);
 
-    await finish(h, 'M1-REVISE-TECH-M1-1', revised([{ ticket: 'M1-T-1', decision: 'superseded', rationale: 'Replaced' }], [draft('T-2', ['AC-1', 'AC-2'])]));
+    await finish(h, 'M1-REVISE-TECH-M1-1', KEPT_DESIGN);
+    await h.conductor.tick();
+    await finish(h, 'M1-REVISE-SCOPE-M1-1', revised([{ ticket: 'M1-T-1', decision: 'superseded', rationale: 'Replaced' }], [draft('T-2', ['AC-1', 'AC-2'])]));
     await h.conductor.tick();
 
     expect((await h.store.getTask(task.id))!.state).toBe('cancelled');
@@ -2024,6 +2099,11 @@ describe('review focus: a change mid-flight', () => {
     await h.conductor.tick();
     const plan2 = await h.artifacts.read(h.project, 'TEST-PLAN-M1');
     expect((plan2.fields.data as { coverage: { commands: string[] }[] }).coverage.map(({ commands }) => commands)).toEqual([['test -f src/M1-T-1.txt'], ['true']]);
+    // The scope was split with the Test Plan in view, so the Eng Lead checks it against the new one before QA goes again.
+    expect(await taskIds(h)).not.toContain('M1-QA-2');
+    expect(orderOf(await byTicket(h, 'M1-REVISE-SCOPE-M1-1')).inputs).toContain('TEST-PLAN-M1@2');
+    await finish(h, 'M1-REVISE-SCOPE-M1-1', revised([stillValid('M1-T-1')]));
+    await h.conductor.tick();
     expect(orderOf(await byTicket(h, 'M1-QA-2')).inputs).toContain('TEST-PLAN-M1@2');
 
     await finish(h, 'M1-QA-2', PASS);
@@ -2117,8 +2197,10 @@ describe('review focus: a change mid-flight', () => {
     const h = await harness();
     await toCp4(h);
     await stakeholderApplies(h);
-    await finish(h, 'M1-REVISE-TECH-M1-1', revised());
+    await finish(h, 'M1-REVISE-TECH-M1-1', KEPT_DESIGN);
     await finish(h, 'M1-REVISE-TEST-PLAN-M1-1', revised());
+    await h.conductor.tick();
+    await finish(h, 'M1-REVISE-SCOPE-M1-1', revised());
     await h.conductor.tick();
 
     // AC-2 passed last round and the change didn't touch it, but this round's verdict is what counts.
@@ -2211,14 +2293,17 @@ describe('a ticket held on a Change Request it raised', () => {
     expect(await stateOf(h, task)).toBe('ready');
   });
 
-  it('stays held while an approved request leaves the ticket stale, until the Tech Lead decides on it', async () => {
+  it('stays held while an approved request leaves the ticket stale, until the Eng Lead decides on it', async () => {
     const h = await harness();
     const task = await held(h);
     await stakeholderApplies(h, { ...criterionChange, raised_in: 'M1-T-1' });
     expect(await statusOf(h, 'M1-T-1')).toBe('stale');
     expect(await stateOf(h, task)).toBe('blocked');
 
-    await finish(h, 'M1-REVISE-TECH-M1-1', revised([stillValid('M1-T-1')]));
+    await finish(h, 'M1-REVISE-TECH-M1-1', KEPT_DESIGN);
+    await h.conductor.tick();
+    expect(await stateOf(h, task)).toBe('blocked');
+    await finish(h, 'M1-REVISE-SCOPE-M1-1', revised([stillValid('M1-T-1')]));
     await h.conductor.tick();
 
     expect(await stateOf(h, task)).toBe('ready');

@@ -79,8 +79,9 @@ describe('loadRole', () => {
     expect((schema as { required: string[] }).required).toContain('criteria');
   });
 
-  it('points both revise purposes at the one revise schema', async () => {
-    expect((await loadRole(seedKnowledge, 'tech_lead', 'revise_design')).schemaSource).toBe('schemas/revise.json');
+  // A Tech Design's revision is a design with no tickets, so it answers to a schema of its own.
+  it('gives the design revision its own schema and leaves the Test Plan on the shared one', async () => {
+    expect((await loadRole(seedKnowledge, 'tech_lead', 'revise_design')).schemaSource).toBe('schemas/revise_design.json');
     expect((await loadRole(seedKnowledge, 'qa_engineer', 'revise_test_plan')).schemaSource).toBe('schemas/revise.json');
   });
 
@@ -135,7 +136,7 @@ describe('loadRole', () => {
 
   it('accepts a change request from each schema a worker can answer with', () => {
     const names = readdirSync(join(seedKnowledge, 'schemas'));
-    expect(names).toHaveLength(13);
+    expect(names).toHaveLength(14);
     for (const name of names) {
       const schema = JSON.parse(readFileSync(join(seedKnowledge, 'schemas', name), 'utf8')) as { required: string[]; properties: Record<string, unknown> };
       expect(schema.properties.change_requests, name).toBeDefined();
