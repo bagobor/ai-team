@@ -138,6 +138,20 @@ describe('the aiteam command', () => {
     expect(await apiGet('/api/projects')).toMatchObject([{ name: 'p', repo_path: join(root, 'fresh') }]);
   });
 
+  it('project add --prototype posts prototyping: true, and posts false without the flag', async () => {
+    await withDaemon();
+    const plain = await makeRepo();
+    const proto = await makeRepo();
+
+    expect((await aiteam(['project', 'add', 'plain', plain.path])).code).toBe(0);
+    expect((await aiteam(['project', 'add', 'proto', proto.path, '--prototype'])).code).toBe(0);
+
+    expect(await apiGet('/api/projects')).toMatchObject([
+      { name: 'plain', prototyping: 0 },
+      { name: 'proto', prototyping: 1 },
+    ]);
+  });
+
   it('takes a relative repo path from where it was run, not where the daemon was', async () => {
     await withDaemon();
     const repo = await makeRepo();

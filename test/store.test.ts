@@ -432,6 +432,19 @@ describe('Store for M2', () => {
       await expect(store.setMilestonePhase(project.id, 1, 'merged')).rejects.toThrow(IllegalTransition);
     });
 
+    it('keeps a project prototyping flag, and patches the eng round and cap', async () => {
+      expect(project.prototyping).toBe(0);
+      const proto = await store.createProject({ name: 'proto', repo_path: '/p', base_branch: 'main', prototyping: 1 });
+      expect(proto.prototyping).toBe(1);
+      expect((await store.getProject('proto'))?.prototyping).toBe(1);
+
+      const m = await store.createMilestone({ project_id: project.id, n: 1, title: 'First', goal: 'Goal', phase: 'pending' });
+      expect(m).toMatchObject({ eng_round: 0, eng_cap: 2 });
+      await store.patchMilestone(project.id, 1, { eng_round: 1 });
+      await store.patchMilestone(project.id, 1, { eng_cap: 4 });
+      expect(await store.getMilestone(project.id, 1)).toMatchObject({ eng_round: 1, eng_cap: 4, verify_round: 0, verify_cap: 3 });
+    });
+
     it('patches the verify round and cap', async () => {
       await store.createMilestone({ project_id: project.id, n: 1, title: 'First', goal: 'Goal', phase: 'pending' });
       await store.patchMilestone(project.id, 1, { verify_round: 2 });

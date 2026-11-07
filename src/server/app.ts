@@ -180,9 +180,11 @@ export function createApp(deps: EngineDeps & { runner: Runner }): Hono {
     if (!isAbsolute(repoPath)) throw new BadRequest('repoPath must be an absolute path');
     const create = body.create ?? false;
     if (typeof create !== 'boolean') throw new BadRequest('create must be true or false');
+    const prototyping = body.prototyping ?? false;
+    if (typeof prototyping !== 'boolean') throw new BadRequest('prototyping must be true or false');
 
     try {
-      return c.json(await addProject(deps, { name, repoPath, create }), 201);
+      return c.json(await addProject(deps, { name, repoPath, create, prototyping }), 201);
     } catch (err) {
       if (err instanceof DuplicateError) return fail(c, 409, err.message);
       if (err instanceof ProjectError) return fail(c, 400, err.message);

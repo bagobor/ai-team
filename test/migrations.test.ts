@@ -96,3 +96,58 @@ describe('migration 003', () => {
     await db.destroy();
   });
 });
+
+describe('migration 004', () => {
+  let dir: string;
+  let path: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'aiteam-migrations-'));
+    path = join(dir, 'aiteam.db');
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('adds prototyping, eng_round and eng_cap with defaults 0, 0, 2', async () => {
+    const db = await openDb(path);
+    await sql`INSERT INTO projects (name, repo_path, base_branch, created_at)
+      VALUES ('p', '/repo', 'main', '2026-11-07T00:00:00Z')`.execute(db);
+    await sql`INSERT INTO milestones (project_id, n, title, goal, phase, created_at, updated_at)
+      VALUES (1, 1, 'One', 'g', 'pending', '2026-11-07T00:00:00Z', '2026-11-07T00:00:00Z')`.execute(db);
+
+    const project = (await sql<{ prototyping: number }>`SELECT prototyping FROM projects`.execute(db)).rows;
+    const milestone = (await sql<{ eng_round: number; eng_cap: number }>`SELECT eng_round, eng_cap FROM milestones`.execute(db)).rows;
+
+    expect(project).toEqual([{ prototyping: 0 }]);
+    expect(milestone).toEqual([{ eng_round: 0, eng_cap: 2 }]);
+    await db.destroy();
+  });
+
+  it('gives a project and a milestone from before it the same defaults', async () => {
+    const before = new Kysely<unknown>({ dialect: new SqliteDialect({ database: new Database(path) }) });
+    const { error } = await new Migrator({
+      db: before,
+      provider: {
+        getMigrations: async () => ({
+          '001_initial': migrations['001_initial']!,
+          '002_artifacts_roles': migrations['002_artifacts_roles']!,
+          '003_inbox_checks': migrations['003_inbox_checks']!,
+        }),
+      },
+    }).migrateToLatest();
+    if (error) throw error;
+    await sql`INSERT INTO projects (name, repo_path, base_branch, created_at)
+      VALUES ('old', '/repo', 'main', '2026-11-01T00:00:00Z')`.execute(before);
+    await sql`INSERT INTO milestones (project_id, n, title, goal, phase, created_at, updated_at)
+      VALUES (1, 1, 'One', 'g', 'build', '2026-11-01T00:00:00Z', '2026-11-01T00:00:00Z')`.execute(before);
+    await before.destroy();
+
+    const db = await openDb(path);
+
+    expect((await sql`SELECT prototyping FROM projects`.execute(db)).rows).toEqual([{ prototyping: 0 }]);
+    expect((await sql`SELECT eng_round, eng_cap FROM milestones`.execute(db)).rows).toEqual([{ eng_round: 0, eng_cap: 2 }]);
+    await db.destroy();
+  });
+});

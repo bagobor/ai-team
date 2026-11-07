@@ -196,4 +196,12 @@ export const migrations: Record<string, Migration> = {
       await sql`ALTER TABLE inbox_items ADD COLUMN checks TEXT NOT NULL DEFAULT '[]'`.execute(db);
     },
   },
+  '004_eng_lead_fun_loop': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      // A project or milestone from before this is not a prototype and has had no eng review; the cap is two rounds.
+      await sql`ALTER TABLE projects ADD COLUMN prototyping INTEGER NOT NULL DEFAULT 0`.execute(db);
+      await sql`ALTER TABLE milestones ADD COLUMN eng_round INTEGER NOT NULL DEFAULT 0`.execute(db);
+      await sql`ALTER TABLE milestones ADD COLUMN eng_cap INTEGER NOT NULL DEFAULT 2`.execute(db);
+    },
+  },
 };

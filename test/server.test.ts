@@ -143,6 +143,23 @@ describe('the API', () => {
       expect(existsSync(join(path, '.git'))).toBe(true);
     });
 
+    it('stores prototyping: true as 1, and refuses a non-boolean prototyping with 400', async () => {
+      const { path } = await makeRepo();
+
+      const res = await post('/api/projects', { name: 'q', repoPath: path, prototyping: true });
+
+      expect(res.status).toBe(201);
+      expect(await res.json()).toMatchObject({ name: 'q', prototyping: 1 });
+      expect((await e.store.getProject('q'))?.prototyping).toBe(1);
+
+      const plain = await post('/api/projects', { name: 'r', repoPath: (await makeRepo()).path });
+      expect(await plain.json()).toMatchObject({ name: 'r', prototyping: 0 });
+
+      const bad = await post('/api/projects', { name: 's', repoPath: '/tmp/s', prototyping: 'yes' });
+      expect(bad.status).toBe(400);
+      expect(await errorOf(bad)).toContain('prototyping');
+    });
+
     it('reports a bad repo as 400 and names it', async () => {
       const path = tempDir();
 

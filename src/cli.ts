@@ -8,12 +8,12 @@ import { runDoctor } from './setup/doctor.ts';
 import { keptWarning, runSetup } from './setup/setup.ts';
 
 const USAGE = `Usage:
-  aiteam setup                                      Create ~/.aiteam and print the agent-home login command
-  aiteam doctor                                     Check this machine can run workers
-  aiteam daemon                                     Run the engine and serve the API until stopped
-  aiteam project add <name> <repoPath> [--create]   Register a repo with the running daemon
-  aiteam ticket add <project> <file.md>             Import a ticket into the running daemon
-  aiteam brief add <project> <file.md>              Start a project from a brief`;
+  aiteam setup                                                    Create ~/.aiteam and print the agent-home login command
+  aiteam doctor                                                   Check this machine can run workers
+  aiteam daemon                                                   Run the engine and serve the API until stopped
+  aiteam project add <name> <repoPath> [--create] [--prototype]   Register a repo with the running daemon
+  aiteam ticket add <project> <file.md>                           Import a ticket into the running daemon
+  aiteam brief add <project> <file.md>                            Start a project from a brief`;
 
 function usage(): number {
   console.error(USAGE);
@@ -73,12 +73,13 @@ async function daemon(paths: Paths): Promise<number> {
   return new Promise<number>(() => {});
 }
 
-async function projectAdd(paths: Paths, name: string, repoPath: string, create: boolean): Promise<number> {
+async function projectAdd(paths: Paths, name: string, repoPath: string, create: boolean, prototyping: boolean): Promise<number> {
   // The daemon may have been started somewhere else, so a relative path has to be settled here.
   const project = await postToDaemon<{ name: string; repo_path: string; base_branch: string }>(paths, '/api/projects', {
     name,
     repoPath: resolve(repoPath),
     create,
+    prototyping,
   });
   console.log(`Added project ${project.name}: ${project.repo_path} (base branch ${project.base_branch})`);
   return 0;
@@ -108,7 +109,7 @@ async function ticketAdd(paths: Paths, project: string, file: string): Promise<n
 async function main(argv: string[]): Promise<number> {
   let parsed;
   try {
-    parsed = parseArgs({ args: argv, allowPositionals: true, options: { create: { type: 'boolean', default: false } } });
+    parsed = parseArgs({ args: argv, allowPositionals: true, options: { create: { type: 'boolean', default: false }, prototype: { type: 'boolean', default: false } } });
   } catch {
     return usage();
   }
@@ -132,7 +133,7 @@ async function main(argv: string[]): Promise<number> {
       return daemon(paths);
     case 'project':
       if (action !== 'add' || first === undefined || second === undefined || rest.length > 0) return usage();
-      return projectAdd(paths, first, second, values.create);
+      return projectAdd(paths, first, second, values.create, values.prototype);
     case 'ticket':
       if (action !== 'add' || first === undefined || second === undefined || rest.length > 0) return usage();
       return ticketAdd(paths, first, second);

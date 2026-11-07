@@ -18,7 +18,7 @@ import { AlreadyAnswered, assertValidAnswer, type InboxAnswer, type InboxCheck, 
 import type { WorkOrder } from './workorder.ts';
 
 export type ProjectRow = Omit<Selectable<ProjectsTable>, 'phase'> & { phase: ProjectPhase };
-export type NewProject = Pick<ProjectRow, 'name' | 'repo_path' | 'base_branch'>;
+export type NewProject = Pick<ProjectRow, 'name' | 'repo_path' | 'base_branch'> & { prototyping?: number };
 
 export type TaskRow = Omit<Selectable<TasksTable>, 'state' | 'touches' | 'depends_on' | 'dod' | 'work_order' | 'ac_refs'> & {
   state: TaskState;
@@ -443,7 +443,7 @@ export class Store {
     });
   }
 
-  async patchMilestone(projectId: number, n: number, patch: { verify_round?: number; verify_cap?: number }): Promise<MilestoneRow> {
+  async patchMilestone(projectId: number, n: number, patch: { verify_round?: number; verify_cap?: number; eng_round?: number; eng_cap?: number }): Promise<MilestoneRow> {
     const row = await this.db
       .updateTable('milestones')
       .set({ ...patch, updated_at: new Date().toISOString() })

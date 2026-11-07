@@ -17,8 +17,8 @@ export class ProjectError extends Error {}
 // A name that is already taken, for a project or a ticket.
 export class DuplicateError extends TicketError {}
 
-export async function addProject(deps: IntakeDeps, input: { name: string; repoPath: string; create: boolean }): Promise<ProjectRow> {
-  const { name, repoPath, create } = input;
+export async function addProject(deps: IntakeDeps, input: { name: string; repoPath: string; create: boolean; prototyping?: boolean }): Promise<ProjectRow> {
+  const { name, repoPath, create, prototyping } = input;
   if (!SAFE_ID.test(name)) throw new ProjectError(`"${name}" is not a valid project name`);
 
   const existing = (await deps.store.listProjects()).find((project) => sameId(project.name, name));
@@ -28,7 +28,7 @@ export async function addProject(deps: IntakeDeps, input: { name: string; repoPa
     throw new ProjectError(cause instanceof Error ? cause.message : String(cause), { cause });
   });
   await initStateRepo(stateRepoDir(deps.paths, name));
-  return deps.store.createProject({ name, repo_path: resolve(repoPath), base_branch: baseBranch });
+  return deps.store.createProject({ name, repo_path: resolve(repoPath), base_branch: baseBranch, prototyping: prototyping ? 1 : 0 });
 }
 
 const briefing = new Set<string>();

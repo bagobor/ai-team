@@ -21,7 +21,7 @@ export type AttemptState =
   | 'cancelled'
   | 'interrupted';
 
-export type ProjectPhase = 'intake' | 'discovery' | 'cp1' | 'active' | 'closed' | 'halted';
+export type ProjectPhase = 'intake' | 'prototype' | 'discovery' | 'cp1' | 'active' | 'closed' | 'halted';
 
 export type MilestonePhase =
   | 'pending'
@@ -30,6 +30,7 @@ export type MilestonePhase =
   | 'design'
   | 'build'
   | 'verify'
+  | 'eng_review'
   | 'milestone_review'
   | 'cp4'
   | 'merging'
@@ -63,7 +64,8 @@ export const ATTEMPT_TRANSITIONS: Record<AttemptState, readonly AttemptState[]> 
 };
 
 export const PROJECT_TRANSITIONS: Record<ProjectPhase, readonly ProjectPhase[]> = {
-  intake: ['discovery', 'halted'],
+  intake: ['prototype', 'discovery', 'halted'],
+  prototype: ['discovery', 'halted'],
   discovery: ['cp1', 'halted'],
   cp1: ['discovery', 'active', 'halted'],
   active: ['closed', 'halted'],
@@ -77,7 +79,8 @@ export const MILESTONE_TRANSITIONS: Record<MilestonePhase, readonly MilestonePha
   cp2: ['spec', 'design', 'halted'],
   design: ['build', 'halted'],
   build: ['verify', 'halted'],
-  verify: ['build', 'milestone_review', 'halted'],
+  verify: ['build', 'eng_review', 'milestone_review', 'halted'],
+  eng_review: ['build', 'milestone_review', 'halted'],
   milestone_review: ['cp4', 'build', 'halted'],
   cp4: ['build', 'merging', 'halted'],
   merging: ['merged', 'build', 'halted'],

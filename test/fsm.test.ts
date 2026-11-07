@@ -64,6 +64,13 @@ describe('project transitions', () => {
     expect(() => assertProjectTransition(a, b)).not.toThrow();
   });
 
+  it('allows intake → prototype → discovery and refuses prototype → cp1', () => {
+    expect(() => assertProjectTransition('intake', 'prototype')).not.toThrow();
+    expect(() => assertProjectTransition('prototype', 'discovery')).not.toThrow();
+    expect(() => assertProjectTransition('prototype', 'halted')).not.toThrow();
+    expect(() => assertProjectTransition('prototype', 'cp1')).toThrow(IllegalTransition);
+  });
+
   it.each([
     ['closed', 'active'],
     ['intake', 'active'],
@@ -95,6 +102,12 @@ describe('milestone transitions', () => {
     ['halted', 'spec'],
   ])('refuses %s → %s', (a, b) => {
     expect(() => assertMilestoneTransition(a, b)).toThrow(IllegalTransition);
+  });
+
+  it('allows verify → eng_review, eng_review → build | milestone_review | halted, and refuses eng_review → cp4', () => {
+    expect(() => assertMilestoneTransition('verify', 'eng_review')).not.toThrow();
+    for (const to of ['build', 'milestone_review', 'halted']) expect(() => assertMilestoneTransition('eng_review', to)).not.toThrow();
+    expect(() => assertMilestoneTransition('eng_review', 'cp4')).toThrow(IllegalTransition);
   });
 });
 

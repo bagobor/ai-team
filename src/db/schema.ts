@@ -8,6 +8,7 @@ export type ProjectsTable = {
   base_branch: string;
   created_at: string;
   phase: Generated<string>;
+  prototyping: Generated<number>;
 };
 
 export type TasksTable = {
@@ -83,6 +84,8 @@ export type MilestonesTable = {
   phase: string;
   verify_round: Generated<number>;
   verify_cap: Generated<number>;
+  eng_round: Generated<number>;
+  eng_cap: Generated<number>;
   created_at: string;
   updated_at: string;
 };
