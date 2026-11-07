@@ -63,7 +63,7 @@ describe('loadRole', () => {
   it.each([
     ['pm', ['discovery', 'milestone_spec', 'milestone_review', 'cr_recommendation']],
     ['tech_lead', ['environment_profile', 'tech_design', 'revise_design', 'cr_recommendation']],
-    ['eng_lead', ['ticket_scope', 'revise_scope', 'cr_recommendation']],
+    ['eng_lead', ['ticket_scope', 'revise_scope', 'eng_review', 'cr_recommendation']],
     ['code_reviewer', ['code_review']],
     ['qa_engineer', ['test_plan', 'qa_verify', 'revise_test_plan', 'cr_recommendation']],
   ])('gives %s a schema for each of its purposes', async (id, purposes) => {
@@ -88,7 +88,7 @@ describe('loadRole', () => {
   // A scope's tickets name the components they change, so its revision answers to a schema of its own.
   it('gives the Eng Lead its own revise schema, and only its purposes', async () => {
     expect((await loadRole(seedKnowledge, 'eng_lead', 'revise_scope')).schemaSource).toBe('schemas/revise_scope.json');
-    expect(Object.keys((await loadRole(seedKnowledge, 'eng_lead')).role.output_schemas ?? {})).toEqual(['ticket_scope', 'revise_scope', 'cr_recommendation']);
+    expect(Object.keys((await loadRole(seedKnowledge, 'eng_lead')).role.output_schemas ?? {})).toEqual(['ticket_scope', 'revise_scope', 'eng_review', 'cr_recommendation']);
   });
 
   it('uses output_schema when no purpose is given', async () => {
@@ -136,7 +136,7 @@ describe('loadRole', () => {
 
   it('accepts a change request from each schema a worker can answer with', () => {
     const names = readdirSync(join(seedKnowledge, 'schemas'));
-    expect(names).toHaveLength(14);
+    expect(names).toHaveLength(15);
     for (const name of names) {
       const schema = JSON.parse(readFileSync(join(seedKnowledge, 'schemas', name), 'utf8')) as { required: string[]; properties: Record<string, unknown> };
       expect(schema.properties.change_requests, name).toBeDefined();

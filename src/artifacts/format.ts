@@ -17,6 +17,7 @@ export const ARTIFACT_TYPES = [
   'review_report',
   'qa_report',
   'milestone_review',
+  'eng_review',
   'change_request',
   'decision_record',
 ] as const;

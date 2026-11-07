@@ -72,6 +72,10 @@ const failing = (ac: string) => ({
   summary: 'One failure',
 });
 const REVIEW = { body: '# How it went\n', known_issues: [], deviations: [], stakeholder_note: 'Ship it' };
+// The Eng Lead's review of the milestone's code, against DESIGN's one budget. The app is exempt from tests, so approve stands.
+const ENG_APPROVE = { verdict: 'approve', summary: 'Small and readable', performance: [{ metric: 'Load time', target: 'Under a second', measured: '0.2 s', status: 'met', evidence: 'The play gate loaded it' }], findings: [], polish_tickets: [], stakeholder_note: 'Nothing to polish' };
+const FINDING = { severity: 'major', file: 'src/M1-T-1.txt', line: null, issue: 'Says work where it should say what' };
+const engPolish = (key = 'E-1') => ({ ...ENG_APPROVE, verdict: 'polish', findings: [FINDING], polish_tickets: [draft(key, [])], stakeholder_note: 'One thing to polish' });
 // What CP4 says when Try it is a checkout, which the engine replaces or removes.
 const DISPOSABLE = "The checkout is replaced when the milestone's head moves and removed when the milestone merges or is rejected, so edits there are lost.";
 const revised = (ticket_decisions: { ticket: string; decision: string; rationale: string }[] = [], tickets: unknown[] = []) => ({ unaffected: true, rationale: 'Still right', body: null, coverage: null, ticket_decisions, tickets });
@@ -267,6 +271,8 @@ async function toCp4(h: Harness, flow: Flow = {}, files?: Record<string, string>
   await mergeTicket(h, 'M1-T-1', files);
   await h.conductor.tick();
   await finish(h, 'M1-QA-1', flow.qa ?? PASS);
+  await h.conductor.tick();
+  await finish(h, 'M1-ENGREV-1', ENG_APPROVE);
   await h.conductor.tick();
   await finish(h, 'M1-REVIEW-1', REVIEW);
   await h.conductor.tick();
@@ -648,15 +654,15 @@ describe('flow', () => {
     expect((await h.store.getMilestone(h.project.id, 1))!).toMatchObject({ phase: 'verify', verify_round: 1 });
   });
 
-  it('moves to milestone review when every automated criterion passes', async () => {
+  it('moves to the eng review when every automated criterion passes', async () => {
     const h = await harness();
     await toVerify(h, HUMAN_FLOW);
     await finish(h, 'M1-QA-1', AUTOMATED_PASS);
     await h.conductor.tick();
 
-    expect(await milestonePhase(h)).toBe('milestone_review');
+    expect(await milestonePhase(h)).toBe('eng_review');
     expect((await h.store.listCriteria(h.project.id, 1)).map(({ ac_id, status }) => [ac_id, status])).toEqual([['AC-1', 'passing'], ['AC-2', 'unverified']]);
-    expect(await taskIds(h)).toContain('M1-REVIEW-1');
+    expect(await taskIds(h)).toContain('M1-ENGREV-1');
   });
 
   it('tells the Test Plan, QA and the Milestone Review that only the automated criteria are theirs', async () => {
@@ -667,6 +673,8 @@ describe('flow', () => {
 
     await finish(h, 'M1-QA-1', AUTOMATED_PASS);
     await h.conductor.tick();
+    await finish(h, 'M1-ENGREV-1', ENG_APPROVE);
+    await h.conductor.tick();
     expect(orderOf(await byTicket(h, 'M1-REVIEW-1')).instructions).toContain('each automated criterion has passed or been waived, and the stakeholder checks the rest');
   });
 
@@ -674,6 +682,8 @@ describe('flow', () => {
     const h = await harness();
     await toVerify(h, HUMAN_FLOW);
     await finish(h, 'M1-QA-1', AUTOMATED_PASS);
+    await h.conductor.tick();
+    await finish(h, 'M1-ENGREV-1', ENG_APPROVE);
     await h.conductor.tick();
     await finish(h, 'M1-REVIEW-1', REVIEW);
     await h.conductor.tick();
@@ -832,13 +842,15 @@ describe('flow', () => {
     expect(await revParse(h.repoPath, 'refs/heads/main')).toBe(mainBefore);
   });
 
-  it('gives the Milestone Review the Tech Design as well as the Spec, the Test Plan and the QA report', async () => {
+  it('gives the Milestone Review the Tech Design as well as the Spec, the Test Plan, the QA report and the eng review', async () => {
     const h = await harness();
     await toVerify(h);
     await finish(h, 'M1-QA-1', PASS);
     await h.conductor.tick();
+    await finish(h, 'M1-ENGREV-1', ENG_APPROVE);
+    await h.conductor.tick();
 
-    expect(orderOf(await byTicket(h, 'M1-REVIEW-1')).inputs).toEqual(['SPEC-M1@1', 'TECH-M1@1', 'TEST-PLAN-M1@1', 'QA-REPORT-M1-1@1']);
+    expect(orderOf(await byTicket(h, 'M1-REVIEW-1')).inputs).toEqual(['SPEC-M1@1', 'TECH-M1@1', 'TEST-PLAN-M1@1', 'QA-REPORT-M1-1@1', 'ENG-REVIEW-M1-1@1']);
   });
 
   it('counts a cancelled ticket as finished for QA', async () => {
@@ -886,7 +898,7 @@ describe('flow', () => {
     const clean = await harness();
     const cp4 = await toCp4(clean);
     expect(cp4).toMatchObject({ dedupe_key: 'cp4:M1:1', milestone: 1, recommendation: 'Ship it' });
-    expect(cp4.evidence.flatMap(({ pin }) => (pin ? [pin] : []))).toEqual(['MILESTONE-REVIEW-M1@1', 'SPEC-M1@1', 'QA-REPORT-M1-1@1']);
+    expect(cp4.evidence.flatMap(({ pin }) => (pin ? [pin] : []))).toEqual(['MILESTONE-REVIEW-M1@1', 'SPEC-M1@1', 'QA-REPORT-M1-1@1', 'ENG-REVIEW-M1-1@1']);
     expect(await milestonePhase(clean)).toBe('cp4');
 
     const h = await harness();
@@ -894,6 +906,8 @@ describe('flow', () => {
     await mergeTicket(h, 'M1-T-1', { 'src/a.txt': 'from the ticket\n' });
     await h.conductor.tick();
     await finish(h, 'M1-QA-1', PASS);
+    await h.conductor.tick();
+    await finish(h, 'M1-ENGREV-1', ENG_APPROVE);
     await h.conductor.tick();
     await finish(h, 'M1-REVIEW-1', REVIEW);
     mkdirSync(join(h.repoPath, 'src'), { recursive: true });
@@ -1088,6 +1102,8 @@ describe('flow', () => {
     await h.conductor.tick();
     await finish(h, 'M1-QA-2', PASS);
     await h.conductor.tick();
+    await finish(h, 'M1-ENGREV-2', ENG_APPROVE);
+    await h.conductor.tick();
     await finish(h, 'M1-REVIEW-2', REVIEW);
     await h.conductor.tick();
 
@@ -1277,6 +1293,155 @@ describe('flow', () => {
     await h.store.answerInbox((await pending(h, 'engine_error')).id, { option: 'halt' });
     await h.conductor.tick();
     expect(await phaseOf(h)).toBe('halted');
+  });
+});
+
+describe('the eng review', () => {
+  // QA has passed every criterion, so the Eng Lead reviews the milestone's code.
+  async function toEngReview(h: Harness): Promise<void> {
+    await toVerify(h);
+    await finish(h, 'M1-QA-1', PASS);
+    await h.conductor.tick();
+  }
+  const milestone = async (h: Harness) => (await h.store.getMilestone(h.project.id, 1))!;
+
+  it('verify moves to eng_review and creates M1-ENGREV-1 whose instructions hold the coverage table', async () => {
+    const h = await harness();
+    await toEngReview(h);
+
+    expect(await milestonePhase(h)).toBe('eng_review');
+    const task = await byTicket(h, 'M1-ENGREV-1');
+    expect([task.role_id, task.kind, task.purpose, orderOf(task).base]).toEqual(['eng_lead', 'authoring', 'eng_review', { kind: 'integration' }]);
+    expect(orderOf(task).inputs).toEqual(['SPEC-M1@1', 'TECH-M1@1', 'SCOPE-M1@1', 'TEST-PLAN-M1@1', 'QA-REPORT-M1-1@1']);
+    const { instructions } = orderOf(task);
+    const from = run(h.repoPath, 'merge-base', 'refs/heads/main', 'refs/heads/aiteam/m1');
+    expect(instructions).toContain(`${from}..${await revParse(h.repoPath, 'refs/heads/aiteam/m1')}`);
+    expect(instructions).toContain('| Component | Source changes | Test changes | Status |');
+    expect(instructions).toContain('| app | src/M1-T-1.txt | - | exempt: ');
+    expect(instructions).toContain('- Load time: Under a second, measured by The play gate');
+    expect(instructions).toContain('Polish tickets from this review will be built.');
+    expect(await taskIds(h)).not.toContain('M1-REVIEW-1');
+  });
+
+  it('approve goes on to M1-REVIEW-1 with ENG-REVIEW-M1-1 among its inputs', async () => {
+    const h = await harness();
+    await toEngReview(h);
+    await finish(h, 'M1-ENGREV-1', ENG_APPROVE);
+    await h.conductor.tick();
+
+    expect(await milestone(h)).toMatchObject({ phase: 'milestone_review', eng_round: 0 });
+    const review = orderOf(await byTicket(h, 'M1-REVIEW-1'));
+    expect(review.inputs).toContain('ENG-REVIEW-M1-1@1');
+    expect(review.instructions).not.toContain('known_issues');
+  });
+
+  it('polish under the cap builds the E tickets, raises verify_cap, and reviews again as M1-ENGREV-2', async () => {
+    const h = await harness();
+    await toEngReview(h);
+    await finish(h, 'M1-ENGREV-1', engPolish());
+    await h.conductor.tick();
+
+    // The polish round costs no QA round of its own.
+    expect(await milestone(h)).toMatchObject({ phase: 'build', eng_round: 1, verify_cap: 4 });
+    await h.conductor.tick();
+    expect(await byTicket(h, 'M1-E-1')).toMatchObject({ kind: 'ticket', role_id: 'engineer', state: 'queued' });
+    expect(await taskIds(h)).not.toContain('M1-REVIEW-1');
+    expect(await taskIds(h)).not.toContain('M1-QA-2');
+
+    await mergeTicket(h, 'M1-E-1');
+    await h.conductor.tick();
+    await finish(h, 'M1-QA-2', PASS);
+    await h.conductor.tick();
+
+    expect(await milestonePhase(h)).toBe('eng_review');
+    const second = orderOf(await byTicket(h, 'M1-ENGREV-2'));
+    expect(second.inputs).toContain('QA-REPORT-M1-2@1');
+    // The next round's polish takes a number the first round's didn't.
+    expect(second.instructions).toContain('M1-E-1');
+    expect(second.instructions).toContain('| app | src/M1-E-1.txt, src/M1-T-1.txt | - | exempt: ');
+    await finish(h, 'M1-ENGREV-2', ENG_APPROVE);
+    await h.conductor.tick();
+    expect(orderOf(await byTicket(h, 'M1-REVIEW-2')).inputs).toContain('ENG-REVIEW-M1-2@1');
+  });
+
+  it('polish at the cap goes to the milestone review', async () => {
+    const h = await harness();
+    await toVerify(h);
+    await h.store.patchMilestone(h.project.id, 1, { eng_cap: 0 });
+    await finish(h, 'M1-QA-1', PASS);
+    await h.conductor.tick();
+    expect(orderOf(await byTicket(h, 'M1-ENGREV-1')).instructions).toContain('This is the last polish round: polish tickets will not be built and open findings go to the stakeholder as known issues.');
+
+    await finish(h, 'M1-ENGREV-1', engPolish());
+    await h.conductor.tick();
+
+    expect(await milestone(h)).toMatchObject({ phase: 'milestone_review', eng_round: 0, verify_cap: 3 });
+    const review = orderOf(await byTicket(h, 'M1-REVIEW-1'));
+    expect(review.inputs).toContain('ENG-REVIEW-M1-1@1');
+    expect(review.instructions).toMatch(/ENG-REVIEW-M1-1.*known_issues/);
+    await h.conductor.tick();
+    expect(await ticketIds(h)).not.toContain('M1-E-1');
+
+    await finish(h, 'M1-REVIEW-1', REVIEW);
+    await h.conductor.tick();
+    const cp4 = await pending(h, 'cp4');
+    expect(cp4.why).toContain('known issues');
+    expect(cp4.evidence).toContainEqual({ label: 'Eng review', value: 'polish, not built: One thing to polish' });
+    expect(cp4.evidence).toContainEqual({ label: 'Known issue', value: 'major src/M1-T-1.txt: Says work where it should say what' });
+  });
+
+  it('build cancels an open eng review', async () => {
+    const h = await harness();
+    await toEngReview(h);
+    const review = await byTicket(h, 'M1-ENGREV-1');
+    await advanceTo(h, review.id, ['ready', 'running']);
+
+    await ownerApplies(h, scopeChange);
+
+    expect((await h.store.getTask(review.id))!.state).toBe('cancelled');
+    expect(await milestonePhase(h)).toBe('build');
+  });
+
+  it('goes back to build when the eng review was cancelled by a crash between the two steps', async () => {
+    const h = await harness();
+    await toEngReview(h);
+    await h.runner.cancel((await byTicket(h, 'M1-ENGREV-1')).id);
+    await h.conductor.tick();
+
+    expect(await milestonePhase(h)).toBe('build');
+    await h.conductor.tick();
+    expect(await taskIds(h)).toContain('M1-QA-2');
+  });
+
+  it('revises a stale polish ticket through the ticket scope', async () => {
+    const h = await harness();
+    await toEngReview(h);
+    await finish(h, 'M1-ENGREV-1', { ...engPolish(), polish_tickets: [{ ...draft('E-1', []), inputs: ['SPEC-M1@1#scope'] }] });
+    await h.conductor.tick();
+    await h.conductor.tick();
+
+    await ownerApplies(h, scopeChange);
+    expect(await statusOf(h, 'M1-E-1')).toBe('stale');
+    await finish(h, 'M1-REVISE-TECH-M1-1', KEPT_DESIGN);
+    await h.conductor.tick();
+
+    expect(orderOf(await byTicket(h, 'M1-REVISE-SCOPE-M1-1')).instructions).toContain('M1-E-1');
+    await finish(h, 'M1-REVISE-SCOPE-M1-1', revised([stillValid('M1-E-1')]));
+    expect(await statusOf(h, 'M1-E-1')).toBe('approved');
+  });
+
+  it('cp4 shows the eng review and a request for changes raises eng_cap', async () => {
+    const h = await harness();
+    const cp4 = await toCp4(h);
+
+    expect(cp4.evidence.map(({ pin }) => pin)).toContain('ENG-REVIEW-M1-1@1');
+    expect(cp4.evidence).toContainEqual({ label: 'Eng review', value: 'approve: Nothing to polish' });
+    expect(cp4.evidence).toContainEqual({ label: 'Budget: Load time', value: 'met: 0.2 s against Under a second' });
+    expect(cp4.why).not.toContain('known issues');
+
+    await h.store.answerInbox(cp4.id, { action: 'request_changes', comment: 'Smoother, please' });
+    await h.conductor.tick();
+    expect(await milestone(h)).toMatchObject({ phase: 'build', eng_cap: 3 });
   });
 });
 
@@ -1580,6 +1745,8 @@ describe('the play gate', () => {
       await finish(h, 'M1-REPLAN-1', revised());
       await h.conductor.tick();
       await finish(h, 'M1-QA-2', PASS);
+      await h.conductor.tick();
+      await finish(h, 'M1-ENGREV-2', ENG_APPROVE);
       await h.conductor.tick();
       await finish(h, 'M1-REVIEW-2', REVIEW);
       await h.conductor.tick();
@@ -2094,6 +2261,8 @@ describe('review focus: a change mid-flight', () => {
     await toVerify(h);
     await finish(h, 'M1-QA-1', PASS);
     await h.conductor.tick();
+    await finish(h, 'M1-ENGREV-1', ENG_APPROVE);
+    await h.conductor.tick();
     const review = await byTicket(h, 'M1-REVIEW-1');
     await advanceTo(h, review.id, ['ready', 'running']);
 
@@ -2131,7 +2300,7 @@ describe('review focus: a change mid-flight', () => {
 
     await finish(h, 'M1-QA-2', PASS);
     await h.conductor.tick();
-    expect(await milestonePhase(h)).toBe('milestone_review');
+    expect(await milestonePhase(h)).toBe('eng_review');
   });
 
   // QA owns the Test Plan and raises these requests after a refusal, so an owner's approval alone would let it waive its own check.
@@ -2232,6 +2401,7 @@ describe('review focus: a change mid-flight', () => {
 
     expect((await h.store.listCriteria(h.project.id, 1)).map(({ ac_id, status }) => [ac_id, status])).toEqual([['AC-1', 'passing'], ['AC-2', 'failing']]);
     expect(await milestonePhase(h)).toBe('build');
+    expect(await taskIds(h)).not.toContain('M1-ENGREV-2');
     expect(await taskIds(h)).not.toContain('M1-REVIEW-2');
   });
 
@@ -2253,6 +2423,8 @@ describe('review focus: a change mid-flight', () => {
     const h = await harness();
     await toVerify(h);
     await finish(h, 'M1-QA-1', PASS);
+    await h.conductor.tick();
+    await finish(h, 'M1-ENGREV-1', ENG_APPROVE);
     await h.conductor.tick();
     await finish(h, 'M1-REVIEW-1', { ...REVIEW, change_requests: [{ ...scopeChange, raised_in: 'M1-REVIEW-1' }] });
     await h.conductor.tick();

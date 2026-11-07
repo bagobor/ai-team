@@ -20,6 +20,7 @@ const GROUP_OF: Record<ArtifactType, string> = {
   review_report: 'Reports',
   qa_report: 'Reports',
   milestone_review: 'Reports',
+  eng_review: 'Reports',
   change_request: 'Decisions',
   decision_record: 'Decisions',
 };

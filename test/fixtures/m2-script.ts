@@ -91,6 +91,8 @@ const FAILING = {
   summary: 'f2c is wrong',
 };
 const REVIEW = { body: '# How it went\n\nSmall and on plan.\n', known_issues: [], deviations: [], stakeholder_note: 'Ready to merge' };
+// Both components are exempt from tests, so the Eng Lead can approve with no test changed.
+const ENG_REVIEW = { verdict: 'approve', summary: 'Two formulas and their arguments, as designed', performance: [{ metric: 'Run time', target: 'Under a second', measured: 'Well under a second', status: 'met', evidence: 'The Test Plan commands returned at once' }], findings: [], polish_tickets: [], stakeholder_note: 'Nothing to polish' };
 
 const stillValid = (ticket: string) => ({ ticket, decision: 'still_valid', rationale: 'The change does not touch this work' });
 const unaffected = (tickets: string[]) => ({ unaffected: true, rationale: 'The change does not reach this document', body: null, coverage: null, ticket_decisions: tickets.map(stillValid), tickets: [] });
@@ -117,6 +119,7 @@ export function m2Script(opts: { failFirstQa?: boolean; humanCheck?: boolean } =
   };
   for (const round of ROUNDS) {
     byTask[`M1-QA-${round}`] = resultStep(opts.failFirstQa && round === 1 ? FAILING : PASSING);
+    byTask[`M1-ENGREV-${round}`] = resultStep(ENG_REVIEW);
     byTask[`M1-REVIEW-${round}`] = resultStep(REVIEW);
   }
   // A review is named after the attempt it reads, and an attempt can be cut short and go again.

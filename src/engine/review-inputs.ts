@@ -4,14 +4,15 @@ import { charsForTokens } from '../manifest/tokens.ts';
 import { criteriaSlug } from './apply/milestone.ts';
 import { notedLines, type QaRecord } from './apply/qa.ts';
 import { oneLine, quoted } from './apply/text.ts';
-import { designReference, type Reference } from './role-inputs.ts';
+import { designReference, engReviewReference, type Reference } from './role-inputs.ts';
 import type { EngineDeps } from './runner.ts';
 import type { CriterionRow, ProjectRow } from './store.ts';
 
 // Nothing before the review bounds what QA writes, and running out of room here would stop a finished milestone.
 // The rest is the PM's own, which may include a table of the criteria under its own heading.
-// It gave up 100 when the Tech Design's pointer came in, and 50 more when that pointer listed the structured design's six sections.
-const QA_WORDS_TOKENS = 2350;
+// It gave up 100 when the Tech Design's pointer came in, 50 more when that pointer listed the structured design's six sections,
+// and 150 more when the Eng Lead's review came in beside it.
+const QA_WORDS_TOKENS = 2200;
 
 // The longest texts give way first, so a short note always survives whole.
 function limitFor(lengths: number[], room: number): number {
@@ -53,10 +54,10 @@ export async function reviewInputs({ artifacts, store }: Pick<EngineDeps, 'artif
       if (doc.type === 'spec') return { ...input, content: specView(doc, criteria) };
       if (doc.type === 'qa_report') return { ...input, content: qaView(doc) };
       if (doc.type === 'test_plan') return { ...input, content: doc.body };
-      if (doc.type === 'tech_design') {
-        const design = designReference(doc);
-        reference = design.reference;
-        return { ...input, content: design.content };
+      if (doc.type === 'tech_design' || doc.type === 'eng_review') {
+        const read = doc.type === 'tech_design' ? designReference(doc) : engReviewReference(doc);
+        reference = { ...reference, ...read.reference };
+        return { ...input, content: read.content };
       }
       return input;
     }),

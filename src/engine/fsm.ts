@@ -79,7 +79,7 @@ export const MILESTONE_TRANSITIONS: Record<MilestonePhase, readonly MilestonePha
   cp2: ['spec', 'design', 'halted'],
   design: ['build', 'halted'],
   build: ['verify', 'halted'],
-  verify: ['build', 'eng_review', 'milestone_review', 'halted'],
+  verify: ['build', 'eng_review', 'halted'],
   eng_review: ['build', 'milestone_review', 'halted'],
   milestone_review: ['cp4', 'build', 'halted'],
   cp4: ['build', 'merging', 'halted'],

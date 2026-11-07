@@ -106,12 +106,13 @@ const INITIAL_BACKOFF_S = 300;
 const MAX_BACKOFF_S = 3600;
 
 // The roles that read a document without rewriting it may get its whole text in a file: QA judges the build against the
-// Tech Design's sections, and the Eng Lead splits the work by its components and the Test Plan's coverage. A replan is a
-// scope revision. Every other role reads its inputs whole in the manifest.
+// Tech Design's sections, and the Eng Lead splits the work, and later reviews it, by its components and the Test Plan's
+// coverage, and reviews it by QA's verdicts. A replan is a scope revision. Every other role reads its inputs whole in the manifest.
 const VIEWS: Partial<Record<Purpose, Views>> = {
   qa_verify: { design: 'sections' },
   ticket_scope: { design: 'components', plan: 'coverage' },
   revise_scope: { design: 'components', plan: 'coverage' },
+  eng_review: { design: 'components', plan: 'coverage', report: 'verdicts' },
 };
 
 function errorText(err: unknown): string {

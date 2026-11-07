@@ -1,6 +1,7 @@
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Criterion } from '../src/artifacts/acs.ts';
+import { engReviewSpec } from '../src/engine/conductor/milestone.ts';
 import { ensureTask, qaTask, recommendationTask, replanTask, reviseInputs, reviseTask, scopeTask, specTask, techTask, testPlanTask, type TaskSpec } from '../src/engine/conductor/tasks.ts';
 import type { AttemptRow, ProjectRow } from '../src/engine/store.ts';
 import type { TaskManifest } from '../src/manifest/build.ts';
@@ -256,6 +257,46 @@ describe('what a role reads on a milestone of 10 tickets and 30 criteria', () =>
       expect(plan).toContain('plan-prose-marker');
       for (const ac of ids) expect(plan).toContain(planNoteOf(ac));
       expectAllCommands(referenceOf(attempt));
+    });
+  });
+
+  // The Eng Lead's review reads what the scope did, less the profile, and QA's report on top: the same views keep it in budget.
+  describe('Eng review', () => {
+    const ENG_OUTPUT = { verdict: 'approve', summary: 'Ten parts, as designed', performance: [{ metric: 'Test time', target: 'Under a minute', measured: '12 s', status: 'met', evidence: 'npm test' }], findings: [], polish_tickets: [], stakeholder_note: 'Nothing to polish' };
+
+    it('fits the budget with room left for M4 beside a Tech Design the size of a real one, and its output still applies', async () => {
+      e = await makeEngine({ steps: { byTask: { 'M1-QA-1': resultStep(QA_OUTPUT), 'M1-ENGREV-1': resultStep(ENG_OUTPUT) } } });
+      const project = await publishLargeSpec(e);
+      await publishLargeDesign(e, proseDesign);
+      expect((await workOn(qaTask(project, 1, 1, QA_PINS))).state).toBe('done');
+
+      const ran = await workOn(await engReviewSpec(e, project, (await e.store.getMilestone(project.id, 1))!));
+
+      expectRoomForM4(ran);
+      expect(ran.state).toBe('done');
+      expect(await e.artifacts.latest(project.id, 'ENG-REVIEW-M1-1')).toMatchObject({ status: 'approved', derived_from: ['SPEC-M1@1', 'TECH-M1@1', 'SCOPE-M1@1', 'TEST-PLAN-M1@1', 'QA-REPORT-M1-1@1'] });
+      const text = taskText('M1-ENGREV-1');
+      expect(text).toContain('| part-1 | - | - | no change |');
+      expect(text).toContain('- Test time: Under a minute, measured by npm test');
+      expect(text).not.toContain('design-prose-marker');
+      // QA's verdicts stay in the manifest, and what it wrote goes to a file.
+      expect(text).toContain('- AC-30: passing');
+      expect(text).not.toContain('note-AC-1-marker');
+    });
+
+    it("can read QA's whole report, though the manifest leaves its notes out", async () => {
+      e = await makeEngine({ steps: { byTask: { 'M1-QA-1': resultStep(QA_OUTPUT), 'M1-ENGREV-1': resultStep({ ...ENG_OUTPUT, performance: [] }) } } });
+      const project = await publishLargeSpec(e);
+      await publishLargeDesign(e);
+      await workOn(qaTask(project, 1, 1, QA_PINS));
+
+      const { attempt } = await workOn(await engReviewSpec(e, project, (await e.store.getMilestone(project.id, 1))!));
+
+      expect(attempt.state).toBe('invalid_output');
+      expect(taskText('M1-ENGREV-1')).toContain('.aiteam-reference/qa-report.md');
+      const report = readFileSync(join(attempt.worktree_path, '.aiteam-reference', 'qa-report.md'), 'utf8');
+      for (const ac of ids) expect(report).toContain(noteOf(ac));
+      expect(report).toContain('All of it passed');
     });
   });
 

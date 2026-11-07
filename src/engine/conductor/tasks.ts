@@ -216,7 +216,21 @@ export function qaTask(project: ProjectRow, n: number, round: number, inputs: st
   };
 }
 
-export function milestoneReviewTask(project: ProjectRow, n: number, round: number, inputs: string[]): TaskSpec {
+// k is the milestone's verify round, so each polish round's review is a task and a record of its own.
+export function engReviewTask(project: ProjectRow, n: number, k: number, inputs: string[], instructions: string): TaskSpec {
+  return {
+    project,
+    ticket_id: `M${n}-ENGREV-${k}`,
+    title: `Milestone ${n}: Eng review`,
+    milestone: n,
+    role_id: 'eng_lead',
+    kind: 'authoring',
+    order: workOrder('eng_review', instructions, inputs, INTEGRATION),
+  };
+}
+
+// note is the engine's word on what the PM must carry, such as an eng review's findings that no polish round will fix.
+export function milestoneReviewTask(project: ProjectRow, n: number, round: number, inputs: string[], note?: string): TaskSpec {
   return {
     project,
     ticket_id: `M${n}-REVIEW-${round}`,
@@ -224,7 +238,7 @@ export function milestoneReviewTask(project: ProjectRow, n: number, round: numbe
     milestone: n,
     role_id: 'pm',
     kind: 'authoring',
-    order: workOrder('milestone_review', `Write the Milestone Review of milestone ${n} for the stakeholder: what was built, known issues, and any deviations from the Spec or the Tech Design. Your inputs leave out the verification commands and their output, because each automated criterion has passed or been waived, and the stakeholder checks the rest: its status is the engine's record.`, inputs, INTEGRATION),
+    order: workOrder('milestone_review', `Write the Milestone Review of milestone ${n} for the stakeholder: what was built, known issues, and any deviations from the Spec or the Tech Design. Your inputs leave out the verification commands and their output, because each automated criterion has passed or been waived, and the stakeholder checks the rest: its status is the engine's record.${note === undefined ? '' : ` ${note}`}`, inputs, INTEGRATION),
   };
 }
 

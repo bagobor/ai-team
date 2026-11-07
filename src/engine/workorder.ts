@@ -11,7 +11,8 @@ export type Purpose =
   | 'revise_design'
   | 'revise_test_plan'
   | 'ticket_scope'
-  | 'revise_scope';
+  | 'revise_scope'
+  | 'eng_review';
 
 export type TaskKind = 'ticket' | 'authoring' | 'code_review' | 'qa_verify';
 

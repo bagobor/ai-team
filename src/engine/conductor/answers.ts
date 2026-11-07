@@ -113,6 +113,9 @@ async function answerCp4(deps: EngineDeps, runner: Runner, project: ProjectRow, 
       after: async (s) => {
         await record(s);
         await ensureTask(s, replanTask(project, n, k, inputs, comment, open));
+        // The changes get a polish round of their own, so the Eng Lead's review of them can still be built.
+        const m = await s.getMilestone(project.id, n);
+        await s.patchMilestone(project.id, n, { eng_cap: (m?.eng_cap ?? 0) + 1 });
         await s.setMilestonePhase(project.id, n, 'build');
       },
     };

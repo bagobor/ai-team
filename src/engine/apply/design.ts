@@ -33,7 +33,7 @@ async function lockedCriteria(ctx: ApplyCtx): Promise<CriterionRow[]> {
   return criteria;
 }
 
-async function knownTickets(ctx: ApplyCtx): Promise<string[]> {
+export async function knownTickets(ctx: ApplyCtx): Promise<string[]> {
   const { store, artifacts } = ctx.deps;
   const tasks = await store.listTasks(ctx.project.id);
   const rows = await artifacts.list(ctx.project.id);

@@ -109,6 +109,11 @@ describe('milestone transitions', () => {
     for (const to of ['build', 'milestone_review', 'halted']) expect(() => assertMilestoneTransition('eng_review', to)).not.toThrow();
     expect(() => assertMilestoneTransition('eng_review', 'cp4')).toThrow(IllegalTransition);
   });
+
+  // Every milestone that passes QA has its code reviewed by the Eng Lead before the PM writes it up.
+  it('refuses verify → milestone_review', () => {
+    expect(() => assertMilestoneTransition('verify', 'milestone_review')).toThrow(IllegalTransition);
+  });
 });
 
 describe('tasks ended by their output', () => {

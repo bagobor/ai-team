@@ -1,17 +1,19 @@
 import { Ajv } from 'ajv';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { sectionText } from '../src/artifacts/format.ts';
+import { milestoneCoverage } from '../src/engine/apply/eng-review.ts';
 import { applyOutput } from '../src/engine/apply/index.ts';
 import { renderTechDesign, structureProblems, type TechStructure } from '../src/engine/apply/tech-structure.ts';
 import { loadRole } from '../src/roles/role.ts';
 import { stateRepoDir } from '../src/paths.ts';
 import { apply, CRITERIA, ctxFor, evidenceOf, lockSpec, projectOf, publish, specBody, ticketTask } from './helpers/apply.ts';
 import { makeEngine, type TestEngine } from './helpers/engine.ts';
-import { tempDir } from './helpers/repo.ts';
+import { commitAll, commitOnBranch, revParse, tempDir } from './helpers/repo.ts';
 
 const DISCOVERY = {
   roadmap: { body: '# Roadmap\n', milestones: [{ n: 1, title: 'First', goal: 'Start' }, { n: 2, title: 'Second', goal: 'Finish' }] },
@@ -953,6 +955,141 @@ describe('appliers', () => {
       await publish(e, await apply(e, 'revise_test_plan', { ...output, coverage: TEST_PLAN.coverage }, { inputs: ['SPEC-M1@2', 'TEST-PLAN-M1@1'] }));
       expect(await latest('TEST-PLAN-M1')).toMatchObject({ version: 2, status: 'approved', derived_from: ['SPEC-M1@2'] });
       expect((await read('TEST-PLAN-M1')).fields.data).toEqual({ coverage: TEST_PLAN.coverage, protected: [] });
+    });
+  });
+
+  describe('eng_review', () => {
+    // The loop keeps its tests in one file. The ui is played, not tested.
+    const LOOP: TechStructure = {
+      ...STRUCTURE,
+      components: [{ ...component('loop', ['test/loop.test.js']), sources: ['src/loop.js'] }, component('ui', [], 'The play script covers it')],
+      performance: [{ metric: 'frame time', target: '16 ms', how_measured: 'The play script', component: 'loop' }],
+    };
+    const TESTED = { 'src/loop.js': 'loop\n', 'test/loop.test.js': 'test\n' };
+    const PERFORMANCE = [{ metric: 'frame time', target: '16 ms', measured: '9 ms', status: 'met', evidence: 'The play script timed 600 frames' }];
+    const ENG = { verdict: 'approve', summary: 'Small and readable', performance: PERFORMANCE, findings: [], polish_tickets: [], stakeholder_note: 'Nothing to polish' };
+    const FINDING = { severity: 'major', file: 'src/loop.js', line: 3, issue: 'Allocates a vector every frame' };
+    const polishTicket = (key: string) => draft(key, [], { components: ['loop'], touches: ['src/loop.js', 'test/loop.test.js'] });
+    const POLISH = { ...ENG, verdict: 'polish', findings: [FINDING], polish_tickets: [polishTicket('E-1')] };
+
+    beforeEach(async () => {
+      await lockSpec(e);
+      const project = await projectOf(e);
+      await e.store.createMilestone({ project_id: project.id, n: 1, title: 'First', goal: 'Goal', phase: 'pending' });
+      await e.store.patchMilestone(project.id, 1, { verify_round: 1 });
+      await structuredDesign(LOOP);
+      await publish(e, await apply(e, 'ticket_scope', { ...SCOPE, tickets: [draft('T-1', ['AC-1', 'AC-2'], { components: ['loop'] })] }, { inputs: ['SPEC-M1@1', 'TECH-M1@1'], role: 'eng_lead' }));
+    });
+
+    const built = (files: Record<string, string> = TESTED) => commitOnBranch(e.repoPath, 'aiteam/m1', files);
+    const engReview = (output: Record<string, unknown> = {}) => apply(e, 'eng_review', { ...ENG, ...output }, { inputs: ['SPEC-M1@1', 'TECH-M1@1', 'SCOPE-M1@1'], role: 'eng_lead' });
+
+    it('publishes ENG-REVIEW-M1-1 with its data on approve', async () => {
+      await built();
+      const rows = await publish(e, await engReview({ findings: [{ ...FINDING, severity: 'minor' }] }));
+
+      expect(rows.map((row) => [row.artifact_id, row.type, row.status, row.owner_role, row.approved_by])).toEqual([['ENG-REVIEW-M1-1', 'eng_review', 'approved', 'eng_lead', 'owner:eng_lead']]);
+      expect(rows[0]!.derived_from).toEqual(['SPEC-M1@1', 'TECH-M1@1', 'SCOPE-M1@1']);
+      const { body, fields } = await read('ENG-REVIEW-M1-1');
+      expect(fields.data).toEqual({ verdict: 'approve', performance: PERFORMANCE, findings: [{ ...FINDING, severity: 'minor' }] });
+      expect(body).toContain('Small and readable');
+      expect(body).toContain('| frame time | 16 ms | 9 ms | met | The play script timed 600 frames |');
+      expect(body).toContain('- minor src/loop.js:3: Allocates a vector every frame');
+      // The engine's own measure of what was tested, beside the Eng Lead's word.
+      expect(body).toContain('| loop | src/loop.js | test/loop.test.js | tested |');
+    });
+
+    it('refuses approve while a component is untested', async () => {
+      await built({ 'src/loop.js': 'loop\n' });
+      expect(evidenceOf(await engReview())).toMatch(/approve needs.*loop.*src\/loop\.js/);
+
+      // A polish ticket that adds the test is the way through.
+      await publish(e, await engReview(POLISH));
+    });
+
+    it('refuses a missing or repeated budget', async () => {
+      await built();
+      expect(evidenceOf(await engReview({ performance: [] }))).toContain('missing budget "frame time"');
+      expect(evidenceOf(await engReview({ performance: [...PERFORMANCE, { ...PERFORMANCE[0]!, metric: ' Frame Time ' }] }))).toContain('"frame time" reported twice');
+      // A budget the design doesn't name is the Eng Lead's own measure, and is kept.
+      const extra = { metric: 'Memory', target: 'None set', measured: '40 MB', status: 'unmeasured', evidence: 'Activity Monitor' };
+      await publish(e, await engReview({ performance: [...PERFORMANCE, extra] }));
+    });
+
+    it('refuses approve with a critical finding', async () => {
+      await built();
+      expect(evidenceOf(await engReview({ findings: [{ ...FINDING, severity: 'critical' }] }))).toMatch(/approve needs no critical finding.*src\/loop\.js:3/);
+    });
+
+    it('refuses approve with polish tickets', async () => {
+      await built();
+      expect(evidenceOf(await engReview({ polish_tickets: [polishTicket('E-1')] }))).toMatch(/approve needs no polish tickets/);
+    });
+
+    it('refuses polish without tickets', async () => {
+      await built();
+      expect(evidenceOf(await engReview({ ...POLISH, polish_tickets: [] }))).toMatch(/polish needs at least one polish ticket/);
+    });
+
+    it('publishes E tickets as M1-E-1 owned by eng_lead', async () => {
+      await built();
+      expect(evidenceOf(await engReview({ ...POLISH, polish_tickets: [polishTicket('T-9')] }))).toContain('Ticket T-9: key must look like E-1');
+      expect(evidenceOf(await engReview({ ...POLISH, polish_tickets: [{ ...polishTicket('E-1'), components: ['renderer'] }] }))).toContain('components names "renderer", which the Tech Design does not have');
+
+      const rows = await publish(e, await engReview(POLISH));
+
+      expect(rows.map((row) => [row.artifact_id, row.type, row.status, row.approved_by])).toEqual([
+        ['ENG-REVIEW-M1-1', 'eng_review', 'approved', 'owner:eng_lead'],
+        ['M1-E-1', 'ticket', 'approved', 'owner:eng_lead'],
+      ]);
+      expect(rows[1]!.derived_from[0]).toBe('ENG-REVIEW-M1-1@1');
+      const ticket = await read('M1-E-1');
+      expect(ticket.fields).toMatchObject({ ac_refs: [], components: ['loop'] });
+      expect(sectionText(ticket.body, 'tests')).toContain('- loop: test/loop.test.js');
+      expect((await read('ENG-REVIEW-M1-1')).body).toContain('M1-E-1');
+
+      // The next round's polish takes a number no ticket has used.
+      expect(evidenceOf(await engReview(POLISH))).toContain('M1-E-1 already exists');
+    });
+
+    it('names its review after the milestone\'s verify round', async () => {
+      await built();
+      await e.store.patchMilestone((await projectOf(e)).id, 1, { verify_round: 3 });
+      const [row] = await publish(e, await engReview());
+      expect(row!.artifact_id).toBe('ENG-REVIEW-M1-3');
+    });
+
+    it('measures coverage from where the integration branch left the base to its head', async () => {
+      const project = await projectOf(e);
+      const from = await revParse(e.repoPath, 'refs/heads/main');
+      const to = await built({ 'src/loop.js': 'loop\n' });
+      // The base moves on with a test for the loop, which the milestone's work never had.
+      mkdirSync(join(e.repoPath, 'test'), { recursive: true });
+      writeFileSync(join(e.repoPath, 'test/loop.test.js'), 'test\n');
+      commitAll(e.repoPath, 'the stakeholder kept working');
+
+      expect(await milestoneCoverage(e, project, 1)).toEqual({
+        from,
+        to,
+        rows: [
+          { name: 'loop', sourceChanges: ['src/loop.js'], testChanges: [], untested: true, reason: null },
+          { name: 'ui', sourceChanges: [], testChanges: [], untested: false, reason: 'The play script covers it' },
+        ],
+      });
+
+      await structuredDesign(null);
+      expect((await milestoneCoverage(e, project, 1)).rows).toEqual([]);
+    });
+
+    // The model answers to this schema, so a shape the engine takes but the schema forbids could never be written.
+    it('is a shape the eng_review schema allows', async () => {
+      const valid = new Ajv({ strict: false }).compile((await loadRole(SEED, 'eng_lead', 'eng_review')).schema);
+      expect(valid(ENG), JSON.stringify(valid.errors)).toBe(true);
+      expect(valid(POLISH), JSON.stringify(valid.errors)).toBe(true);
+      expect(valid({ ...POLISH, polish_tickets: [draft('E-1', [])] })).toBe(false);
+      expect(valid({ ...ENG, performance: [{ ...PERFORMANCE[0]!, status: 'close' }] })).toBe(false);
+      expect(valid({ ...ENG, findings: [{ ...FINDING, severity: 'nit' }] })).toBe(false);
+      expect(valid({ ...ENG, verdict: 'changes_requested' })).toBe(false);
     });
   });
 

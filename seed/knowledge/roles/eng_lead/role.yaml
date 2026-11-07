@@ -19,4 +19,5 @@ output_schema: schemas/ticket_scope.json
 output_schemas:
   ticket_scope: schemas/ticket_scope.json
   revise_scope: schemas/revise_scope.json
+  eng_review: schemas/eng_review.json
   cr_recommendation: schemas/cr_recommendation.json

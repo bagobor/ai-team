@@ -3,7 +3,7 @@ import { sectionsOf, type ArtifactStatus, type ArtifactType } from './format.ts'
 import type { StatusChange } from './store.ts';
 
 // Records say what happened, and a later change to their source doesn't make that any less true.
-export const RECORD_TYPES = ['change_report', 'review_report', 'qa_report', 'decision_record', 'change_request', 'milestone_review', 'bug'] as const;
+export const RECORD_TYPES = ['change_report', 'review_report', 'qa_report', 'decision_record', 'change_request', 'milestone_review', 'eng_review', 'bug'] as const;
 
 const isRecord = (type: ArtifactType) => (RECORD_TYPES as readonly ArtifactType[]).includes(type);
 

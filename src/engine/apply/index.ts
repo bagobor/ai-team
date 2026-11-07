@@ -5,6 +5,7 @@ import type { ArtifactVersionRow, AttemptRow, ProjectRow, Store, TaskRow } from 
 import type { Purpose, WorkOrder } from '../workorder.ts';
 import { applyReviseDesign, applyReviseTestPlan, applyTechDesign, applyTestPlan } from './design.ts';
 import { applyDiscovery, applyEnvironmentProfile } from './discovery.ts';
+import { applyEngReview } from './eng-review.ts';
 import { applyMilestoneReview, applyMilestoneSpec } from './milestone.ts';
 import { applyQaVerify } from './qa.ts';
 import { applyCodeReview, applyCrRecommendation } from './review.ts';
@@ -43,6 +44,7 @@ const APPLIERS: Record<Purpose, Applier> = {
   revise_test_plan: applyReviseTestPlan,
   ticket_scope: applyTicketScope,
   revise_scope: applyReviseScope,
+  eng_review: applyEngReview,
 };
 
 // An applier's refusal is the worker's failed attempt. An applier's exception is the engine's bug, and escalates.

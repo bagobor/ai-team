@@ -19,7 +19,7 @@ type QaOverrides = { notes?: (ac: string) => string; summary?: string; bugs?: un
 describe('the Milestone Review inputs', () => {
   let e: TestEngine;
 
-  async function reviewOfLargeMilestone(qa: QaOverrides = {}, { design = largeDesign, review = REVIEW } = {}): Promise<TaskRow> {
+  async function reviewOfLargeMilestone(qa: QaOverrides = {}, { design = largeDesign, review = REVIEW, eng = undefined as Record<string, unknown> | undefined } = {}): Promise<TaskRow> {
     e = await makeEngine({ steps: { byTask: { 'M1-REVIEW-1': resultStep(review) } } });
     const project = await publishLargeSpec(e, { ownCriteriaSection: qa.ownCriteriaSection ?? true });
     await publishLargeDesign(e, design);
@@ -27,8 +27,9 @@ describe('the Milestone Review inputs', () => {
     const results = ids.map((ac) => ({ ac, status: 'passing', commands: [], notes: (qa.notes ?? noteOf)(ac) }));
     const output = { results, bugs: qa.bugs ?? [], summary: qa.summary ?? `qa-summary-marker ${words(600)}` };
     await publish(e, await apply(e, 'qa_verify', output, { kind: 'qa_verify', role: 'qa_engineer', inputs: ['SPEC-M1@1', 'TEST-PLAN-M1@1'], baseSha: await revParse(e.repoPath) }));
+    if (eng) await publish(e, await apply(e, 'eng_review', eng, { inputs: ['SPEC-M1@1', 'TECH-M1@1', 'QA-REPORT-M1-1@1'], role: 'eng_lead' }));
 
-    return e.store.atomically((s) => ensureTask(s, milestoneReviewTask(project, 1, 1, PINS)));
+    return e.store.atomically((s) => ensureTask(s, milestoneReviewTask(project, 1, 1, eng ? [...PINS, 'ENG-REVIEW-M1-1@1'] : PINS)));
   }
 
   const taskText = () => readFileSync(join(manifestDir(e.paths, 'p', 'M1-REVIEW-1', 1), 'task.md'), 'utf8');
@@ -148,6 +149,28 @@ describe('the Milestone Review inputs', () => {
     const text = taskText();
     for (const ac of ids) expect(text).toContain(`note-${ac}-marker`);
     expect(text).toContain('qa-summary-marker');
+  });
+
+  it("stay within budget beside the eng review however much the Eng Lead finds, and give the PM all of it in a file", async () => {
+    const finding = (i: number) => ({ severity: i === 0 ? 'major' : 'minor', file: `src/part-${i + 1}/index.js`, line: i, issue: `finding-${i}-marker ${words(2000)}` });
+    const output = { verdict: 'approve', summary: `eng-summary-marker ${words(5000)}`, performance: [{ metric: 'Test time', target: 'Under a minute', measured: '12 s', status: 'met', evidence: words(2000) }], findings: Array.from({ length: 10 }, (_, i) => finding(i)), polish_tickets: [], stakeholder_note: 'Nothing to polish' };
+    const task = await reviewOfLargeMilestone({ notes: (ac) => `note-${ac}-marker ${words(20_000)}`, summary: `qa-summary-marker ${words(20_000)}` }, { design: proseDesign, review: REFUSED, eng: output });
+
+    await runOnce(e, task.id);
+
+    const [attempt] = await e.store.listAttempts(task.id);
+    expect(attempt).toMatchObject({ state: 'invalid_output' });
+    expect((attempt!.manifest as TaskManifest).totalTokens).toBeLessThanOrEqual(ROOM_BEFORE_M4);
+    const text = taskText();
+    expect(text).toContain('<input pin="ENG-REVIEW-M1-1@1">');
+    expect(text).toContain('.aiteam-reference/eng-review.md');
+    expect(text).toContain('Its verdict: approve, with 1 major and 9 minor findings.');
+    expect(text).not.toContain('finding-0-marker');
+    const file = readFileSync(join(attempt!.worktree_path, '.aiteam-reference', 'eng-review.md'), 'utf8');
+    for (const i of [0, 9]) expect(file).toContain(`finding-${i}-marker`);
+    expect(file).toContain('eng-summary-marker');
+    // The Tech Design's file is still there beside it.
+    expect(existsSync(join(attempt!.worktree_path, '.aiteam-reference', 'tech-design.md'))).toBe(true);
   });
 
   it('name a note left empty only in the criteria list', async () => {

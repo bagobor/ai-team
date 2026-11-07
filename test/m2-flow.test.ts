@@ -200,7 +200,7 @@ describe('the whole M2 flow', () => {
     expect(fileAt(repo, 'main', 'tempconv.mjs')).toContain('f2c');
   });
 
-  it.each([['discovery'], ['cp1'], ['spec'], ['cp2'], ['design'], ['build'], ['verify'], ['milestone_review'], ['cp4']])('resumes after a daemon stop in %s', async (phase) => {
+  it.each([['discovery'], ['cp1'], ['spec'], ['cp2'], ['design'], ['build'], ['verify'], ['eng_review'], ['milestone_review'], ['cp4']])('resumes after a daemon stop in %s', async (phase) => {
     await start();
     await postBrief();
     await approveUntil(() => reached(phase));

@@ -446,7 +446,7 @@ describe('the API', () => {
       for (const phase of phases) await e.store.setMilestonePhase(id, n, phase);
     };
     const milestone = async (n: number, title: string) => e.store.createMilestone({ project_id: (await projectOf(e)).id, n, title, goal: `Goal ${n}`, phase: 'pending' });
-    const MERGED: MilestonePhase[] = ['spec', 'cp2', 'design', 'build', 'verify', 'milestone_review', 'cp4', 'merging', 'merged'];
+    const MERGED: MilestonePhase[] = ['spec', 'cp2', 'design', 'build', 'verify', 'eng_review', 'milestone_review', 'cp4', 'merging', 'merged'];
 
     it('adds the current milestone and the pending count to each project', async () => {
       await milestone(1, 'One');
