@@ -2,13 +2,13 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Player } from '../../checks/play.ts';
 import { ensureIntegrationBranch } from '../../git/workspace.ts';
-import { protoPlanId, protoRoot } from '../apply/ids.ts';
+import { PROTO_PLAN_ID, protoPlanId, protoRoot } from '../apply/ids.ts';
 import { oneLine } from '../apply/text.ts';
 import type { InboxCheck } from '../inbox.ts';
 import type { EngineDeps } from '../runner.ts';
 import type { ProjectRow, TaskRow } from '../store.ts';
 import { newTicketSpecs } from './milestone.ts';
-import { NO_BROWSER, problemLine, servePage, siteRoot } from './play-gate.ts';
+import { browserWhy, NO_BROWSER, problemLine, servePage, siteRoot } from './play-gate.ts';
 import { ensureTask, funInputs, isClosed, latestPin, noteOf, protoPlanTask } from './tasks.ts';
 import { ensureTryWorktree } from './try.ts';
 
@@ -22,12 +22,11 @@ type Page = { key: string; root: string; dir: string; controls: string[]; link: 
 
 // The try server serves every round from one mount, the checkout's prototypes folder, so the links of an earlier round still open.
 const PROTOTYPES = 'prototypes';
-const PLAN_TASK = /^PROTO-PLAN-([1-9]\d*)$/;
 const funKey = (r: number) => `fun_eval:${r}`;
 
 // The round is the highest plan task. Intake starts round 1, and each request for another round starts the next.
 function latestRound(tasks: TaskRow[]): number {
-  const rounds = tasks.flatMap(({ ticket_id }) => PLAN_TASK.exec(ticket_id)?.slice(1).map(Number) ?? []);
+  const rounds = tasks.flatMap(({ ticket_id }) => PROTO_PLAN_ID.exec(ticket_id)?.slice(1).map(Number) ?? []);
   return Math.max(1, ...rounds);
 }
 
@@ -83,8 +82,11 @@ async function smokeProblem(player: Player, { key, root, dir, controls }: Page):
 // a prototype is fun is theirs to say, so nothing here holds the evaluation or files a Bug.
 async function smokeLines({ player }: EngineDeps, pages: Page[]): Promise<string[]> {
   if (pages.length === 0) return [];
-  const missing = player ? player.unavailable() : NO_BROWSER;
-  if (!player || missing) return [`The engine did not play the prototypes first, so play each one to see that it loads. ${missing}`];
+  const notPlayed = 'The engine did not play the prototypes first, so play each one to see that it loads.';
+  if (!player) return [`${notPlayed} ${NO_BROWSER}`];
+  // As the play gate says it: the browser's own words, then the setting that chose that browser.
+  const missing = player.unavailable();
+  if (missing) return [`${notPlayed} ${browserWhy(missing)}`];
   const found: string[] = [];
   for (const page of pages) {
     const problem = await smokeProblem(player, page);

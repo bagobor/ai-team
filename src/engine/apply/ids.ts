@@ -11,5 +11,7 @@ export const reviewId = (milestone: number) => `MILESTONE-REVIEW-M${milestone}`;
 export const engReviewId = (milestone: number, round: number) => `ENG-REVIEW-M${milestone}-${round}`;
 // A prototype round r: its plan, the ticket for each prototype k, and the folder in the repo that ticket builds in.
 export const protoPlanId = (r: number) => `PROTO-PLAN-${r}`;
+// A plan's id, which its task's ticket id also is, with the round as the first group.
+export const PROTO_PLAN_ID = /^PROTO-PLAN-([1-9]\d*)$/;
 export const protoTicketId = (r: number, k: number) => `PROTO-${r}-P-${k}`;
 export const protoRoot = (r: number, k: number) => `prototypes/r${r}/p${k}`;

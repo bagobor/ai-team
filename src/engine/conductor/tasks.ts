@@ -1,5 +1,5 @@
 import { parsePin } from '../../artifacts/format.ts';
-import { ENV_PROFILE, FUN_DEFINITION, protoPlanId, techId } from '../apply/ids.ts';
+import { ENV_PROFILE, FUN_DEFINITION, PROTO_PLAN_ID, protoPlanId, techId } from '../apply/ids.ts';
 import { IllegalTransition } from '../fsm.ts';
 import type { InboxOption, InboxRef, InboxRow, NewInboxItem } from '../inbox.ts';
 import type { EngineDeps, Runner } from '../runner.ts';
@@ -352,14 +352,12 @@ export async function specSources(deps: Pick<EngineDeps, 'artifacts'>, project: 
   return Promise.all(ids.map((id) => latestPin(deps, project, id)));
 }
 
-const PROTO_PLAN = /^PROTO-PLAN-([1-9]\d*)$/;
-
 // What the prototype rounds found, oldest first: each round's plan, then the stakeholder's verdict on it. A verdict being
 // applied has no record yet, so its answer adds it.
 export async function funInputs(deps: Pick<EngineDeps, 'artifacts'>, project: ProjectRow): Promise<string[]> {
   const found: { round: number; verdict: boolean; pin: string }[] = [];
   for (const row of await deps.artifacts.list(project.id)) {
-    const plan = row.type === 'prototype_plan' ? PROTO_PLAN.exec(row.artifact_id) : null;
+    const plan = row.type === 'prototype_plan' ? PROTO_PLAN_ID.exec(row.artifact_id) : null;
     if (plan) found.push({ round: Number(plan[1]), verdict: false, pin: pinOf(row) });
     if (row.type !== 'decision_record') continue;
     const data = (await deps.artifacts.read(project, pinOf(row))).fields.data as { ref?: InboxRef } | undefined;

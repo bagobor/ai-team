@@ -1,15 +1,18 @@
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Criterion } from '../src/artifacts/acs.ts';
+import { applyAnswers } from '../src/engine/conductor/answers.ts';
 import { engReviewSpec } from '../src/engine/conductor/milestone.ts';
-import { ensureTask, qaTask, recommendationTask, replanTask, reviseInputs, reviseTask, scopeTask, specTask, techTask, testPlanTask, type TaskSpec } from '../src/engine/conductor/tasks.ts';
+import { ensureTask, protoPlanTask, qaTask, recommendationTask, replanTask, reviseInputs, reviseTask, scopeTask, specTask, techTask, testPlanTask, type TaskSpec } from '../src/engine/conductor/tasks.ts';
+import type { CheckMark } from '../src/engine/inbox.ts';
 import type { AttemptRow, ProjectRow } from '../src/engine/store.ts';
+import type { WorkOrder } from '../src/engine/workorder.ts';
 import type { TaskManifest } from '../src/manifest/build.ts';
 import { manifestDir } from '../src/paths.ts';
 import { roleInputs } from '../src/engine/role-inputs.ts';
 import { apply, CRITERIA, projectOf, publish } from './helpers/apply.ts';
 import { makeEngine, okStep, resultStep, runOnce, ticket, type TestEngine } from './helpers/engine.ts';
-import { command, ids, largeCoverage, largeDesign, largeScope, largeTestPlan, largeTickets, noteOf, planNoteOf, pmRowOf, proseDesign, publishLargeDesign, publishLargeSpec, publishProfile, ROOM_BEFORE_M4, textOf } from './helpers/large-milestone.ts';
+import { command, ids, largeCoverage, largeDesign, largeScope, largeTestPlan, largeTickets, noteOf, planNoteOf, pmRowOf, proseDesign, publishLargeDesign, publishLargeSpec, publishProfile, ROOM_BEFORE_M4, textOf, words } from './helpers/large-milestone.ts';
 import { commitAll, porcelain, run, tempDir } from './helpers/repo.ts';
 
 const QA_PINS = ['SPEC-M1@1', 'TECH-M1@1', 'TEST-PLAN-M1@1'];
@@ -570,5 +573,126 @@ describe('a Test Plan entry with a play script', () => {
     const section = reference!['verification.md']!.split('## AC-1\n')[1]!.split('## AC-2\n')[0]!;
     expect(section).toContain("QA verifies with the Test Plan's checks above");
     expect(section).not.toContain("Test Plan's commands above");
+  });
+});
+
+// Every prototype round adds its plan and the stakeholder's verdict to what the PM reads next, so the rounds must not run the
+// PM out of budget. Sizes from a real alpha: its 1,778-character BRIEF, an Opus PM's plan of 4 hypotheses and 3 prototypes, and
+// a stakeholder's few sentences on each prototype.
+describe('what the PM reads after three prototype rounds', () => {
+  let e: TestEngine;
+  const BRIEF = `# Brief\n\n${words(1_768)}\n`;
+  const hypothesis = (i: number) => ({ id: `H-${i}`, element: words(45), rationale: words(350), look_for: words(110) });
+  const prototype = (k: number) => ({ key: `P-${k}`, title: words(40), hypotheses: [`H-${k}`, `H-${k + 1}`], build: words(650), controls: ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'Space'] });
+  const PLAN = { hypotheses: [1, 2, 3, 4].map(hypothesis), prototypes: [1, 2, 3].map(prototype), stakeholder_note: words(250) };
+  const mark = (k: number, fun: boolean): CheckMark => ({ ac: `P-${k}`, status: fun ? 'passing' : 'failing', note: words(220) });
+  // The fun definition cites what round 1 found fun, in the record of the Inbox's first item (judge).
+  const DISCOVERY = {
+    roadmap: { body: '# Roadmap\n', milestones: [{ n: 1, title: 'First', goal: 'Start' }] },
+    team_proposal: { body: '# Team\n' },
+    human_requirements: { body: '# Needs\n' },
+    fun_definition: { body: '# What is fun\n', elements: [{ id: 'F-1', element: 'Dodging', evidence: ['DEC-1@1#p-1'], how_to_check: 'Play it and dodge' }] },
+    stakeholder_note: 'Please look at the roadmap',
+  };
+
+  async function engine(): Promise<ProjectRow> {
+    const plans = Object.fromEntries([1, 2, 3, 4].map((r) => [`PROTO-PLAN-${r}`, resultStep(PLAN)]));
+    e = await makeEngine({ steps: { byTask: { ...plans, 'DISCOVERY-PM': resultStep(DISCOVERY) } } });
+    await e.db.updateTable('projects').set({ prototyping: 1 }).execute();
+    const project = await projectOf(e);
+    await e.artifacts.commit(project, { message: 'brief', publish: [{ id: 'BRIEF', type: 'brief', status: 'approved', approvedBy: 'stakeholder', ownerRole: 'stakeholder', derivedFrom: [], body: BRIEF }] });
+    await e.store.atomically(async (s) => {
+      await ensureTask(s, protoPlanTask(project, 1, ['BRIEF@1']));
+      await s.setProjectPhase(project.id, 'prototype');
+    });
+    return projectOf(e);
+  }
+
+  async function work(project: ProjectRow, ticketId: string) {
+    const task = (await e.store.getTaskByTicket(project.id, ticketId))!;
+    await runOnce(e, task.id);
+    const attempt = (await e.store.listAttempts(task.id)).at(-1)!;
+    return { task, state: (await e.store.getTask(task.id))!.state, attempt, manifest: attempt.manifest as TaskManifest | null };
+  }
+
+  // The stakeholder's verdict on a round, raised as raiseFunEval raises it and applied as the conductor applies it, so the
+  // next task's inputs are the ones the engine gives it.
+  async function judge(project: ProjectRow, r: number, action: 'request_changes' | 'approve'): Promise<void> {
+    const pin = `PROTO-PLAN-${r}@1`;
+    const checks = [1, 2, 3].map((k) => ({ ac: `P-${k}`, text: `Prototype P-${k}`, how: 'Play it. Mark it fun or not fun, and say what you felt.' }));
+    const item = await e.store.raiseInbox({ project_id: project.id, type: 'approval', dedupe_key: `fun_eval:${r}`, ref: { kind: 'fun_eval', round: r }, title: `Prototype round ${r}: is it fun?`, asked_by: 'pm', why: 'Play each one', blocks: ['Discovery'], evidence: [{ label: `PROTO-PLAN-${r}`, value: pin, pin }], recommendation: words(250), options: [], checks });
+    expect(item.id).toBe(r);
+    const marks = [mark(1, r === 1), mark(2, false), mark(3, r === 3)];
+    await e.store.answerInbox(item.id, action === 'approve' ? { action, checks: marks } : { action, comment: words(300), checks: marks });
+    await applyAnswers(e, e.runner, project);
+  }
+
+  async function rounds(project: ProjectRow, count: number, last: 'request_changes' | 'approve'): Promise<void> {
+    for (let r = 1; r <= count; r += 1) {
+      expect((await work(project, `PROTO-PLAN-${r}`)).state).toBe('done');
+      await judge(project, r, r < count ? 'request_changes' : last);
+    }
+  }
+
+  function expectRoomForM4({ attempt, manifest }: { attempt: AttemptRow; manifest: TaskManifest | null }): void {
+    expect(attempt.failure_evidence ?? '').not.toContain('context_over_budget');
+    expect(manifest!.contextBudget).toBe(12_000);
+    expect(manifest!.totalTokens).toBeLessThanOrEqual(ROOM_BEFORE_M4);
+  }
+
+  afterEach(async () => {
+    await e.cleanup();
+  });
+
+  it("fits a fourth round's plan in the budget with room left for M4, and its output still applies", async () => {
+    const project = await engine();
+    await rounds(project, 3, 'request_changes');
+
+    const ran = await work(project, 'PROTO-PLAN-4');
+
+    expectRoomForM4(ran);
+    expect((ran.task.work_order as WorkOrder).inputs).toEqual(['BRIEF@1', 'PROTO-PLAN-1@1', 'DEC-1@1', 'PROTO-PLAN-2@1', 'DEC-2@1', 'PROTO-PLAN-3@1', 'DEC-3@1']);
+    expect(ran.state).toBe('done');
+  });
+
+  it('fits discovery after three rounds in the budget with room left for M4, and its fun definition still applies', async () => {
+    const project = await engine();
+    await rounds(project, 3, 'approve');
+
+    const ran = await work(project, 'DISCOVERY-PM');
+
+    expectRoomForM4(ran);
+    expect(ran.state).toBe('done');
+    expect(await e.artifacts.latest(project.id, 'FUN-DEFINITION')).toMatchObject({ derived_from: ['DEC-1@1#p-1'] });
+  });
+
+  it('reads a plan and a fun decision record by their text, which already holds all of their data', async () => {
+    const project = await engine();
+    await rounds(project, 1, 'request_changes');
+
+    const { inputs } = await roleInputs(e, project, ['PROTO-PLAN-1@1', 'DEC-1@1']);
+
+    const [plan, record] = inputs.map(({ content }) => content);
+    expect(plan).toMatch(/^---\nid: PROTO-PLAN-1\ntype: prototype_plan\nversion: 1\nstatus: approved\n/);
+    expect(plan).toContain('\n---\n# Prototype round 1\n');
+    expect(plan).toContain(`### H-4 — ${words(45)}`);
+    expect(plan).toContain(`## P-3\n\n${words(40)}\n\n- Tests: H-3, H-4\n- Controls: ArrowLeft, ArrowRight, ArrowUp, Space`);
+    expect(plan).not.toContain('data:');
+    expect(record).toMatch(/^---\nid: DEC-1\ntype: decision_record\nversion: 1\n/);
+    expect(record).toContain(`## P-1\n\nFun.\n\n> ${words(220)}`);
+    expect(record).toContain('## P-2\n\nNot fun.');
+    expect(record).not.toContain('data:');
+    // Only the manifest reads them so: the documents themselves keep their data for the appliers and the stakeholder.
+    expect((await e.artifacts.read(project, 'PROTO-PLAN-1@1')).fields.data).toMatchObject({ hypotheses: PLAN.hypotheses });
+    expect((await e.artifacts.read(project, 'DEC-1@1')).fields.data).toMatchObject({ ref: { kind: 'fun_eval', round: 1 } });
+  });
+
+  it('reads any other decision record whole', async () => {
+    const project = await engine();
+    await e.artifacts.commit(project, { message: 'a decision', publish: [{ id: 'DEC-9', type: 'decision_record', status: 'approved', approvedBy: 'stakeholder', ownerRole: 'stakeholder', derivedFrom: [], body: '# CP4\n', fields: { data: { ref: { kind: 'cp4', milestone: 1 }, answer: { action: 'approve' } } } }] });
+
+    const { inputs } = await roleInputs(e, project, ['DEC-9@1']);
+
+    expect(inputs[0]!.content).toContain('data:');
   });
 });

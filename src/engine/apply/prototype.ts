@@ -3,7 +3,7 @@ import type { NewVersion } from '../../artifacts/store.ts';
 import { keyProblem } from '../../checks/play.ts';
 import { parseTicket } from '../../tickets/ticket.ts';
 import { ownedDoc } from './design.ts';
-import { protoPlanId, protoRoot, protoTicketId } from './ids.ts';
+import { PROTO_PLAN_ID, protoPlanId, protoRoot, protoTicketId } from './ids.ts';
 import type { Applier, ApplyCtx } from './index.ts';
 import { withRaised } from './raised.ts';
 import { headed } from './tech-structure.ts';
@@ -16,14 +16,13 @@ type PlanOutput = { hypotheses: Hypothesis[]; prototypes: Prototype[]; stakehold
 
 const MAX_PROTOTYPES = 3;
 const HYPOTHESIS_ID = /^H-\d+$/;
-const PLAN_TASK = /^PROTO-PLAN-([1-9]\d*)$/;
 const blank = (text: string): boolean => text.trim() === '';
 const keyOf = (index: number): string => `P-${index + 1}`;
 const controlsOf = (controls: string[]): string => (controls.length > 0 ? controls.join(', ') : 'none');
 
 // The round is the task's, not the model's: the conductor makes one PROTO-PLAN-r task for each.
 function roundOf(ctx: ApplyCtx): number {
-  const match = PLAN_TASK.exec(ctx.task.ticket_id);
+  const match = PROTO_PLAN_ID.exec(ctx.task.ticket_id);
   if (!match) throw new Error(`Task ${ctx.task.ticket_id} is not a prototype round`);
   return Number(match[1]);
 }

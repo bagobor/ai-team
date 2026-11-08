@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ArtifactStore } from '../src/artifacts/store.ts';
@@ -272,6 +272,33 @@ describe('the prototype phase', () => {
     expect(item.why).toContain('P-1: exception: Uncaught TypeError: ship is undefined');
     expect(item.why).not.toContain('P-2:');
     expect(item.checks.map(({ ac }) => ac)).toEqual(['P-1', 'P-2']);
+  });
+
+  it('says why the engine did not play the pages, and which setting chooses the browser, when it has none to play them in', async () => {
+    const h = await harness();
+    const player = fakePlayer(playResult(), { unavailable: 'Chrome was not found at /nope' });
+    h.player = player;
+
+    const item = await toFunEval(h);
+
+    expect(player.calls).toEqual([]);
+    expect(item.why).toContain('The engine did not play the prototypes first, so play each one to see that it loads. Chrome was not found at /nope\nThe engine plays the game in the Chrome that chrome.binary in ~/.aiteam/config.yaml names.');
+    expect(item.checks.map(({ ac }) => ac)).toEqual(['P-1', 'P-2']);
+  });
+
+  it('links each page in the checkout when there is no try server to serve it', async () => {
+    const h = await harness();
+    Object.assign(h, { tryServer: undefined });
+
+    const item = await toFunEval(h);
+
+    const pageIn = (k: number) => join(tryWorktree(h, h.project, 0).worktree, `prototypes/r1/p${k}/index.html`);
+    expect(item.evidence.slice(1)).toEqual([
+      { label: 'Play P-1', value: pageIn(1) },
+      { label: 'Play P-2', value: pageIn(2) },
+    ]);
+    expect(item.checks[0]!.how).toBe(`Play ${pageIn(1)}. Mark it fun or not fun, and say what you felt.`);
+    expect(readFileSync(pageIn(2), 'utf8')).toBe(PAGE);
   });
 
   it('request changes starts PROTO-PLAN-2 with the decision record among its inputs', async () => {

@@ -1,7 +1,7 @@
 import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { isHumanCheck, type Criterion } from '../artifacts/acs.ts';
-import { parsePin, replaceSection, sectionsOf, type ArtifactDoc } from '../artifacts/format.ts';
+import { parsePin, renderArtifact, replaceSection, sectionsOf, type ArtifactDoc } from '../artifacts/format.ts';
 import type { PlayScript, PlayStep } from '../checks/play.ts';
 import type { ManifestInput } from '../manifest/build.ts';
 import type { Coverage } from './apply/design.ts';
@@ -39,6 +39,17 @@ const HUMAN_MARKER = 'Checked by the stakeholder at milestone approval; QA leave
 
 const criteriaOf = (doc: ArtifactDoc) => (doc.type === 'spec' ? (doc.fields.data as { criteria?: Criterion[] } | undefined)?.criteria : undefined);
 const coverageOf = (doc: ArtifactDoc) => (doc.type === 'test_plan' ? (doc.fields.data as { coverage?: Coverage[] } | undefined)?.coverage : undefined);
+
+// A prototype plan's text holds every hypothesis and prototype, and a fun evaluation's record holds each mark under its P-k
+// heading, which a FUN-DEFINITION cites. Their data says it all again, and every round adds one of each to what the PM reads
+// next, so read whole they would run the PM out of budget after three rounds.
+const isFunRecord = (doc: ArtifactDoc) => doc.type === 'decision_record' && (doc.fields.data as { ref?: { kind?: string } } | undefined)?.ref?.kind === 'fun_eval';
+const readsByText = (doc: ArtifactDoc) => doc.type === 'prototype_plan' || isFunRecord(doc);
+
+function textView(doc: ArtifactDoc): string {
+  const { data: _data, ...fields } = doc.fields;
+  return renderArtifact({ ...doc, fields });
+}
 
 function specView(doc: ArtifactDoc, criteria: Criterion[]): string {
   const sections = criteria.map((criterion) => [`### ${criterion.id}`, '', criterion.text.trim(), '', ...(isHumanCheck(criterion) ? [HUMAN_MARKER, ''] : [])].join('\n')).join('\n');
@@ -152,6 +163,7 @@ export async function roleInputs({ artifacts }: Pick<EngineDeps, 'artifacts'>, p
       const input = await artifacts.readInput(project, pin);
       if (parsePin(pin).section !== undefined) return { input, criteria: [], coverage: [] };
       const doc = await artifacts.read(project, pin);
+      if (readsByText(doc)) return { input: { ...input, content: textView(doc) }, criteria: [], coverage: [] };
       if (design !== 'whole' && doc.type === 'tech_design') {
         const { content, reference } = design === 'components' ? componentsReference(doc) : designReference(doc);
         return { input: { ...input, content }, criteria: [], coverage: [], files: reference };
