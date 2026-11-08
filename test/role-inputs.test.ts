@@ -4,7 +4,7 @@ import type { Criterion } from '../src/artifacts/acs.ts';
 import { applyAnswers } from '../src/engine/conductor/answers.ts';
 import { engReviewSpec } from '../src/engine/conductor/milestone.ts';
 import { openTickets } from '../src/engine/apply/design.ts';
-import { ensureTask, protoPlanTask, qaTask, recommendationTask, replanInputs, replanTask, reviseInputs, reviseTask, scopeTask, specTask, techTask, testPlanTask, type TaskSpec } from '../src/engine/conductor/tasks.ts';
+import { ensureTask, protoPlanTask, qaTask, recommendationTask, replanInputs, replanTask, reviseInputs, reviseTask, scopeTask, specSources, specTask, techTask, testPlanTask, type TaskSpec } from '../src/engine/conductor/tasks.ts';
 import type { CheckMark } from '../src/engine/inbox.ts';
 import type { AttemptRow, ProjectRow } from '../src/engine/store.ts';
 import type { WorkOrder } from '../src/engine/workorder.ts';
@@ -626,9 +626,9 @@ describe('what the PM reads after three prototype rounds', () => {
     stakeholder_note: 'Please look at the roadmap',
   };
 
-  async function engine(): Promise<ProjectRow> {
+  async function engine(discovery: unknown = DISCOVERY): Promise<ProjectRow> {
     const plans = Object.fromEntries([1, 2, 3, 4].map((r) => [`PROTO-PLAN-${r}`, resultStep(PLAN)]));
-    e = await makeEngine({ steps: { byTask: { ...plans, 'DISCOVERY-PM': resultStep(DISCOVERY) } } });
+    e = await makeEngine({ steps: { byTask: { ...plans, 'DISCOVERY-PM': resultStep(discovery), 'M1-SPEC': resultStep({ body: '# Goal\n', criteria: [] }) } } });
     await e.db.updateTable('projects').set({ prototyping: 1 }).execute();
     const project = await projectOf(e);
     await e.artifacts.commit(project, { message: 'brief', publish: [{ id: 'BRIEF', type: 'brief', status: 'approved', approvedBy: 'stakeholder', ownerRole: 'stakeholder', derivedFrom: [], body: BRIEF }] });
@@ -695,6 +695,29 @@ describe('what the PM reads after three prototype rounds', () => {
     expectRoomForM4(ran);
     expect(ran.state).toBe('done');
     expect(await e.artifacts.latest(project.id, 'FUN-DEFINITION')).toMatchObject({ derived_from: ['DEC-1@1#p-1'] });
+  });
+
+  // Every Spec reads FUN-DEFINITION beside the Roadmap and the Human Requirements, and a Spec over its budget can never recover.
+  it('fits a Spec beside a fun definition of five elements in the budget with room left for M4', async () => {
+    const element = (i: number) => ({ id: `F-${i}`, element: `fun-element-${i}-marker ${words(250)}`, evidence: ['DEC-1@1#p-1', 'DEC-3@1#p-3'], how_to_check: words(250) });
+    const project = await engine({
+      ...DISCOVERY,
+      roadmap: { body: `# Roadmap\n\n${words(2_500)}\n`, milestones: [1, 2, 3, 4].map((n) => ({ n, title: words(40), goal: words(150) })) },
+      human_requirements: { body: `# Needs\n\n${words(1_500)}\n` },
+      fun_definition: { body: `# What is fun\n\n${words(1_000)}\n`, elements: [1, 2, 3, 4, 5].map(element) },
+    });
+    await rounds(project, 3, 'approve');
+    expect((await work(project, 'DISCOVERY-PM')).state).toBe('done');
+    const inputs = await specSources(e, project);
+    expect(inputs).toEqual(['ROADMAP@1', 'HUMAN-REQUIREMENTS@1', 'FUN-DEFINITION@1']);
+    await e.store.atomically((s) => ensureTask(s, specTask(project, 1, 1, inputs)));
+
+    const ran = await work(project, 'M1-SPEC');
+
+    expectRoomForM4(ran);
+    // The elements reach the Spec under their own headings, as the stakeholder saw them at CP1.
+    const text = readFileSync(join(manifestDir(e.paths, 'p', 'M1-SPEC', 1), 'task.md'), 'utf8');
+    for (const i of [1, 5]) expect(text).toContain(`## F-${i}\n\nfun-element-${i}-marker`);
   });
 
   it('reads a plan and a fun decision record by their text, which already holds all of their data', async () => {

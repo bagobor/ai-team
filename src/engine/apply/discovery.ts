@@ -1,5 +1,5 @@
 import { isAbsolute } from 'node:path';
-import { parsePin } from '../../artifacts/format.ts';
+import { parsePin, sectionsOf } from '../../artifacts/format.ts';
 import type { NewVersion } from '../../artifacts/store.ts';
 import { keyProblem } from '../../checks/play.ts';
 import { runSandboxed } from '../../checks/run-checks.ts';
@@ -7,6 +7,7 @@ import { ENV_PROFILE, FUN_DEFINITION } from './ids.ts';
 import type { Applier, ApplyCtx } from './index.ts';
 import { withRaised } from './raised.ts';
 import { sandboxEnv } from './sandbox.ts';
+import { oneLine } from './text.ts';
 
 type FunElement = { id: string; element: string; evidence: string[]; how_to_check: string };
 type FunDefinition = { body: string; elements: FunElement[] };
@@ -45,7 +46,12 @@ export async function approvedProfile({ deps, project }: Pick<ApplyCtx, 'deps' |
 const DISCOVERY_IDS = new Set(['ROADMAP', 'TEAM-PROPOSAL', 'HUMAN-REQUIREMENTS', FUN_DEFINITION]);
 
 const FUN_ELEMENT_ID = /^F-\d+$/;
-const FUN_EVIDENCE = /^DEC-(\d+)@(\d+)#p-(\d+)$/;
+// A pin's version has no leading zero, so one that does is malformed here, before the store reads it.
+const FUN_EVIDENCE = /^DEC-(\d+)@([1-9]\d*)#p-(\d+)$/;
+const FUN_HEADING = /^F-\d+\b/i;
+// Every Spec reads FUN-DEFINITION, and a Spec over its budget can never recover, so the definition is held to what fits.
+const MAX_FUN_ELEMENTS = 6;
+const MAX_FUN_BODY = 1_500;
 
 // Why a pin is no evidence of fun, as the end of its refusal: empty when the stakeholder's own mark is what rules it out,
 // and undefined when they marked the prototype fun. Only a human marks fun, so this reads the Decision Record of their answer
@@ -67,6 +73,13 @@ async function funProblems(ctx: ApplyCtx, fun: FunDefinition | null): Promise<st
   if (ctx.project.prototyping !== 1) return fun === null ? [] : ['This project is not prototyping, so fun_definition must be null'];
   if (fun === null) return ['A prototyping project needs a fun_definition: the elements the stakeholder found fun, each citing a prototype they marked fun'];
   if (fun.elements.length === 0) return ['The fun_definition needs at least one element'];
+  const size = [
+    ...(fun.elements.length > MAX_FUN_ELEMENTS ? [`The fun_definition has ${fun.elements.length} elements, and at most ${MAX_FUN_ELEMENTS} fit in a Spec's budget: keep the ones the stakeholder found most fun`] : []),
+    ...(fun.body.trim().length > MAX_FUN_BODY ? [`The fun_definition body is ${fun.body.trim().length} characters, and at most ${MAX_FUN_BODY} fit in a Spec's budget: shorten it`] : []),
+  ];
+  if (size.length > 0) return size;
+  const own = sectionsOf(fun.body).find(({ title }) => FUN_HEADING.test(title));
+  if (own) return [`The fun_definition body has its own element heading, ${JSON.stringify(own.title)}: the engine writes those`];
 
   const problems: string[] = [];
   const defined = new Set<string>();
@@ -93,15 +106,30 @@ async function funProblems(ctx: ApplyCtx, fun: FunDefinition | null): Promise<st
   return problems;
 }
 
+// The PM's text, then one section per element under the engine's F-n heading, so CP1 shows each element and a pin can name
+// one. Each field is flattened to a line, so none of them adds a heading.
+function renderFun({ body, elements }: FunDefinition): string {
+  const head = body.trimEnd();
+  const sections = elements.flatMap(({ id, element, evidence, how_to_check }) => [`## ${id}`, '', oneLine(element).trim(), '', `- Evidence: ${evidence.join(', ')}`, `- How to check: ${oneLine(how_to_check).trim()}`, '']);
+  return [...(head === '' ? [] : [head, '']), ...sections].join('\n');
+}
+
+// A code block the PM's text leaves open would hide the headings after it.
+function hiddenHeadings(rendered: string, { elements }: FunDefinition): string[] {
+  const expected = elements.map(({ id }) => id);
+  const found = sectionsOf(rendered).map(({ title }) => title).filter((title) => FUN_HEADING.test(title));
+  return found.length === expected.length && found.every((title, index) => title === expected[index]) ? [] : [`The fun_definition body opens a code block that hides the engine's element headings: expected ${expected.join(', ')}; found ${found.join(', ') || 'none'}`];
+}
+
 // It rests on the marks it cites, each once, and on nothing else the round read.
-const funDocument = ({ body, elements }: FunDefinition): NewVersion => ({
+const funDocument = (fun: FunDefinition, body: string): NewVersion => ({
   id: FUN_DEFINITION,
   type: 'fun_definition',
   status: 'proposed',
   ownerRole: 'pm',
-  derivedFrom: [...new Set(elements.flatMap(({ evidence }) => evidence))],
+  derivedFrom: [...new Set(fun.elements.flatMap(({ evidence }) => evidence))],
   body,
-  fields: { data: elements },
+  fields: { data: fun.elements },
 });
 
 export const applyDiscovery: Applier = async (ctx) => {
@@ -116,6 +144,9 @@ export const applyDiscovery: Applier = async (ctx) => {
   if (untitled) return { ok: false, evidence: `Milestone ${untitled.n} has a blank title` };
   const unfounded = await funProblems(ctx, fun);
   if (unfounded.length > 0) return { ok: false, evidence: unfounded.join('\n') };
+  const funBody = fun ? renderFun(fun) : '';
+  const hidden = fun ? hiddenHeadings(funBody, fun) : [];
+  if (hidden.length > 0) return { ok: false, evidence: hidden.join('\n') };
 
   // A redo round reads the documents it replaces: those are its history, not its sources.
   const derivedFrom = ctx.order.inputs.filter((pin) => !DISCOVERY_IDS.has(parsePin(pin).id));
@@ -126,7 +157,7 @@ export const applyDiscovery: Applier = async (ctx) => {
       { ...doc, id: 'ROADMAP', type: 'roadmap', body: roadmap.body, fields: { data: milestones } },
       { ...doc, id: 'TEAM-PROPOSAL', type: 'team_proposal', body: team_proposal.body },
       { ...doc, id: 'HUMAN-REQUIREMENTS', type: 'human_requirements', body: human_requirements.body },
-      ...(fun ? [funDocument(fun)] : []),
+      ...(fun ? [funDocument(fun, funBody)] : []),
     ],
   });
 };

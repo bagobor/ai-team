@@ -160,7 +160,28 @@ describe('appliers', () => {
         // Derived from the marks it cites (one of them in a request for changes, one in an approval), each once, and from nothing else.
         expect(rows[3]!.derived_from).toEqual(['DEC-31@1#p-1', 'DEC-32@1#p-1', 'DEC-32@1#p-2']);
         const doc = await read('FUN-DEFINITION');
-        expect(doc.body).toBe('# What is fun\n');
+        // The PM's text, then one section per element in the engine's words, so CP1 shows each one and a pin can name it.
+        expect(doc.body).toBe(
+          [
+            '# What is fun',
+            '',
+            '## F-1',
+            '',
+            'Element F-1',
+            '',
+            '- Evidence: DEC-31@1#p-1, DEC-32@1#p-1',
+            '- How to check: Play it and look for F-1',
+            '',
+            '## F-2',
+            '',
+            'Element F-2',
+            '',
+            '- Evidence: DEC-32@1#p-2, DEC-31@1#p-1',
+            '- How to check: Play it and look for F-2',
+            '',
+          ].join('\n'),
+        );
+        expect(sectionText(doc.body, 'f-2')).toContain('- Evidence: DEC-32@1#p-2, DEC-31@1#p-1');
         expect(doc.fields.data).toEqual([element('F-1', ['DEC-31@1#p-1', 'DEC-32@1#p-1']), element('F-2', ['DEC-32@1#p-2', 'DEC-31@1#p-1'])]);
         expect(rows[0]!.derived_from).toEqual(['BRIEF@1', 'DEC-31@1', 'DEC-32@1']);
       });
@@ -205,6 +226,43 @@ describe('appliers', () => {
         }
         // Something that is not a decision record at all.
         expect(evidenceOf(await apply(e, 'discovery', FUN([element('F-1', ['BRIEF@1#p-1'])])))).toBe('F-1 evidence "BRIEF@1#p-1" must look like DEC-12@1#p-1: the fun-eval decision record, its version and the prototype the stakeholder marked fun');
+      });
+
+      it('refuses a pin whose version has a leading zero as it refuses any other malformed pin', async () => {
+        await answered();
+
+        for (const pin of ['DEC-31@01#p-1', 'DEC-31@0#p-1']) {
+          expect(evidenceOf(await apply(e, 'discovery', FUN([element('F-1', [pin])])))).toBe(`F-1 evidence ${JSON.stringify(pin)} must look like DEC-12@1#p-1: the fun-eval decision record, its version and the prototype the stakeholder marked fun`);
+        }
+      });
+
+      it('refuses a body with its own element heading, or one that hides the engine\'s', async () => {
+        await answered();
+        const withBody = (body: string) => ({ ...DISCOVERY, fun_definition: { body, elements: [element('F-1', ['DEC-31@1#p-1'])] } });
+
+        expect(evidenceOf(await apply(e, 'discovery', withBody('# What is fun\n\n## F-1\n\nMine.\n')))).toBe('The fun_definition body has its own element heading, "F-1": the engine writes those');
+        expect(evidenceOf(await apply(e, 'discovery', withBody('# What is fun\n\n### F-2 Dodging\n\nMine.\n')))).toBe('The fun_definition body has its own element heading, "F-2 Dodging": the engine writes those');
+        expect(evidenceOf(await apply(e, 'discovery', withBody('# What is fun\n\n```\nleft open\n')))).toBe("The fun_definition body opens a code block that hides the engine's element headings: expected F-1; found none");
+        // An element's own text is flattened to a line, so it adds no heading either.
+        const flattened = await apply(e, 'discovery', FUN([element('F-1', ['DEC-31@1#p-1'], { element: 'Dodging\n## F-9', how_to_check: 'Play\n\n## F-8' })]));
+        expect(flattened.ok).toBe(true);
+      });
+
+      // Every Spec reads FUN-DEFINITION, and a Spec over its budget can never recover, so the PM is held to a size that fits.
+      it.each([
+        ['more than 6 elements', [1, 2, 3, 4, 5, 6, 7].map((i) => element(`F-${i}`, ['DEC-31@1#p-1'])), '# What is fun\n', 'The fun_definition has 7 elements, and at most 6 fit in a Spec\'s budget: keep the ones the stakeholder found most fun'],
+        ['a body over 1,500 characters', [element('F-1', ['DEC-31@1#p-1'])], `# What is fun\n\n${'x'.repeat(1_490)}\n`, "The fun_definition body is 1505 characters, and at most 1500 fit in a Spec's budget: shorten it"],
+      ])('refuses %s', async (_name, elements, body, evidence) => {
+        await answered();
+
+        expect(evidenceOf(await apply(e, 'discovery', { ...DISCOVERY, fun_definition: { body, elements } }))).toBe(evidence);
+      });
+
+      it('takes 6 elements and a body of 1,500 characters', async () => {
+        await answered();
+        const elements = [1, 2, 3, 4, 5, 6].map((i) => element(`F-${i}`, ['DEC-31@1#p-1']));
+
+        expect((await apply(e, 'discovery', { ...DISCOVERY, fun_definition: { body: `# What is fun\n\n${'x'.repeat(1_485)}\n`, elements } })).ok).toBe(true);
       });
 
       it('wants evidence for every element', async () => {
