@@ -14,7 +14,7 @@ import {
   type ProjectPhase,
   type TaskState,
 } from './fsm.ts';
-import { AlreadyAnswered, assertValidAnswer, type InboxAnswer, type InboxCheck, type InboxEvidence, type InboxOption, type InboxRef, type InboxRow, type InboxState, type InboxType, type NewInboxItem } from './inbox.ts';
+import { AlreadyAnswered, assertValidAnswer, InvalidAnswer, type InboxAnswer, type InboxCheck, type InboxEvidence, type InboxOption, type InboxRef, type InboxRow, type InboxState, type InboxType, type NewInboxItem } from './inbox.ts';
 import type { WorkOrder } from './workorder.ts';
 
 export type ProjectRow = Omit<Selectable<ProjectsTable>, 'phase'> & { phase: ProjectPhase };
@@ -126,6 +126,20 @@ function toInboxRow(row: Selectable<InboxItemsTable>): InboxRow {
     answer: row.answer === null ? null : (JSON.parse(row.answer) as InboxAnswer),
   };
 }
+
+function byPrefix(db: Kysely<DB>, projectId: number, prefix: string): Promise<InboxRow[]> {
+  return db
+    .selectFrom('inbox_items')
+    .selectAll()
+    .where('project_id', '=', projectId)
+    .where(sql<string>`substr(dedupe_key, 1, ${prefix.length})`, '=', prefix)
+    .orderBy('id')
+    .execute()
+    .then((rows) => rows.map(toInboxRow));
+}
+
+// A reject ends the project, so only an approve or a request for another round can say a prototype was fun.
+const markedFun = (answer: InboxAnswer | null): boolean => answer !== null && 'action' in answer && answer.action !== 'reject' && (answer.checks ?? []).some(({ status }) => status === 'passing');
 
 function toAttemptRow(row: Selectable<AttemptsTable>): AttemptRow {
   return {
@@ -639,7 +653,14 @@ export class Store {
     return this.inTrx(async (db, emit) => {
       const current = await db.selectFrom('inbox_items').selectAll().where('id', '=', id).executeTakeFirst();
       if (!current) throw new AlreadyAnswered(id);
-      assertValidAnswer(toInboxRow(current), answer);
+      const item = toInboxRow(current);
+      assertValidAnswer(item, answer);
+      // Discovery can write down only what the stakeholder found fun, so the prototype phase can't end with nothing found.
+      // A round that found nothing new can still end it, on what an earlier round found.
+      if (item.ref.kind === 'fun_eval' && 'action' in answer && answer.action === 'approve' && !markedFun(answer)) {
+        const earlier = await byPrefix(db, item.project_id, 'fun_eval:');
+        if (!earlier.some((other) => other.state === 'answered' && markedFun(other.answer))) throw new InvalidAnswer('Nothing has been marked fun yet. Mark a prototype fun, or request another round.');
+      }
       const row = await db
         .updateTable('inbox_items')
         .set({ state: 'answered', answer: JSON.stringify(answer), answered_at: new Date().toISOString() })
@@ -679,15 +700,8 @@ export class Store {
     return (await query.orderBy('id').execute()).map(toInboxRow);
   }
 
-  async inboxByPrefix(projectId: number, prefix: string): Promise<InboxRow[]> {
-    const rows = await this.db
-      .selectFrom('inbox_items')
-      .selectAll()
-      .where('project_id', '=', projectId)
-      .where(sql<string>`substr(dedupe_key, 1, ${prefix.length})`, '=', prefix)
-      .orderBy('id')
-      .execute();
-    return rows.map(toInboxRow);
+  inboxByPrefix(projectId: number, prefix: string): Promise<InboxRow[]> {
+    return byPrefix(this.db, projectId, prefix);
   }
 
   async pendingInboxCount(): Promise<number> {

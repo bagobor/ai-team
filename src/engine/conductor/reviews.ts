@@ -32,6 +32,12 @@ async function advanceTicket(deps: EngineDeps, runner: Runner, project: ProjectR
   const { store, artifacts } = deps;
   const attempt = (await store.listAttempts(ticket.id)).at(-1);
   if (!attempt?.head_sha) throw new Error(`${ticket.ticket_id} is in review with no committed attempt`);
+  // A prototype is thrown away once the stakeholder has played it, so nobody reviews its code. It merges into aiteam/m0,
+  // which never reaches the base.
+  if (ticket.milestone === 0) {
+    await mergeTicket(deps, runner, project, ticket, { ...attempt, head_sha: attempt.head_sha });
+    return;
+  }
 
   const review = await store.getTaskByTicket(project.id, `${ticket.ticket_id}-R${attempt.k}`);
   if (!review) {

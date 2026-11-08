@@ -206,7 +206,7 @@ describe('Inbox', () => {
   });
 
   describe('marking checks', () => {
-    const item = { id: 7, type: 'approval' as const, options: [], checks: [{ ac: 'AC-2', text: 't', how: 'h' }] };
+    const item = { id: 7, type: 'approval' as const, options: [], ref: { kind: 'cp4' as const, milestone: 1 }, checks: [{ ac: 'AC-2', text: 't', how: 'h' }] };
     const passing = { ac: 'AC-2', status: 'passing' as const, note: '' };
     const failing = (note: string) => ({ ac: 'AC-2', status: 'failing' as const, note });
 
@@ -238,6 +238,23 @@ describe('Inbox', () => {
 
       expect(() => assertValidAnswer(plain, { action: 'approve' })).not.toThrow();
       expect(() => assertValidAnswer(plain, { action: 'approve', checks: [passing] })).toThrow(/AC-2 is not one of this item's checks/);
+    });
+
+    it('a fun_eval approve needs every check marked but not all passing', () => {
+      const evaluation = { id: 8, type: 'approval' as const, options: [], ref: { kind: 'fun_eval' as const, round: 1 }, checks: [{ ac: 'P-1', text: 't', how: 'h' }, { ac: 'P-2', text: 't', how: 'h' }] };
+      const fun = { ac: 'P-1', status: 'passing' as const, note: '' };
+      const notFun = (note: string) => ({ ac: 'P-2', status: 'failing' as const, note });
+
+      expect(() => assertValidAnswer(evaluation, { action: 'approve', checks: [fun, notFun('Too slow to matter')] })).not.toThrow();
+      expect(() => assertValidAnswer(evaluation, { action: 'approve', checks: [{ ...fun, status: 'failing', note: 'Dull' }, notFun('Dull too')] })).not.toThrow();
+      expect(() => assertValidAnswer(evaluation, { action: 'approve', checks: [fun] })).toThrow(/P-2 is not marked: approve needs every check marked, fun or not fun/);
+      expect(() => assertValidAnswer(evaluation, { action: 'approve', checks: [fun, notFun(' ')] })).toThrow(/P-2 is failing and needs a note/);
+      expect(() => assertValidAnswer(evaluation, { action: 'request_changes', comment: 'Another round', checks: [fun] })).not.toThrow();
+    });
+
+    it('cp4 approve still needs all passing', () => {
+      expect(() => assertValidAnswer(item, { action: 'approve', checks: [failing('Too fast')] })).toThrow(/AC-2 is failing: approve needs every check marked passing/);
+      expect(() => assertValidAnswer(item, { action: 'approve' })).toThrow(/AC-2 is not marked: approve needs every check marked passing/);
     });
 
     it('refuses an unmarked approve through the store, leaving the item pending', async () => {

@@ -1,10 +1,20 @@
 import { ENV_PROFILE } from '../apply/ids.ts';
 import type { EngineDeps } from '../runner.ts';
 import type { ProjectRow } from '../store.ts';
-import { DISCOVERY_DOCS, discoveryInputs, discoveryTask, ensureTask, noteOf, pinOf, profileTask, roundId, roundOf } from './tasks.ts';
+import { advancePrototype } from './prototype.ts';
+import { DISCOVERY_DOCS, discoveryInputs, discoveryTask, ensureTask, noteOf, pinOf, profileTask, protoPlanTask, roundId, roundOf } from './tasks.ts';
 
 async function intake(deps: EngineDeps, project: ProjectRow): Promise<void> {
-  if (!(await deps.artifacts.latest(project.id, 'BRIEF'))) return;
+  const brief = await deps.artifacts.latest(project.id, 'BRIEF');
+  if (!brief) return;
+  // A prototyping project finds its fun before discovery, so discovery can write it down.
+  if (project.prototyping === 1) {
+    await deps.store.atomically(async (s) => {
+      await ensureTask(s, protoPlanTask(project, 1, [pinOf(brief)]));
+      await s.setProjectPhase(project.id, 'prototype');
+    });
+    return;
+  }
   const inputs = await discoveryInputs(deps, project);
   await deps.store.atomically(async (s) => {
     await ensureTask(s, discoveryTask(project, 1, inputs.pm));
@@ -49,5 +59,6 @@ async function discovery(deps: EngineDeps, project: ProjectRow): Promise<void> {
 
 export async function advanceProject(deps: EngineDeps, project: ProjectRow): Promise<void> {
   if (project.phase === 'intake') await intake(deps, project);
+  else if (project.phase === 'prototype') await advancePrototype(deps, project);
   else if (project.phase === 'discovery') await discovery(deps, project);
 }

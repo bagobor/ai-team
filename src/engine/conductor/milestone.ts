@@ -117,7 +117,7 @@ async function runSmoke(deps: EngineDeps, project: ProjectRow, n: number): Promi
   });
 }
 
-async function newTicketSpecs(deps: EngineDeps, project: ProjectRow, n: number, tasks: TaskRow[]): Promise<TaskSpec[]> {
+export async function newTicketSpecs(deps: EngineDeps, project: ProjectRow, n: number, tasks: TaskRow[]): Promise<TaskSpec[]> {
   const specs: TaskSpec[] = [];
   for (const row of await deps.artifacts.list(project.id)) {
     if (row.type !== 'ticket' || row.milestone !== n || (row.status !== 'approved' && row.status !== 'stale')) continue;

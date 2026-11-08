@@ -1,7 +1,7 @@
 import { parsePin } from '../../artifacts/format.ts';
-import { ENV_PROFILE, techId } from '../apply/ids.ts';
+import { ENV_PROFILE, protoPlanId, techId } from '../apply/ids.ts';
 import { IllegalTransition } from '../fsm.ts';
-import type { InboxOption, InboxRow, NewInboxItem } from '../inbox.ts';
+import type { InboxOption, InboxRef, InboxRow, NewInboxItem } from '../inbox.ts';
 import type { EngineDeps, Runner } from '../runner.ts';
 import type { ArtifactVersionRow, AttemptRow, ProjectRow, Store, TaskRow } from '../store.ts';
 import type { Purpose, TaskKind, WorkOrder } from '../workorder.ts';
@@ -140,6 +140,19 @@ export function discoveryTask(project: ProjectRow, round: number, inputs: string
     role_id: 'pm',
     kind: 'authoring',
     order: workOrder('discovery', 'Turn the Brief into a Roadmap, a Team Proposal and Human Requirements. Keep the Roadmap to milestones that each deliver something the stakeholder can check.', inputs, BASE, withComment(comment)),
+  };
+}
+
+// A prototype round belongs to no milestone, as discovery doesn't. What the PM reads of the stakeholder's verdicts is in its inputs.
+export function protoPlanTask(project: ProjectRow, r: number, inputs: string[]): TaskSpec {
+  return {
+    project,
+    ticket_id: protoPlanId(r),
+    title: `Prototype round ${r}: plan`,
+    milestone: 0,
+    role_id: 'pm',
+    kind: 'authoring',
+    order: workOrder('prototype_plan', `Plan prototype round ${r}. Suggest candidate fun elements from general knowledge as hypotheses, and the smallest playable prototype for each. Only the stakeholder judges fun: read their notes in the Decision Records and build on what they found fun.`, inputs, BASE),
   };
 }
 
@@ -323,13 +336,30 @@ export async function reviseInputs(deps: Pick<EngineDeps, 'artifacts'>, project:
   return [...pins, pinOf(doc)];
 }
 
+const PROTO_PLAN = /^PROTO-PLAN-([1-9]\d*)$/;
+
+// What the prototype rounds found, oldest first: each round's plan, then the stakeholder's verdict on it. A verdict being
+// applied has no record yet, so its answer adds it.
+export async function funInputs(deps: Pick<EngineDeps, 'artifacts'>, project: ProjectRow): Promise<string[]> {
+  const found: { round: number; verdict: boolean; pin: string }[] = [];
+  for (const row of await deps.artifacts.list(project.id)) {
+    const plan = row.type === 'prototype_plan' ? PROTO_PLAN.exec(row.artifact_id) : null;
+    if (plan) found.push({ round: Number(plan[1]), verdict: false, pin: pinOf(row) });
+    if (row.type !== 'decision_record') continue;
+    const data = (await deps.artifacts.read(project, pinOf(row))).fields.data as { ref?: InboxRef } | undefined;
+    if (data?.ref?.kind === 'fun_eval') found.push({ round: data.ref.round, verdict: true, pin: pinOf(row) });
+  }
+  return found.sort((a, b) => a.round - b.round || Number(a.verdict) - Number(b.verdict)).map(({ pin }) => pin);
+}
+
 // The Tech Lead reworks its profile alongside the PM's new documents, which don't exist until the PM finishes: an unversioned pin reads the latest.
+// Every discovery round reads what the prototype rounds found, since the PM writes down the fun from the stakeholder's verdicts.
 export async function discoveryInputs(deps: Pick<EngineDeps, 'artifacts'>, project: ProjectRow): Promise<{ pm: string[]; profile: string[] }> {
   const brief = await latestPin(deps, project, 'BRIEF');
   const prior = await Promise.all(DISCOVERY_DOCS.map((id) => deps.artifacts.latest(project.id, id)));
   const priorProfile = await deps.artifacts.latest(project.id, ENV_PROFILE);
   return {
-    pm: [brief, ...prior.flatMap((row) => (row ? [pinOf(row)] : []))],
+    pm: [brief, ...prior.flatMap((row) => (row ? [pinOf(row)] : [])), ...(await funInputs(deps, project))],
     profile: [brief, ...DISCOVERY_DOCS, ...(priorProfile ? [pinOf(priorProfile)] : [])],
   };
 }

@@ -4,6 +4,7 @@ export type InboxRef =
   | { kind: 'cr'; cr: string }
   | { kind: 'escalation'; taskId: number }
   | { kind: 'smoke' | 'base_conflict' | 'base_refused' | 'qa_cap' | 'play'; milestone: number }
+  | { kind: 'fun_eval'; round: number }
   | { kind: 'engine_error' };
 
 export type InboxType = 'approval' | 'question';
@@ -63,8 +64,12 @@ export class InvalidAnswer extends Error {
 
 const isBlank = (text: unknown) => typeof text !== 'string' || text.trim() === '';
 
+// What an answer's marks must cover: nothing, every check, or every check passing.
+type Needs = 'none' | 'marked' | 'passing';
+const RULE = { marked: 'approve needs every check marked, fun or not fun', passing: 'approve needs every check marked passing' };
+
 // A mark becomes the criterion's status, so each one has to be a real verdict on a real check, and an approval can't stand on a check nobody judged.
-function assertValidMarks(checks: InboxCheck[], marks: CheckMark[], approving: boolean): void {
+function assertValidMarks(checks: InboxCheck[], marks: CheckMark[], needs: Needs): void {
   const named = new Set(checks.map(({ ac }) => ac));
   for (const { ac } of marks) if (!named.has(ac)) throw new InvalidAnswer(`${ac} is not one of this item's checks`);
 
@@ -79,20 +84,27 @@ function assertValidMarks(checks: InboxCheck[], marks: CheckMark[], approving: b
     if (status === 'failing' && isBlank(note)) throw new InvalidAnswer(`${ac} is failing and needs a note`);
   }
 
-  if (!approving) return;
+  if (needs === 'none') return;
   for (const { ac } of checks) {
     const mark = marked.get(ac);
-    if (!mark) throw new InvalidAnswer(`${ac} is not marked: approve needs every check marked passing`);
-    if (mark.status !== 'passing') throw new InvalidAnswer(`${ac} is failing: approve needs every check marked passing`);
+    if (!mark) throw new InvalidAnswer(`${ac} is not marked: ${RULE[needs]}`);
+    if (needs === 'passing' && mark.status !== 'passing') throw new InvalidAnswer(`${ac} is failing: ${RULE.passing}`);
   }
 }
 
-export function assertValidAnswer(item: Pick<InboxRow, 'id' | 'type' | 'options' | 'checks'>, answer: InboxAnswer): void {
+// A fun evaluation asks the stakeholder for a verdict on each prototype, and not fun is as much a verdict as fun: approving
+// it says the fun is defined, not that every prototype was fun.
+const needsOf = (item: Pick<InboxRow, 'ref'>, action: 'approve' | 'request_changes'): Needs => {
+  if (action !== 'approve') return 'none';
+  return item.ref.kind === 'fun_eval' ? 'marked' : 'passing';
+};
+
+export function assertValidAnswer(item: Pick<InboxRow, 'id' | 'type' | 'options' | 'checks' | 'ref'>, answer: InboxAnswer): void {
   if (item.type === 'approval') {
     if (!('action' in answer) || !['approve', 'reject', 'request_changes'].includes(answer.action)) throw new InvalidAnswer(`Inbox item ${item.id} is an approval: approve, reject or request changes`);
     if (answer.action === 'request_changes' && isBlank(answer.comment)) throw new InvalidAnswer('Request changes needs a comment');
     // A reject doesn't depend on the checks, so it isn't held to them.
-    if (answer.action !== 'reject') assertValidMarks(item.checks, answer.checks ?? [], answer.action === 'approve');
+    if (answer.action !== 'reject') assertValidMarks(item.checks, answer.checks ?? [], needsOf(item, answer.action));
     return;
   }
   if ('option' in answer) {

@@ -2,6 +2,7 @@ import { sql, type Kysely } from 'kysely';
 import { openDb } from '../src/db/open.ts';
 import type { DB } from '../src/db/schema.ts';
 import { IllegalTransition } from '../src/engine/fsm.ts';
+import { InvalidAnswer } from '../src/engine/inbox.ts';
 import { Store, type NewTask, type ProjectRow, type TaskRow } from '../src/engine/store.ts';
 import { EventLog } from '../src/events.ts';
 import type { WorkOrder } from '../src/engine/workorder.ts';
@@ -450,6 +451,47 @@ describe('Store for M2', () => {
       await store.patchMilestone(project.id, 1, { verify_round: 2 });
       await store.patchMilestone(project.id, 1, { verify_cap: 5 });
       expect(await store.getMilestone(project.id, 1)).toMatchObject({ verify_round: 2, verify_cap: 5 });
+    });
+  });
+
+  describe('fun evaluations', () => {
+    const NOTHING_FUN = 'Nothing has been marked fun yet. Mark a prototype fun, or request another round.';
+    const evaluation = (projectId: number, round: number) =>
+      store.raiseInbox({ project_id: projectId, type: 'approval', dedupe_key: `fun_eval:${round}`, ref: { kind: 'fun_eval', round }, title: `Prototype round ${round}: is it fun?`, asked_by: 'pm', why: 'Played', blocks: ['Discovery'], evidence: [], recommendation: '', options: [], checks: [{ ac: 'P-1', text: 't', how: 'h' }] });
+    const fun = { ac: 'P-1', status: 'passing' as const, note: '' };
+    const notFun = { ac: 'P-1', status: 'failing' as const, note: 'Dull' };
+
+    it('refuses to approve a fun evaluation when nothing was marked fun', async () => {
+      // What another project found fun is no part of this one.
+      const other = await store.createProject({ name: 'q', repo_path: '/q', base_branch: 'main', prototyping: 1 });
+      await store.answerInbox((await evaluation(other.id, 1)).id, { action: 'request_changes', comment: 'More', checks: [fun] });
+      const first = await evaluation(project.id, 1);
+      await store.answerInbox(first.id, { action: 'request_changes', comment: 'Try again', checks: [notFun] });
+      const second = await evaluation(project.id, 2);
+
+      await expect(store.answerInbox(second.id, { action: 'approve', checks: [notFun] })).rejects.toBeInstanceOf(InvalidAnswer);
+      await expect(store.answerInbox(second.id, { action: 'approve', checks: [notFun] })).rejects.toThrow(NOTHING_FUN);
+      expect((await store.getInbox(second.id))?.state).toBe('pending');
+      // Other answers to it are not held to the rule.
+      await store.answerInbox(second.id, { action: 'reject' });
+    });
+
+    it('accepts it when an earlier round marked one fun', async () => {
+      const first = await evaluation(project.id, 1);
+      await store.answerInbox(first.id, { action: 'request_changes', comment: 'More rocks', checks: [fun] });
+      const second = await evaluation(project.id, 2);
+
+      await store.answerInbox(second.id, { action: 'approve', checks: [notFun] });
+
+      expect((await store.getInbox(second.id))?.state).toBe('answered');
+    });
+
+    it('accepts it when this answer marks one fun', async () => {
+      const first = await evaluation(project.id, 1);
+
+      await store.answerInbox(first.id, { action: 'approve', checks: [fun] });
+
+      expect((await store.getInbox(first.id))?.state).toBe('answered');
     });
   });
 

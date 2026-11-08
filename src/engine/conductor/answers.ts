@@ -10,7 +10,7 @@ import type { EngineDeps, Runner } from '../runner.ts';
 import type { ProjectRow, Store } from '../store.ts';
 import { applyRequest } from './change-requests.ts';
 import { removeTryWorktree } from './try.ts';
-import { DISCOVERY_DOCS, discoveryInputs, discoveryTask, ensureTask, isClosed, isTerminal, latestPin, markHalted, profileTask, replanTask, reviseInputs, roundOf, specTask, stopProjectWork } from './tasks.ts';
+import { DISCOVERY_DOCS, discoveryInputs, discoveryTask, ensureTask, funInputs, isClosed, isTerminal, latestPin, markHalted, profileTask, protoPlanTask, replanTask, reviseInputs, roundOf, specTask, stopProjectWork } from './tasks.ts';
 
 // What an answer does once the work outside SQLite is finished. It never holds a key named then: Effect comes out of async functions, and a promise would take it for a thenable.
 type Effect = { status?: StatusChange[]; after?: (s: Store) => Promise<void> };
@@ -29,7 +29,7 @@ function wordsOf(answer: InboxAnswer): string | undefined {
   return 'text' in answer ? answer.text : undefined;
 }
 
-// Only an approval of a milestone carries marks, and the inbox has already checked each one against that item's checks.
+// Only an approval of a milestone or of a prototype round carries marks, and the inbox has already checked each one against that item's checks.
 const marksOf = (answer: InboxAnswer): CheckMark[] => ('checks' in answer ? (answer.checks ?? []) : []);
 
 const approved = (id: string): StatusChange => ({ id, status: 'approved', approvedBy: 'stakeholder' });
@@ -129,6 +129,34 @@ async function answerCp4(deps: EngineDeps, runner: Runner, project: ProjectRow, 
   };
 }
 
+// The engine never judges fun, so nothing here reads the marks: the next round's plan, or discovery, reads them in the
+// Decision Records. This answer's record is published with its effect, so funInputs can't find it yet and its pin is added here.
+async function answerFunEval(deps: EngineDeps, runner: Runner, project: ProjectRow, item: InboxRow, r: number, choice: string): Promise<Effect> {
+  if (choice === 'reject') {
+    deps.tryServer?.unmount(project.name, 0);
+    return halt(deps, runner, project, item);
+  }
+  const record = `DEC-${item.id}@1`;
+  if (choice === 'request_changes') {
+    const inputs = [await latestPin(deps, project, 'BRIEF'), ...(await funInputs(deps, project)), record];
+    return {
+      after: async (s) => {
+        await ensureTask(s, protoPlanTask(project, r + 1, inputs));
+      },
+    };
+  }
+  // The fun is defined, and the prototypes have served their purpose.
+  await removeTryWorktree(deps, project, 0);
+  const inputs = await discoveryInputs(deps, project);
+  return {
+    after: async (s) => {
+      await ensureTask(s, discoveryTask(project, 1, [...inputs.pm, record]));
+      await ensureTask(s, profileTask(project, 1, inputs.profile));
+      await s.setProjectPhase(project.id, 'discovery');
+    },
+  };
+}
+
 async function answerEscalation(deps: EngineDeps, runner: Runner, project: ProjectRow, item: InboxRow, taskId: number, choice: string): Promise<Effect> {
   if (choice === 'halt') return halt(deps, runner, project, item);
   const task = await deps.store.getTask(taskId);
@@ -160,6 +188,8 @@ async function effectOf(deps: EngineDeps, runner: Runner, project: ProjectRow, i
       return {};
     case 'escalation':
       return answerEscalation(deps, runner, project, item, ref.taskId, choice);
+    case 'fun_eval':
+      return answerFunEval(deps, runner, project, item, ref.round, choice);
     case 'qa_cap':
       if (choice === 'halt') return halt(deps, runner, project, item);
       return {
@@ -182,6 +212,8 @@ function decisionRecord(item: InboxRow, answer: InboxAnswer): NewVersion {
   const words = wordsOf(answer);
   // A reject isn't held to its marks, so none of them is a verdict worth recording.
   const marks = choice === 'reject' ? [] : marksOf(answer);
+  // A mark on a prototype is the stakeholder's word on whether it was fun, and reads as that.
+  const verdicts = item.ref.kind === 'fun_eval' ? { passing: 'Fun.', failing: 'Not fun.' } : { passing: 'Passing.', failing: 'Failing.' };
   return {
     id: `DEC-${item.id}`,
     type: 'decision_record',
@@ -198,7 +230,7 @@ function decisionRecord(item: InboxRow, answer: InboxAnswer): NewVersion {
       `Decision: ${label}`,
       '',
       ...(words === undefined ? [] : [quoted(words), '']),
-      ...marks.flatMap(({ ac, status, note }) => [`## ${ac}`, '', status === 'passing' ? 'Passing.' : 'Failing.', '', ...(note.trim() === '' ? [] : [quoted(note), ''])]),
+      ...marks.flatMap(({ ac, status, note }) => [`## ${ac}`, '', verdicts[status], '', ...(note.trim() === '' ? [] : [quoted(note), ''])]),
     ].join('\n'),
   };
 }
