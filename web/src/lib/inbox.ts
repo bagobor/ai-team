@@ -28,6 +28,7 @@ export function inboxLabel({ id, ref }: { id: number; ref: InboxRef }): string {
   if (ref.kind === 'cp1') return 'CP1';
   if (ref.kind === 'cp2' || ref.kind === 'cp4') return `${ref.kind.toUpperCase()}-M${ref.milestone}`;
   if (ref.kind === 'cr') return ref.cr;
+  if (ref.kind === 'fun_eval') return `FUN-R${ref.round}`;
   return `Q-${id}`;
 }
 
@@ -35,11 +36,14 @@ export const projectPath = (project: string, page: 'inbox' | 'board' | 'document
 
 export const documentLink = (project: string, pin: string) => `${projectPath(project, 'documents')}#${encodeURIComponent(pin)}`;
 
-// CP4's Try it is the one value the engine makes a link to its try server on this machine. Any other value is text: a
-// worker's own words reach evidence too, and an address that reads as local can lead elsewhere, as
-// http://127.0.0.1:4781@evil.example/ does, whose host is evil.example.
+// CP4's Try it and a fun evaluation's Play links are the only values the engine makes links to its try server on this machine.
+// Any other value is text: a worker's own words reach evidence too, and an address that reads as local can lead elsewhere, as
+// http://127.0.0.1:4781@evil.example/ does, whose host is evil.example. A Play link is a checkout path when no server is mounted, and that is text too.
+const PLAY = 'Play ';
+
 export function isTryLink(ref: InboxRef, { label, value }: { label: string; value: string }): boolean {
-  if (ref.kind !== 'cp4' || label !== TRY_IT) return false;
+  const labelled = ref.kind === 'cp4' ? label === TRY_IT : ref.kind === 'fun_eval' && label.startsWith(PLAY);
+  if (!labelled) return false;
   let url: URL;
   try {
     url = new URL(value);
@@ -82,6 +86,22 @@ export function checkMarks(checks: InboxCheck[], marks: Marks): CheckMark[] {
 // Approving would put a check nobody has judged, or one that failed, into the milestone as passing.
 export function canApprove(checks: InboxCheck[], marks: Marks): boolean {
   return checks.every(({ ac }) => marks[ac]?.status === 'passing');
+}
+
+// A fun evaluation asks for a verdict on each prototype, and not fun is a verdict: approving it says the fun is defined, not that every prototype was fun.
+export function canApproveItem(ref: InboxRef, checks: InboxCheck[], marks: Marks): boolean {
+  return ref.kind === 'fun_eval' ? checks.every(({ ac }) => marks[ac]?.status !== undefined) : canApprove(checks, marks);
+}
+
+// Only the words change: a fun evaluation still sends passing and failing, which the server takes as fun and not fun.
+export function markLabels(ref: InboxRef): { passing: string; failing: string } {
+  return ref.kind === 'fun_eval' ? { passing: 'Fun', failing: 'Not fun' } : { passing: 'Passing', failing: 'Failing' };
+}
+
+// What the note box asks. A prototype's note is how it felt, which is worth having whichever way it went.
+export function noteLabel(ref: InboxRef, failing: boolean): string {
+  if (ref.kind === 'fun_eval') return failing ? 'What did you feel? (required)' : 'What did you feel? (optional)';
+  return failing ? 'What was wrong? (required)' : 'Note (optional)';
 }
 
 // The server refuses a failing mark without a note, so the page holds the request back until each one says what was wrong.

@@ -6,6 +6,7 @@ import { groupDocuments } from '../web/src/lib/documents.ts';
 import {
   ageLabel,
   canApprove,
+  canApproveItem,
   canRequestChanges,
   checkMarks,
   documentLink,
@@ -14,7 +15,9 @@ import {
   groupInbox,
   inboxLabel,
   isTryLink,
+  markLabels,
   newPendingIds,
+  noteLabel,
   pinParts,
   type InboxItem,
 } from '../web/src/lib/inbox.ts';
@@ -67,6 +70,10 @@ describe('inboxLabel', () => {
   ] as const)('names %j, item %i, as %s', (ref, id, label) => {
     expect(inboxLabel({ id, ref })).toBe(label);
   });
+
+  it('labels a fun evaluation FUN-R2', () => {
+    expect(inboxLabel({ id: 9, ref: { kind: 'fun_eval', round: 2 } })).toBe('FUN-R2');
+  });
 });
 
 describe('the checks the stakeholder marks', () => {
@@ -82,6 +89,39 @@ describe('the checks the stakeholder marks', () => {
     expect(canApprove(checks, { 'AC-2': passing, 'AC-3': { note: 'half typed' } })).toBe(false);
     expect(canApprove(checks, { 'AC-2': passing, 'AC-3': passing })).toBe(true);
     expect(canApprove([], {})).toBe(true);
+  });
+
+  it('approves a check item as canApprove does', () => {
+    const CP4: InboxRef = { kind: 'cp4', milestone: 1 };
+
+    expect(canApproveItem(CP4, checks, { 'AC-2': passing })).toBe(false);
+    expect(canApproveItem(CP4, checks, { 'AC-2': passing, 'AC-3': { status: 'failing', note: 'quiet' } })).toBe(false);
+    expect(canApproveItem(CP4, checks, { 'AC-2': passing, 'AC-3': passing })).toBe(true);
+    expect(canApproveItem(CP4, [], {})).toBe(true);
+  });
+
+  const FUN: InboxRef = { kind: 'fun_eval', round: 1 };
+  const notFun = { status: 'failing', note: 'Dull' } as const;
+
+  it('a fun evaluation can be approved with a not-fun mark once every check is marked', () => {
+    expect(canApproveItem(FUN, checks, { 'AC-2': passing, 'AC-3': notFun })).toBe(true);
+    expect(canApproveItem(FUN, checks, { 'AC-2': notFun, 'AC-3': notFun })).toBe(true);
+    expect(canApproveItem(FUN, checks, { 'AC-2': passing })).toBe(false);
+    expect(canApproveItem(FUN, checks, { 'AC-2': passing, 'AC-3': { note: 'half typed' } })).toBe(false);
+    expect(canApproveItem(FUN, checks, {})).toBe(false);
+  });
+
+  it('fun marks read Fun and Not fun', () => {
+    expect(markLabels(FUN)).toEqual({ passing: 'Fun', failing: 'Not fun' });
+    expect(markLabels({ kind: 'cp4', milestone: 1 })).toEqual({ passing: 'Passing', failing: 'Failing' });
+    expect(markLabels({ kind: 'cp1' })).toEqual({ passing: 'Passing', failing: 'Failing' });
+  });
+
+  it('a fun evaluation asks what the stakeholder felt', () => {
+    expect(noteLabel(FUN, false)).toBe('What did you feel? (optional)');
+    expect(noteLabel(FUN, true)).toBe('What did you feel? (required)');
+    expect(noteLabel({ kind: 'cp4', milestone: 1 }, false)).toBe('Note (optional)');
+    expect(noteLabel({ kind: 'cp4', milestone: 1 }, true)).toBe('What was wrong? (required)');
   });
 
   it('turns failed checks into the request comment', () => {
@@ -155,6 +195,30 @@ describe('isTryLink', () => {
 
   it('leaves a Try it on any other item as text', () => {
     expect(isTryLink({ kind: 'escalation', taskId: 3 }, { label: 'Try it', value: TRY })).toBe(false);
+  });
+
+  const FUN: InboxRef = { kind: 'fun_eval', round: 1 };
+
+  it('Play links of a fun evaluation open like Try it', () => {
+    expect(isTryLink(FUN, { label: 'Play P-1', value: 'http://127.0.0.1:4781/p/proto/p-1/index.html' })).toBe(true);
+    expect(isTryLink(FUN, { label: 'Play P-3', value: TRY })).toBe(true);
+  });
+
+  it.each([
+    ['a checkout path, when no try server is mounted', 'Play P-1', '/work/checkout/proto/p-1/index.html'],
+    ['an address whose host comes after a userinfo', 'Play P-1', 'http://127.0.0.1:4781@evil.example/p-1/'],
+    ['https', 'Play P-1', 'https://127.0.0.1:4781/'],
+    ['no port', 'Play P-1', 'http://127.0.0.1/p-1/'],
+    ['a plan pin, which is no Play link', 'PROTO-PLAN-1', TRY],
+    ['a Try it, which only CP4 has', 'Try it', TRY],
+    ['a label that only contains Play', 'Replay P-1', TRY],
+  ])('leaves %s of a fun evaluation as text', (_case, label, value) => {
+    expect(isTryLink(FUN, { label, value })).toBe(false);
+  });
+
+  it('leaves a Play link on any other item as text', () => {
+    expect(isTryLink(CP4, { label: 'Play P-1', value: TRY })).toBe(false);
+    expect(isTryLink({ kind: 'escalation', taskId: 3 }, { label: 'Play P-1', value: TRY })).toBe(false);
   });
 });
 
