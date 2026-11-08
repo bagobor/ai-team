@@ -7,6 +7,7 @@
     "roadmap",
     "team_proposal",
     "human_requirements",
+    "fun_definition",
     "stakeholder_note"
   ],
   "properties": {
@@ -68,6 +69,59 @@
       "properties": {
         "body": {
           "type": "string"
+        }
+      }
+    },
+    "fun_definition": {
+      "description": "The FUN-DEFINITION, for a project that ran prototype rounds: what the stakeholder found fun, which you write down and do not judge. Null for a project that did not, and only then.",
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": false,
+      "required": [
+        "body",
+        "elements"
+      ],
+      "properties": {
+        "body": {
+          "description": "What makes this game fun, in the stakeholder's findings and in their words where their notes give them. Introduce each element by its F-n id.",
+          "type": "string"
+        },
+        "elements": {
+          "description": "One element per essential source of fun. Add only what the stakeholder found fun in the Decision Records you were given: never an element from general knowledge, and never one only the plans hypothesised.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "element",
+              "evidence",
+              "how_to_check"
+            ],
+            "properties": {
+              "id": {
+                "description": "F-1, F-2 and so on, each used once.",
+                "type": "string"
+              },
+              "element": {
+                "description": "The element in a few words, on one line.",
+                "type": "string"
+              },
+              "evidence": {
+                "description": "At least one pin of the form DEC-<id>@<version>#p-<k>: the Decision Record of a prototype round and the prototype in it that the stakeholder marked fun. A prototype they marked not fun, or a record that is not a prototype round's, is refused.",
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "how_to_check": {
+                "description": "How a person playing would tell that this element still works, on one line.",
+                "type": "string"
+              }
+            }
+          }
         }
       }
     },

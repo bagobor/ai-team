@@ -1,4 +1,6 @@
 export const ENV_PROFILE = 'ENV-PROFILE';
+// What a prototyping project's stakeholder found fun, written down in discovery.
+export const FUN_DEFINITION = 'FUN-DEFINITION';
 
 export const specId = (milestone: number) => `SPEC-M${milestone}`;
 export const techId = (milestone: number) => `TECH-M${milestone}`;

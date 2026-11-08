@@ -864,6 +864,7 @@ describe('Change Requests', () => {
         roadmap: { body: '# Roadmap\n', milestones: [{ n: 1, title: 'First', goal: 'Start' }] },
         team_proposal: { body: '# Team\n' },
         human_requirements: { body: '# Needs\n' },
+        fun_definition: null,
         stakeholder_note: 'Note',
         change_requests,
       };

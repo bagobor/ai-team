@@ -1,5 +1,5 @@
 import { parsePin } from '../../artifacts/format.ts';
-import { ENV_PROFILE, protoPlanId, techId } from '../apply/ids.ts';
+import { ENV_PROFILE, FUN_DEFINITION, protoPlanId, techId } from '../apply/ids.ts';
 import { IllegalTransition } from '../fsm.ts';
 import type { InboxOption, InboxRef, InboxRow, NewInboxItem } from '../inbox.ts';
 import type { EngineDeps, Runner } from '../runner.ts';
@@ -169,7 +169,12 @@ export function profileTask(project: ProjectRow, round: number, inputs: string[]
   };
 }
 
+// A Spec reads FUN-DEFINITION when the project has one, and is then told what to do about it. The rule is not in the PM's
+// charter, which has no room for it.
+const FUN_CHECK = 'When a milestone changes an element of FUN-DEFINITION, its Spec carries a human check that names the F-n element, so the stakeholder confirms at CP4 that the fun still holds.';
+
 export function specTask(project: ProjectRow, n: number, round: number, inputs: string[], comment?: string): TaskSpec {
+  const instructions = `Write the Spec for milestone ${n} from the Roadmap and the Human Requirements, with acceptance criteria that a command can verify, or a human check where only a person can judge.`;
   return {
     project,
     ticket_id: roundId(`M${n}-SPEC`, round),
@@ -177,7 +182,7 @@ export function specTask(project: ProjectRow, n: number, round: number, inputs: 
     milestone: n,
     role_id: 'pm',
     kind: 'authoring',
-    order: workOrder('milestone_spec', `Write the Spec for milestone ${n} from the Roadmap and the Human Requirements, with acceptance criteria that a command can verify, or a human check where only a person can judge.`, inputs, BASE, withComment(comment)),
+    order: workOrder('milestone_spec', inputs.some((pin) => parsePin(pin).id === FUN_DEFINITION) ? `${instructions}\n\n${FUN_CHECK}` : instructions, inputs, BASE, withComment(comment)),
   };
 }
 
@@ -336,6 +341,17 @@ export async function reviseInputs(deps: Pick<EngineDeps, 'artifacts'>, project:
   return [...pins, pinOf(doc)];
 }
 
+// What discovery hands the stakeholder at CP1 besides the Environment Profile. A prototyping project's also holds its FUN-DEFINITION.
+export async function discoveryDocs(deps: Pick<EngineDeps, 'artifacts'>, project: ProjectRow): Promise<string[]> {
+  return (await deps.artifacts.latest(project.id, FUN_DEFINITION)) ? [...DISCOVERY_DOCS, FUN_DEFINITION] : DISCOVERY_DOCS;
+}
+
+// What a Spec reads of discovery: the Roadmap and the Human Requirements, and the fun the stakeholder approved where there is one.
+export async function specSources(deps: Pick<EngineDeps, 'artifacts'>, project: ProjectRow): Promise<string[]> {
+  const ids = (await deps.artifacts.latest(project.id, FUN_DEFINITION)) ? ['ROADMAP', 'HUMAN-REQUIREMENTS', FUN_DEFINITION] : ['ROADMAP', 'HUMAN-REQUIREMENTS'];
+  return Promise.all(ids.map((id) => latestPin(deps, project, id)));
+}
+
 const PROTO_PLAN = /^PROTO-PLAN-([1-9]\d*)$/;
 
 // What the prototype rounds found, oldest first: each round's plan, then the stakeholder's verdict on it. A verdict being
@@ -356,7 +372,7 @@ export async function funInputs(deps: Pick<EngineDeps, 'artifacts'>, project: Pr
 // Every discovery round reads what the prototype rounds found, since the PM writes down the fun from the stakeholder's verdicts.
 export async function discoveryInputs(deps: Pick<EngineDeps, 'artifacts'>, project: ProjectRow): Promise<{ pm: string[]; profile: string[] }> {
   const brief = await latestPin(deps, project, 'BRIEF');
-  const prior = await Promise.all(DISCOVERY_DOCS.map((id) => deps.artifacts.latest(project.id, id)));
+  const prior = await Promise.all((await discoveryDocs(deps, project)).map((id) => deps.artifacts.latest(project.id, id)));
   const priorProfile = await deps.artifacts.latest(project.id, ENV_PROFILE);
   return {
     pm: [brief, ...prior.flatMap((row) => (row ? [pinOf(row)] : [])), ...(await funInputs(deps, project))],

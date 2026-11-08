@@ -1,16 +1,22 @@
 import { isAbsolute } from 'node:path';
 import { parsePin } from '../../artifacts/format.ts';
+import type { NewVersion } from '../../artifacts/store.ts';
 import { keyProblem } from '../../checks/play.ts';
 import { runSandboxed } from '../../checks/run-checks.ts';
-import { ENV_PROFILE } from './ids.ts';
+import { ENV_PROFILE, FUN_DEFINITION } from './ids.ts';
 import type { Applier, ApplyCtx } from './index.ts';
 import { withRaised } from './raised.ts';
 import { sandboxEnv } from './sandbox.ts';
+
+type FunElement = { id: string; element: string; evidence: string[]; how_to_check: string };
+type FunDefinition = { body: string; elements: FunElement[] };
 
 type DiscoveryOutput = {
   roadmap: { body: string; milestones: { n: number; title: string; goal: string }[] };
   team_proposal: { body: string };
   human_requirements: { body: string };
+  // A project that does not prototype has none. Output is not checked against the schema before it gets here, so a missing key reads as null.
+  fun_definition?: FunDefinition | null;
 };
 
 // `animated` is false for a page with no animation loop; a profile that leaves it out is played as a game.
@@ -36,10 +42,71 @@ export async function approvedProfile({ deps, project }: Pick<ApplyCtx, 'deps' |
   return (await deps.artifacts.read(project, ENV_PROFILE)).fields.data as ProfileData;
 }
 
-const DISCOVERY_IDS = new Set(['ROADMAP', 'TEAM-PROPOSAL', 'HUMAN-REQUIREMENTS']);
+const DISCOVERY_IDS = new Set(['ROADMAP', 'TEAM-PROPOSAL', 'HUMAN-REQUIREMENTS', FUN_DEFINITION]);
+
+const FUN_ELEMENT_ID = /^F-\d+$/;
+const FUN_EVIDENCE = /^DEC-(\d+)@(\d+)#p-(\d+)$/;
+
+// Why a pin is no evidence of fun, as the end of its refusal: empty when the stakeholder's own mark is what rules it out,
+// and undefined when they marked the prototype fun. Only a human marks fun, so this reads the Decision Record of their answer
+// and nothing the PM or the engine said about it.
+async function notFun({ deps, project }: ApplyCtx, [, id, version, k]: RegExpExecArray): Promise<string | undefined> {
+  const decision = `DEC-${id}`;
+  const row = await deps.artifacts.version(project.id, decision, Number(version));
+  if (!row) return ': there is no such decision record';
+  const { ref, answer } = ((await deps.artifacts.read(project, `${decision}@${version}`)).fields.data ?? {}) as { ref?: { kind?: string }; answer?: { action?: string; checks?: { ac: string; status: string }[] } };
+  if (row.type !== 'decision_record' || ref?.kind !== 'fun_eval') return ": it is not the stakeholder's verdict on a prototype round";
+  // A reject keeps its marks as data and not as sections, so a pin to one would name a section that is not there.
+  if (answer?.action === 'reject') return '';
+  return answer?.checks?.some(({ ac, status }) => ac === `P-${k}` && status === 'passing') ? undefined : '';
+}
+
+// What discovery must write down about a prototyping project's fun, and that the PM may write down only what the stakeholder
+// found fun. Each problem names the element it is about, by its place when its own id may be the problem.
+async function funProblems(ctx: ApplyCtx, fun: FunDefinition | null): Promise<string[]> {
+  if (ctx.project.prototyping !== 1) return fun === null ? [] : ['This project is not prototyping, so fun_definition must be null'];
+  if (fun === null) return ['A prototyping project needs a fun_definition: the elements the stakeholder found fun, each citing a prototype they marked fun'];
+  if (fun.elements.length === 0) return ['The fun_definition needs at least one element'];
+
+  const problems: string[] = [];
+  const defined = new Set<string>();
+  for (const [index, { id, element, evidence, how_to_check }] of fun.elements.entries()) {
+    const say = (problem: string) => problems.push(`Element ${index + 1}: ${problem}`);
+    if (!FUN_ELEMENT_ID.test(id)) say(`id ${JSON.stringify(id)} must look like F-1`);
+    else if (defined.has(id)) say(`id ${id} is already used`);
+    defined.add(id);
+    if (element.trim() === '') say('element is blank');
+    if (how_to_check.trim() === '') say('how_to_check is blank');
+
+    const name = FUN_ELEMENT_ID.test(id) ? id : `Element ${index + 1}`;
+    if (evidence.length === 0) problems.push(`${name} cites no prototype the stakeholder marked fun`);
+    for (const pin of evidence) {
+      const match = FUN_EVIDENCE.exec(pin);
+      if (!match) {
+        problems.push(`${name} evidence ${JSON.stringify(pin)} must look like DEC-12@1#p-1: the fun-eval decision record, its version and the prototype the stakeholder marked fun`);
+        continue;
+      }
+      const why = await notFun(ctx, match);
+      if (why !== undefined) problems.push(`${name} cites ${pin}, which the stakeholder did not mark fun${why}`);
+    }
+  }
+  return problems;
+}
+
+// It rests on the marks it cites, each once, and on nothing else the round read.
+const funDocument = ({ body, elements }: FunDefinition): NewVersion => ({
+  id: FUN_DEFINITION,
+  type: 'fun_definition',
+  status: 'proposed',
+  ownerRole: 'pm',
+  derivedFrom: [...new Set(elements.flatMap(({ evidence }) => evidence))],
+  body,
+  fields: { data: elements },
+});
 
 export const applyDiscovery: Applier = async (ctx) => {
-  const { roadmap, team_proposal, human_requirements } = ctx.output as DiscoveryOutput;
+  const { roadmap, team_proposal, human_requirements, fun_definition } = ctx.output as DiscoveryOutput;
+  const fun = fun_definition ?? null;
   const { milestones } = roadmap;
 
   if (milestones.length === 0) return { ok: false, evidence: 'The roadmap has no milestones' };
@@ -47,16 +114,19 @@ export const applyDiscovery: Applier = async (ctx) => {
   if (gap !== -1) return { ok: false, evidence: `Milestones must be numbered 1, 2, 3 with no gap, but number ${gap + 1} is ${milestones[gap]!.n}` };
   const untitled = milestones.find(({ title }) => title.trim() === '');
   if (untitled) return { ok: false, evidence: `Milestone ${untitled.n} has a blank title` };
+  const unfounded = await funProblems(ctx, fun);
+  if (unfounded.length > 0) return { ok: false, evidence: unfounded.join('\n') };
 
   // A redo round reads the documents it replaces: those are its history, not its sources.
   const derivedFrom = ctx.order.inputs.filter((pin) => !DISCOVERY_IDS.has(parsePin(pin).id));
   const doc = { status: 'proposed', ownerRole: 'pm', derivedFrom } as const;
   return withRaised(ctx, {
-    message: 'discovery: roadmap, team proposal and human requirements',
+    message: fun ? 'discovery: roadmap, team proposal, human requirements and fun definition' : 'discovery: roadmap, team proposal and human requirements',
     publish: [
       { ...doc, id: 'ROADMAP', type: 'roadmap', body: roadmap.body, fields: { data: milestones } },
       { ...doc, id: 'TEAM-PROPOSAL', type: 'team_proposal', body: team_proposal.body },
       { ...doc, id: 'HUMAN-REQUIREMENTS', type: 'human_requirements', body: human_requirements.body },
+      ...(fun ? [funDocument(fun)] : []),
     ],
   });
 };

@@ -14,7 +14,7 @@ import type { EngineDeps, Runner } from '../runner.ts';
 import type { MilestoneRow, ProjectRow, Store, TaskRow } from '../store.ts';
 import { withHeadWorktree } from './head-worktree.ts';
 import { playBug, problemLine, runPlayGate } from './play-gate.ts';
-import { designMoving, engReviewTask, ensureTask, isClosed, latestPin, milestoneReviewTask, noteOf, pinOf, qaTask, raiseHold, RETRY_OR_HALT, roundId, roundOf, scopeTask, specTask, techTask, testPlanTask, ticketTask, openHold, type TaskSpec, type TicketFields } from './tasks.ts';
+import { designMoving, engReviewTask, ensureTask, isClosed, latestPin, milestoneReviewTask, noteOf, pinOf, qaTask, raiseHold, RETRY_OR_HALT, roundId, roundOf, scopeTask, specSources, specTask, techTask, testPlanTask, ticketTask, openHold, type TaskSpec, type TicketFields } from './tasks.ts';
 import { offerTry, removeTryWorktree, serveTryAgain } from './try.ts';
 
 type HoldKind = 'smoke' | 'base_conflict' | 'base_refused' | 'play';
@@ -70,7 +70,7 @@ const holdQaCap = (s: Store, project: ProjectRow, n: number, title: string, why:
   });
 
 async function setPending(deps: EngineDeps, project: ProjectRow, { n }: MilestoneRow): Promise<void> {
-  const inputs = [await latestPin(deps, project, 'ROADMAP'), await latestPin(deps, project, 'HUMAN-REQUIREMENTS')];
+  const inputs = await specSources(deps, project);
   await deps.store.atomically(async (s) => {
     await ensureTask(s, specTask(project, n, 1, inputs));
     await s.setMilestonePhase(project.id, n, 'spec');

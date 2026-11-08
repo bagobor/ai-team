@@ -7,6 +7,7 @@ export type DocumentGroup<T> = { label: string; documents: T[] };
 const GROUP_OF: Record<ArtifactType, string> = {
   brief: 'Brief',
   prototype_plan: 'Prototypes',
+  fun_definition: 'Discovery',
   roadmap: 'Discovery',
   team_proposal: 'Discovery',
   human_requirements: 'Discovery',

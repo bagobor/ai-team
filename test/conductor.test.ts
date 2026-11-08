@@ -42,6 +42,7 @@ const DISCOVERY = {
   roadmap: { body: '# Roadmap\n', milestones: [{ n: 1, title: 'First', goal: 'Start' }, { n: 2, title: 'Second', goal: 'Finish' }] },
   team_proposal: { body: '# Team\n' },
   human_requirements: { body: '# Needs\n' },
+  fun_definition: null,
   stakeholder_note: 'Please look at the roadmap',
 };
 const ONE_MILESTONE = { ...DISCOVERY, roadmap: { body: '# Roadmap\n', milestones: [{ n: 1, title: 'Only', goal: 'All of it' }] } };

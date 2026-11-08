@@ -14,7 +14,7 @@ import type { WorkOrder } from '../src/engine/workorder.ts';
 import { EventLog } from '../src/events.ts';
 import { addAttemptWorktree, ensureIntegrationBranch, snapshotAttempt } from '../src/git/workspace.ts';
 import { worktreePath } from '../src/paths.ts';
-import { projectOf } from './helpers/apply.ts';
+import { CRITERIA, projectOf } from './helpers/apply.ts';
 import { makeEngine, type TestEngine } from './helpers/engine.ts';
 import { fakePlayer, playResult } from './helpers/play.ts';
 import { revParse, run } from './helpers/repo.ts';
@@ -29,6 +29,16 @@ const PLAN = {
 const PAGE = '<!doctype html><title>Prototype</title><canvas></canvas>\n';
 const instructions = (r: number) =>
   `Plan prototype round ${r}. Suggest candidate fun elements from general knowledge as hypotheses, and the smallest playable prototype for each. Only the stakeholder judges fun: read their notes in the Decision Records and build on what they found fun.`;
+const FUN_CHECK = 'When a milestone changes an element of FUN-DEFINITION, its Spec carries a human check that names the F-n element, so the stakeholder confirms at CP4 that the fun still holds.';
+const DISCOVERY = {
+  roadmap: { body: '# Roadmap\n', milestones: [{ n: 1, title: 'First', goal: 'Start' }] },
+  team_proposal: { body: '# Team\n' },
+  human_requirements: { body: '# Needs\n' },
+  fun_definition: null as unknown,
+  stakeholder_note: 'Please look at the roadmap',
+};
+const PROFILE = { body: '# Environment\n', commands: { build: 'true', test: 'true', lint: 'true', smoke: 'echo smoke-ok' }, toolchains: ['node 22'], network_allow: [], setup: null, play: null, stakeholder_note: 'The toolchain is ready' };
+const SPEC = { body: '# Milestone one\n\n## Scope\n\nSmall.\n', criteria: CRITERIA, stakeholder_note: 'The spec is small' };
 const fun = (ac: string, note = ''): CheckMark => ({ ac, status: 'passing', note });
 const notFun = (ac: string, note = 'Nothing to it'): CheckMark => ({ ac, status: 'failing', note });
 
@@ -324,5 +334,95 @@ describe('the prototype phase', () => {
     expect(served.status).toBe(200);
     expect(await served.text()).toBe(PAGE);
     expect(await funEvals(restarted)).toHaveLength(1);
+  });
+});
+
+describe('the fun definition', () => {
+  const funDefinition = (...elements: [element: string, evidence: string][]) => ({
+    body: '# What is fun\n',
+    elements: elements.map(([element, pin], index) => ({ id: `F-${index + 1}`, element, evidence: [pin], how_to_check: `Play it and look for ${element}` })),
+  });
+
+  // A prototyping project to discovery: round 1 found P-1 fun and P-2 not, and the stakeholder approved.
+  async function toDiscovery(): Promise<{ h: Harness; dec: number }> {
+    const h = await harness();
+    const item = await toFunEval(h);
+    await answer(h, item, { action: 'approve', checks: [fun('P-1', 'Dodging felt great'), notFun('P-2')] });
+    expect(await phaseOf(h)).toBe('discovery');
+    return { h, dec: item.id };
+  }
+
+  async function toCp1(h: Harness, discovery: unknown): Promise<InboxRow> {
+    await finish(h, 'DISCOVERY-PM', discovery);
+    await finish(h, 'DISCOVERY-TL', PROFILE);
+    await h.conductor.tick();
+    const found = (await h.store.listInbox({ projectId: h.project.id })).filter((item) => item.ref.kind === 'cp1' && item.state === 'pending');
+    expect(found).toHaveLength(1);
+    return found[0]!;
+  }
+
+  it('cp1 shows FUN-DEFINITION and approving it gives M1-SPEC the pin as an input', async () => {
+    const { h, dec } = await toDiscovery();
+    const cp1 = await toCp1(h, { ...DISCOVERY, fun_definition: funDefinition(['Dodging', `DEC-${dec}@1#p-1`]) });
+
+    expect(cp1.evidence.map(({ pin }) => pin)).toEqual(['ROADMAP@1', 'TEAM-PROPOSAL@1', 'HUMAN-REQUIREMENTS@1', 'FUN-DEFINITION@1', 'ENV-PROFILE@1']);
+    expect((await h.artifacts.latest(h.project.id, 'FUN-DEFINITION'))).toMatchObject({ status: 'proposed', type: 'fun_definition', derived_from: [`DEC-${dec}@1#p-1`] });
+
+    await h.store.answerInbox(cp1.id, { action: 'approve' });
+    await h.conductor.tick();
+
+    expect((await h.artifacts.latest(h.project.id, 'FUN-DEFINITION'))!.status).toBe('approved');
+    const spec = orderOf(await byTicket(h, 'M1-SPEC'));
+    expect(spec.inputs).toEqual(['ROADMAP@1', 'HUMAN-REQUIREMENTS@1', 'FUN-DEFINITION@1']);
+    expect(spec.instructions).toMatch(/^Write the Spec for milestone 1 .*\n\n/);
+    expect(spec.instructions.endsWith(`\n\n${FUN_CHECK}`)).toBe(true);
+
+    // A Spec the stakeholder sends back is written under the same rule, from the same sources.
+    await finish(h, 'M1-SPEC', SPEC);
+    await h.conductor.tick();
+    const cp2 = (await h.store.listInbox({ projectId: h.project.id })).find((item) => item.ref.kind === 'cp2')!;
+    await h.store.answerInbox(cp2.id, { action: 'request_changes', comment: 'Less scope' });
+    await h.conductor.tick();
+    const redo = orderOf(await byTicket(h, 'M1-SPEC-r2'));
+    expect(redo.inputs).toEqual(['ROADMAP@1', 'HUMAN-REQUIREMENTS@1', 'FUN-DEFINITION@1', 'SPEC-M1@1']);
+    expect(redo.instructions).toContain(FUN_CHECK);
+  });
+
+  it('a Spec in a project without a fun definition has no such rule', async () => {
+    const h = await harness({ prototyping: false });
+    await addBrief(h);
+    await h.conductor.tick();
+    const cp1 = await toCp1(h, DISCOVERY);
+
+    expect(cp1.evidence.map(({ pin }) => pin)).toEqual(['ROADMAP@1', 'TEAM-PROPOSAL@1', 'HUMAN-REQUIREMENTS@1', 'ENV-PROFILE@1']);
+    await h.store.answerInbox(cp1.id, { action: 'approve' });
+    await h.conductor.tick();
+
+    const spec = orderOf(await byTicket(h, 'M1-SPEC'));
+    expect(spec.inputs).toEqual(['ROADMAP@1', 'HUMAN-REQUIREMENTS@1']);
+    expect(spec.instructions).not.toContain('FUN-DEFINITION');
+  });
+
+  it('a request for changes at cp1 has the PM write FUN-DEFINITION again, from the same marks', async () => {
+    const { h, dec } = await toDiscovery();
+    const cp1 = await toCp1(h, { ...DISCOVERY, fun_definition: funDefinition(['Dodging', `DEC-${dec}@1#p-1`]) });
+
+    await h.store.answerInbox(cp1.id, { action: 'request_changes', comment: 'Say how to check dodging' });
+    await h.conductor.tick();
+
+    const redo = await byTicket(h, 'DISCOVERY-PM-r2');
+    expect(orderOf(redo).inputs).toEqual(['BRIEF@1', 'ROADMAP@1', 'TEAM-PROPOSAL@1', 'HUMAN-REQUIREMENTS@1', 'FUN-DEFINITION@1', 'PROTO-PLAN-1@1', `DEC-${dec}@1`]);
+
+    // The revision is held to the same rule: the definition is not optional, and a mark that is not fun is not evidence.
+    await expect(finish(h, 'DISCOVERY-PM-r2', DISCOVERY)).rejects.toThrow(/needs a fun_definition/);
+    await expect(finish(h, 'DISCOVERY-PM-r2', { ...DISCOVERY, fun_definition: funDefinition(['Rocks', `DEC-${dec}@1#p-2`]) })).rejects.toThrow(`F-1 cites DEC-${dec}@1#p-2, which the stakeholder did not mark fun`);
+    await finish(h, 'DISCOVERY-PM-r2', { ...DISCOVERY, fun_definition: funDefinition(['Dodging', `DEC-${dec}@1#p-1`], ['Close calls', `DEC-${dec}@1#p-1`]) });
+    await finish(h, 'DISCOVERY-TL-r2', PROFILE);
+    await h.conductor.tick();
+
+    const second = (await h.store.listInbox({ projectId: h.project.id })).filter((item) => item.ref.kind === 'cp1' && item.state === 'pending');
+    expect(second).toHaveLength(1);
+    expect(second[0]!.evidence.map(({ pin }) => pin)).toEqual(['ROADMAP@2', 'TEAM-PROPOSAL@2', 'HUMAN-REQUIREMENTS@2', 'FUN-DEFINITION@2', 'ENV-PROFILE@2']);
+    expect((await h.artifacts.latest(h.project.id, 'FUN-DEFINITION'))!.status).toBe('proposed');
   });
 });

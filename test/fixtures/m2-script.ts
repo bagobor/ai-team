@@ -24,6 +24,7 @@ const DISCOVERY = {
   roadmap: { body: '# Roadmap\n\nOne milestone is enough.\n', milestones: [{ n: 1, title: 'Convert temperatures', goal: 'A tool that converts both ways' }] },
   team_proposal: { body: '# Team\n\nOne engineer.\n' },
   human_requirements: { body: '# What we need from you\n\nNothing.\n' },
+  fun_definition: null,
   stakeholder_note: 'One milestone, one engineer, nothing needed from you',
 };
 

@@ -2,7 +2,7 @@ import { ENV_PROFILE } from '../apply/ids.ts';
 import type { EngineDeps } from '../runner.ts';
 import type { ProjectRow } from '../store.ts';
 import { advancePrototype } from './prototype.ts';
-import { DISCOVERY_DOCS, discoveryInputs, discoveryTask, ensureTask, noteOf, pinOf, profileTask, protoPlanTask, roundId, roundOf } from './tasks.ts';
+import { discoveryDocs, discoveryInputs, discoveryTask, ensureTask, noteOf, pinOf, profileTask, protoPlanTask, roundId, roundOf } from './tasks.ts';
 
 async function intake(deps: EngineDeps, project: ProjectRow): Promise<void> {
   const brief = await deps.artifacts.latest(project.id, 'BRIEF');
@@ -31,7 +31,7 @@ async function discovery(deps: EngineDeps, project: ProjectRow): Promise<void> {
   const profile = tasks.find(({ ticket_id }) => ticket_id === roundId('DISCOVERY-TL', round));
   if (pm?.state !== 'done' || profile?.state !== 'done') return;
 
-  const rows = await Promise.all([...DISCOVERY_DOCS, ENV_PROFILE].map(async (id) => {
+  const rows = await Promise.all([...(await discoveryDocs(deps, project)), ENV_PROFILE].map(async (id) => {
     const row = await artifacts.latest(project.id, id);
     if (!row) throw new Error(`Discovery finished without ${id}`);
     return row;

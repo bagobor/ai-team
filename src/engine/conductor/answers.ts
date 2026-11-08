@@ -10,7 +10,7 @@ import type { EngineDeps, Runner } from '../runner.ts';
 import type { ProjectRow, Store } from '../store.ts';
 import { applyRequest } from './change-requests.ts';
 import { removeTryWorktree } from './try.ts';
-import { DISCOVERY_DOCS, discoveryInputs, discoveryTask, ensureTask, funInputs, isClosed, isTerminal, latestPin, markHalted, profileTask, protoPlanTask, replanTask, reviseInputs, roundOf, specTask, stopProjectWork } from './tasks.ts';
+import { discoveryDocs, discoveryInputs, discoveryTask, ensureTask, funInputs, isClosed, isTerminal, latestPin, markHalted, profileTask, protoPlanTask, replanTask, reviseInputs, roundOf, specSources, specTask, stopProjectWork } from './tasks.ts';
 
 // What an answer does once the work outside SQLite is finished. It never holds a key named then: Effect comes out of async functions, and a promise would take it for a thenable.
 type Effect = { status?: StatusChange[]; after?: (s: Store) => Promise<void> };
@@ -54,7 +54,7 @@ async function answerCp1(deps: EngineDeps, runner: Runner, project: ProjectRow, 
   }
   const milestones = (await deps.artifacts.read(project, 'ROADMAP')).fields.data as { n: number; title: string; goal: string }[];
   return {
-    status: [...DISCOVERY_DOCS, ENV_PROFILE].map(approved),
+    status: [...(await discoveryDocs(deps, project)), ENV_PROFILE].map(approved),
     after: async (s) => {
       for (const { n, title, goal } of milestones) await s.createMilestone({ project_id: project.id, n, title, goal, phase: 'pending' });
       await s.setProjectPhase(project.id, 'active');
@@ -66,7 +66,7 @@ async function answerCp2(deps: EngineDeps, runner: Runner, project: ProjectRow, 
   if (choice === 'reject') return halt(deps, runner, project, item);
   if (choice === 'request_changes') {
     const k = roundOf(await deps.store.listTasks(project.id), `M${n}-SPEC`) + 1;
-    const inputs = await Promise.all(['ROADMAP', 'HUMAN-REQUIREMENTS', specId(n)].map((id) => latestPin(deps, project, id)));
+    const inputs = [...(await specSources(deps, project)), await latestPin(deps, project, specId(n))];
     return {
       after: async (s) => {
         await ensureTask(s, specTask(project, n, k, inputs, words));

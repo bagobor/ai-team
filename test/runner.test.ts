@@ -16,7 +16,7 @@ const applier = vi.mocked(applyDiscovery);
 
 const INIT = JSON.stringify({ type: 'system', subtype: 'init', session_id: 's', model: 'm' });
 const SLOW_STEP = { lines: [INIT], delayMs: 120_000 };
-const DISCOVERY = { roadmap: { body: '# Roadmap\n', milestones: [] }, team_proposal: { body: 'Team' }, human_requirements: { body: 'Needs' }, stakeholder_note: 'Note' };
+const DISCOVERY = { roadmap: { body: '# Roadmap\n', milestones: [] }, team_proposal: { body: 'Team' }, human_requirements: { body: 'Needs' }, fun_definition: null, stakeholder_note: 'Note' };
 const discoveryStep = (files: Record<string, string> = {}) => ({ writeFiles: files, lines: [INIT, resultLine({ structured_output: DISCOVERY })] });
 const roadmapChange = (body = '# Roadmap\n') => ({
   message: 'publish the roadmap',

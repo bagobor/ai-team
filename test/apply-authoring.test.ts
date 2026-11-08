@@ -19,6 +19,7 @@ const DISCOVERY = {
   roadmap: { body: '# Roadmap\n', milestones: [{ n: 1, title: 'First', goal: 'Start' }, { n: 2, title: 'Second', goal: 'Finish' }] },
   team_proposal: { body: '# Team\n' },
   human_requirements: { body: '# Needs\n' },
+  fun_definition: null,
   stakeholder_note: 'Please look at the roadmap',
 };
 const PROFILE = {
@@ -94,6 +95,134 @@ describe('appliers', () => {
         ['HUMAN-REQUIREMENTS', 'proposed', 'pm', ['BRIEF@1']],
       ]);
       expect((await read('ROADMAP')).fields.data).toEqual(DISCOVERY.roadmap.milestones);
+    });
+
+    describe('and a fun definition', () => {
+      type Mark = { ac: string; status: 'passing' | 'failing'; note: string };
+      const fun = (ac: string): Mark => ({ ac, status: 'passing', note: 'Great' });
+      const notFun = (ac: string): Mark => ({ ac, status: 'failing', note: 'Nothing to it' });
+      const element = (id: string, evidence: string[], overrides: Record<string, unknown> = {}) => ({ id, element: `Element ${id}`, evidence, how_to_check: `Play it and look for ${id}`, ...overrides });
+      const FUN = (elements: unknown[]) => ({ ...DISCOVERY, fun_definition: { body: '# What is fun\n', elements } });
+
+      // What applyAnswer publishes for a fun evaluation: the answer as data, and one section per mark.
+      const decision = async (id: number, answer: { action: 'approve' | 'request_changes' | 'reject'; comment?: string; checks?: Mark[] }, ref: unknown = { kind: 'fun_eval', round: 1 }) =>
+        e.artifacts.commit(await projectOf(e), {
+          message: 'decision',
+          publish: [
+            {
+              id: `DEC-${id}`,
+              type: 'decision_record',
+              status: 'approved',
+              approvedBy: 'stakeholder',
+              ownerRole: 'stakeholder',
+              derivedFrom: [],
+              body: ['# Prototype round 1: is it fun?', '', ...(answer.checks ?? []).flatMap(({ ac, status }) => [`## ${ac}`, '', status === 'passing' ? 'Fun.' : 'Not fun.', ''])].join('\n'),
+              fields: { data: { ref, answer } },
+            },
+          ],
+        });
+      const prototyping = () => e.db.updateTable('projects').set({ prototyping: 1 }).execute();
+      // Prototyping, with round 1 answered: DEC-31 found P-1 fun and P-2 not.
+      const answered = async () => {
+        await prototyping();
+        await brief();
+        await decision(31, { action: 'request_changes', comment: 'More rocks', checks: [fun('P-1'), notFun('P-2')] });
+      };
+
+      it('a prototyping project needs a fun definition', async () => {
+        await answered();
+
+        expect(evidenceOf(await apply(e, 'discovery', DISCOVERY))).toBe('A prototyping project needs a fun_definition: the elements the stakeholder found fun, each citing a prototype they marked fun');
+        expect(evidenceOf(await apply(e, 'discovery', FUN([])))).toBe('The fun_definition needs at least one element');
+      });
+
+      it('a project without prototyping must not send one', async () => {
+        await brief();
+
+        expect(evidenceOf(await apply(e, 'discovery', FUN([element('F-1', ['DEC-31@1#p-1'])])))).toBe('This project is not prototyping, so fun_definition must be null');
+        // A schema-valid output without the key is the same as null.
+        const { fun_definition: _left, ...bare } = DISCOVERY;
+        expect((await apply(e, 'discovery', bare)).ok).toBe(true);
+      });
+
+      it('publishes FUN-DEFINITION citing a fun mark', async () => {
+        await answered();
+        await decision(32, { action: 'approve', checks: [fun('P-1'), fun('P-2')] });
+
+        const rows = await publish(e, await apply(e, 'discovery', FUN([element('F-1', ['DEC-31@1#p-1', 'DEC-32@1#p-1']), element('F-2', ['DEC-32@1#p-2', 'DEC-31@1#p-1'])]), { inputs: ['BRIEF@1', 'DEC-31@1', 'DEC-32@1'] }));
+
+        expect(rows.map((row) => [row.artifact_id, row.type, row.status, row.owner_role])).toEqual([
+          ['ROADMAP', 'roadmap', 'proposed', 'pm'],
+          ['TEAM-PROPOSAL', 'team_proposal', 'proposed', 'pm'],
+          ['HUMAN-REQUIREMENTS', 'human_requirements', 'proposed', 'pm'],
+          ['FUN-DEFINITION', 'fun_definition', 'proposed', 'pm'],
+        ]);
+        // Derived from the marks it cites (one of them in a request for changes, one in an approval), each once, and from nothing else.
+        expect(rows[3]!.derived_from).toEqual(['DEC-31@1#p-1', 'DEC-32@1#p-1', 'DEC-32@1#p-2']);
+        const doc = await read('FUN-DEFINITION');
+        expect(doc.body).toBe('# What is fun\n');
+        expect(doc.fields.data).toEqual([element('F-1', ['DEC-31@1#p-1', 'DEC-32@1#p-1']), element('F-2', ['DEC-32@1#p-2', 'DEC-31@1#p-1'])]);
+        expect(rows[0]!.derived_from).toEqual(['BRIEF@1', 'DEC-31@1', 'DEC-32@1']);
+      });
+
+      it('a redo round reads the definition it replaces without deriving from it', async () => {
+        await answered();
+        const first = await publish(e, await apply(e, 'discovery', FUN([element('F-1', ['DEC-31@1#p-1'])]), { inputs: ['BRIEF@1'] }));
+        expect(first.map((row) => row.version)).toEqual([1, 1, 1, 1]);
+
+        const redo = await publish(e, await apply(e, 'discovery', FUN([element('F-1', ['DEC-31@1#p-1'])]), { inputs: ['BRIEF@1', 'ROADMAP@1', 'FUN-DEFINITION@1', 'DEC-31@1'] }));
+
+        expect(redo.map((row) => [row.artifact_id, row.version])).toEqual([['ROADMAP', 2], ['TEAM-PROPOSAL', 2], ['HUMAN-REQUIREMENTS', 2], ['FUN-DEFINITION', 2]]);
+        expect(redo[0]!.derived_from).toEqual(['BRIEF@1', 'DEC-31@1']);
+      });
+
+      it('refuses evidence the stakeholder marked not fun', async () => {
+        await answered();
+        await decision(33, { action: 'reject', checks: [fun('P-1')] });
+        await decision(34, { action: 'approve', checks: [fun('P-1')] });
+
+        // Not fun, a reject (whose marks are not kept as sections), and a prototype the decision never marked.
+        expect(evidenceOf(await apply(e, 'discovery', FUN([element('F-1', ['DEC-31@1#p-1']), element('F-2', ['DEC-31@1#p-2'])])))).toBe('F-2 cites DEC-31@1#p-2, which the stakeholder did not mark fun');
+        expect(evidenceOf(await apply(e, 'discovery', FUN([element('F-1', ['DEC-33@1#p-1'])])))).toBe('F-1 cites DEC-33@1#p-1, which the stakeholder did not mark fun');
+        expect(evidenceOf(await apply(e, 'discovery', FUN([element('F-1', ['DEC-34@1#p-2'])])))).toBe('F-1 cites DEC-34@1#p-2, which the stakeholder did not mark fun');
+      });
+
+      it('names every element that cites a mark that is not fun', async () => {
+        await answered();
+
+        const evidence = evidenceOf(await apply(e, 'discovery', FUN([element('F-1', ['DEC-31@1#p-2']), element('F-2', ['DEC-31@1#p-1']), element('F-3', ['DEC-31@1#p-1', 'DEC-31@1#p-2'])])));
+
+        expect(evidence.split('\n')).toEqual(['F-1 cites DEC-31@1#p-2, which the stakeholder did not mark fun', 'F-3 cites DEC-31@1#p-2, which the stakeholder did not mark fun']);
+      });
+
+      it('refuses evidence that is not a fun-eval decision', async () => {
+        await answered();
+        await decision(35, { action: 'approve', checks: [fun('P-1')] }, { kind: 'cp4', milestone: 1 });
+
+        // A CP4 decision with a passing P-1, a decision record that does not exist, and a version of one that does not.
+        for (const pin of ['DEC-35@1#p-1', 'DEC-99@1#p-1', 'DEC-31@2#p-1']) {
+          expect(evidenceOf(await apply(e, 'discovery', FUN([element('F-1', [pin])])))).toMatch(new RegExp(`^F-1 cites ${pin}, which the stakeholder did not mark fun: `));
+        }
+        // Something that is not a decision record at all.
+        expect(evidenceOf(await apply(e, 'discovery', FUN([element('F-1', ['BRIEF@1#p-1'])])))).toBe('F-1 evidence "BRIEF@1#p-1" must look like DEC-12@1#p-1: the fun-eval decision record, its version and the prototype the stakeholder marked fun');
+      });
+
+      it('wants evidence for every element', async () => {
+        await answered();
+
+        expect(evidenceOf(await apply(e, 'discovery', FUN([element('F-1', [])])))).toBe('F-1 cites no prototype the stakeholder marked fun');
+      });
+
+      it.each([
+        ['an id that is not F-n', [element('E-1', ['DEC-31@1#p-1'])], 'Element 1: id "E-1" must look like F-1'],
+        ['an id used twice', [element('F-1', ['DEC-31@1#p-1']), element('F-1', ['DEC-31@1#p-1'])], 'Element 2: id F-1 is already used'],
+        ['a blank element', [element('F-1', ['DEC-31@1#p-1'], { element: '  ' })], 'Element 1: element is blank'],
+        ['a blank how_to_check', [element('F-1', ['DEC-31@1#p-1'], { how_to_check: '' })], 'Element 1: how_to_check is blank'],
+      ])('refuses %s', async (_name, elements, evidence) => {
+        await answered();
+
+        expect(evidenceOf(await apply(e, 'discovery', FUN(elements)))).toBe(evidence);
+      });
     });
 
     it.each([
