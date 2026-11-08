@@ -1,4 +1,4 @@
-import { TRY_IT, type CheckMark, type InboxCheck, type InboxRef, type InboxRow, type InboxType } from '../../../src/engine/inbox.ts';
+import { PLAY, TRY_IT, type CheckMark, type InboxCheck, type InboxRef, type InboxRow, type InboxType } from '../../../src/engine/inbox.ts';
 
 export type InboxItem = InboxRow & { project: string; ageS: number };
 export type InboxGroup = { type: InboxType; label: string; items: InboxItem[] };
@@ -39,7 +39,6 @@ export const documentLink = (project: string, pin: string) => `${projectPath(pro
 // CP4's Try it and a fun evaluation's Play links are the only values the engine makes links to its try server on this machine.
 // Any other value is text: a worker's own words reach evidence too, and an address that reads as local can lead elsewhere, as
 // http://127.0.0.1:4781@evil.example/ does, whose host is evil.example. A Play link is a checkout path when no server is mounted, and that is text too.
-const PLAY = 'Play ';
 
 export function isTryLink(ref: InboxRef, { label, value }: { label: string; value: string }): boolean {
   const labelled = ref.kind === 'cp4' ? label === TRY_IT : ref.kind === 'fun_eval' && label.startsWith(PLAY);
@@ -114,3 +113,19 @@ export function failedChecksComment(checks: InboxCheck[], marks: Marks): string 
   const lines = failed(checks, marks).map(({ ac, text }) => (noteOf(marks, ac) === '' ? `- ${ac} (${text})` : `- ${ac} (${text}): ${noteOf(marks, ac)}`));
   return lines.length === 0 ? '' : ['Failed checks:', ...lines].join('\n');
 }
+
+// A fun evaluation asks whether prototypes are fun, not whether criteria hold, so its words differ wherever a check would read as a test.
+const isFun = (ref: InboxRef): boolean => ref.kind === 'fun_eval';
+
+export const checksHeading = (ref: InboxRef): string => (isFun(ref) ? 'Prototypes to play' : 'Checks for you');
+
+// Asking for changes to a fun evaluation starts the next prototype round.
+export const requestChangesLabel = (ref: InboxRef): string => (isFun(ref) ? 'Another round' : 'Request changes');
+
+// Not fun is a verdict, not a failure, and the PM reads every mark and note from the decision record, so the stakeholder starts from an empty box.
+export function changesComment(ref: InboxRef, checks: InboxCheck[], marks: Marks): string {
+  return isFun(ref) ? '' : failedChecksComment(checks, marks);
+}
+
+// The engine halts the project on a reject, and keeps no marks from it.
+export const rejectConfirm = (ref: InboxRef): string => (isFun(ref) ? 'Reject this? Rejecting ends the project for good, and your marks are not used.' : 'Reject this?');

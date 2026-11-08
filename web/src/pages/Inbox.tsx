@@ -6,15 +6,18 @@ import {
   ageLabel,
   canApproveItem,
   canRequestChanges,
+  changesComment,
   checkMarks,
+  checksHeading,
   documentLink,
-  failedChecksComment,
   groupInbox,
   inboxLabel,
   isTryLink,
   markLabels,
   noteLabel,
   projectPath,
+  rejectConfirm,
+  requestChangesLabel,
   type InboxItem,
   type Marks,
 } from '../lib/inbox.ts';
@@ -101,7 +104,7 @@ function Actions({ item, marks, onAnswer, busy }: { item: InboxItem; marks: Mark
   if (mode === 'reject') {
     return (
       <div className="acts">
-        <span>Reject this?</span>
+        <span>{rejectConfirm(item.ref)}</span>
         <button type="button" className="btn" onClick={() => setMode('choose')}>
           Keep it
         </button>
@@ -125,11 +128,11 @@ function Actions({ item, marks, onAnswer, busy }: { item: InboxItem; marks: Mark
         disabled={busy || !changeable}
         onClick={() => {
           // The words of the failed checks are a start for the comment, but never replace what the stakeholder already wrote.
-          if (blank) setText(failedChecksComment(item.checks, marks));
+          if (blank) setText(changesComment(item.ref, item.checks, marks));
           setMode('changes');
         }}
       >
-        Request changes
+        {requestChangesLabel(item.ref)}
       </button>
       <button type="button" className="btn primary" disabled={busy || !approvable || !changeable} onClick={() => onAnswer({ action: 'approve', checks: checkMarks(item.checks, marks) })}>
         Approve
@@ -143,7 +146,7 @@ function Checks({ item, marks, busy, onMark }: { item: InboxItem; marks: Marks; 
   const labels = markLabels(item.ref);
   return (
     <div className="d-sec">
-      <h3>Checks for you</h3>
+      <h3>{checksHeading(item.ref)}</h3>
       <ul className="d-checks">
         {item.checks.map(({ ac, text, how }) => {
           const mark = marks[ac] ?? { note: '' };

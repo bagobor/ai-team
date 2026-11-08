@@ -1,5 +1,5 @@
 import type { LineageGraph } from '../src/artifacts/lineage.ts';
-import type { InboxRef } from '../src/engine/inbox.ts';
+import { PLAY, type InboxRef } from '../src/engine/inbox.ts';
 import type { ArtifactSummary, TaskSummary } from '../web/src/api.ts';
 import { BOARD_COLUMNS, boardColumns, boardSummary, currentMilestone, diffLines, selectTasks } from '../web/src/lib/board.ts';
 import { groupDocuments } from '../web/src/lib/documents.ts';
@@ -8,7 +8,9 @@ import {
   canApprove,
   canApproveItem,
   canRequestChanges,
+  changesComment,
   checkMarks,
+  checksHeading,
   documentLink,
   documentPin,
   failedChecksComment,
@@ -19,6 +21,8 @@ import {
   newPendingIds,
   noteLabel,
   pinParts,
+  rejectConfirm,
+  requestChangesLabel,
   type InboxItem,
 } from '../web/src/lib/inbox.ts';
 import { layoutLineage, staleNotes } from '../web/src/lib/lineageLayout.ts';
@@ -172,6 +176,39 @@ describe('documentLink', () => {
   });
 });
 
+// A fun evaluation asks whether prototypes are fun, so its words differ from a milestone's wherever a check would read as a test.
+describe('the words of a fun evaluation', () => {
+  const FUN: InboxRef = { kind: 'fun_eval', round: 1 };
+  const OTHERS: InboxRef[] = [{ kind: 'cp4', milestone: 1 }, { kind: 'cp1' }, { kind: 'cp2', milestone: 2 }];
+  const checks = [
+    { ac: 'P-1', text: 'One ship', how: 'Play it' },
+    { ac: 'P-2', text: 'Two ships', how: 'Play it' },
+  ];
+  const marks = { 'P-1': { status: 'passing', note: '' }, 'P-2': { status: 'failing', note: 'Dull' } } as const;
+
+  it('heads the checks Prototypes to play', () => {
+    expect(checksHeading(FUN)).toBe('Prototypes to play');
+    for (const ref of OTHERS) expect(checksHeading(ref)).toBe('Checks for you');
+  });
+
+  it('asks for another round rather than changes', () => {
+    expect(requestChangesLabel(FUN)).toBe('Another round');
+    for (const ref of OTHERS) expect(requestChangesLabel(ref)).toBe('Request changes');
+  });
+
+  // Not fun is a verdict, not a failure, and the PM reads each mark and note from the decision record anyway.
+  it('starts the comment for another round empty', () => {
+    expect(changesComment(FUN, checks, marks)).toBe('');
+    expect(changesComment(OTHERS[0]!, checks, marks)).toBe('Failed checks:\n- P-2 (Two ships): Dull');
+    expect(changesComment(OTHERS[0]!, checks, marks)).toBe(failedChecksComment(checks, marks));
+  });
+
+  it('says that rejecting ends the project for good and does not use the marks', () => {
+    expect(rejectConfirm(FUN)).toBe('Reject this? Rejecting ends the project for good, and your marks are not used.');
+    for (const ref of OTHERS) expect(rejectConfirm(ref)).toBe('Reject this?');
+  });
+});
+
 describe('isTryLink', () => {
   const CP4: InboxRef = { kind: 'cp4', milestone: 1 };
   const TRY = 'http://127.0.0.1:4781/p/m1/index.html';
@@ -198,6 +235,12 @@ describe('isTryLink', () => {
   });
 
   const FUN: InboxRef = { kind: 'fun_eval', round: 1 };
+
+  // The engine labels each prototype's link with the same prefix, so a label it makes is one the Inbox opens.
+  it("opens the engine's own Play label", () => {
+    expect(PLAY).toBe('Play ');
+    expect(isTryLink(FUN, { label: `${PLAY}P-2`, value: TRY })).toBe(true);
+  });
 
   it('Play links of a fun evaluation open like Try it', () => {
     expect(isTryLink(FUN, { label: 'Play P-1', value: 'http://127.0.0.1:4781/p/proto/p-1/index.html' })).toBe(true);
