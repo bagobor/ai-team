@@ -85,11 +85,11 @@
       ],
       "properties": {
         "body": {
-          "description": "What makes this game fun, in the stakeholder's findings and in their words where their notes give them. Introduce each element by its F-n id.",
+          "description": "What makes this game fun, in the stakeholder's findings and in their words where their notes give them, at most 1,500 characters. Name elements by their F-n id in prose and use no F-n headings: the engine lists each element under its own heading.",
           "type": "string"
         },
         "elements": {
-          "description": "One element per essential source of fun. Add only what the stakeholder found fun in the Decision Records you were given: never an element from general knowledge, and never one only the plans hypothesised.",
+          "description": "One element per essential source of fun, at most 6. Add only what the stakeholder found fun in the Decision Records you were given: never an element from general knowledge, and never one only the plans hypothesised.",
           "type": "array",
           "items": {
             "type": "object",
