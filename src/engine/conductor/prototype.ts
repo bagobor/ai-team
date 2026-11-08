@@ -4,7 +4,7 @@ import type { Player } from '../../checks/play.ts';
 import { ensureIntegrationBranch } from '../../git/workspace.ts';
 import { PROTO_PLAN_ID, protoPlanId, protoRoot } from '../apply/ids.ts';
 import { oneLine } from '../apply/text.ts';
-import type { InboxCheck } from '../inbox.ts';
+import { PLAY, type InboxCheck } from '../inbox.ts';
 import type { EngineDeps } from '../runner.ts';
 import type { ProjectRow, TaskRow } from '../store.ts';
 import { newTicketSpecs } from './milestone.ts';
@@ -62,13 +62,16 @@ async function pagesOf(r: number, plan: PlanData, checkout: string, served: stri
     const link = served === undefined ? join(checkout, dir, 'index.html') : `${served}r${r}/p${k}/index.html`;
     const elements = prototype.hypotheses.map((id) => oneLine(plan.hypotheses.find((hypothesis) => hypothesis.id === id)?.element ?? id).trim());
     const text = `${oneLine(prototype.title).trim()} — tests ${prototype.hypotheses.join(', ')}: ${elements.join('; ')}`;
-    pages.push({ key, root: site.root, dir, controls: prototype.controls, link, check: { ac: key, text, how: `Play ${link}. Mark it fun or not fun, and say what you felt.` } });
+    pages.push({ key, root: site.root, dir, controls: prototype.controls, link, check: { ac: key, text, how: `${PLAY}${link}. Mark it fun or not fun, and say what you felt.` } });
   }
   return pages;
 }
 
-async function smokeProblem(player: Player, { key, root, dir, controls }: Page): Promise<string | undefined> {
-  const played = await servePage(root, { root: dir, entry: 'index.html', keys: controls, animated: true }, (page) => player.smoke(page, controls, { animated: true }));
+// A mounted page is played at the stakeholder's own link, under the project's mount, so a path that resolves only from
+// the server root fails the smoke as it would fail them. With no mount, the page is served from its own folder.
+async function smokeProblem(player: Player, { key, root, dir, controls, link }: Page, served: boolean): Promise<string | undefined> {
+  const play = (page: string) => player.smoke(page, controls, { animated: true });
+  const played = served ? { ok: true as const, value: await play(link) } : await servePage(root, { root: dir, entry: 'index.html', keys: controls, animated: true }, play);
   if (!played.ok) return `${key}: ${oneLine(played.why)}`;
   const { ok, problems } = played.value;
   // The browser's own failure says nothing about the prototype.
@@ -80,7 +83,7 @@ async function smokeProblem(player: Player, { key, root, dir, controls }: Page):
 
 // The engine plays each page only to see that it loads and runs, and what it finds is evidence for the stakeholder. Whether
 // a prototype is fun is theirs to say, so nothing here holds the evaluation or files a Bug.
-async function smokeLines({ player }: EngineDeps, pages: Page[]): Promise<string[]> {
+async function smokeLines({ player }: EngineDeps, pages: Page[], served: boolean): Promise<string[]> {
   if (pages.length === 0) return [];
   const notPlayed = 'The engine did not play the prototypes first, so play each one to see that it loads.';
   if (!player) return [`${notPlayed} ${NO_BROWSER}`];
@@ -89,7 +92,7 @@ async function smokeLines({ player }: EngineDeps, pages: Page[]): Promise<string
   if (missing) return [`${notPlayed} ${browserWhy(missing)}`];
   const found: string[] = [];
   for (const page of pages) {
-    const problem = await smokeProblem(player, page);
+    const problem = await smokeProblem(player, page, served);
     if (problem) found.push(problem);
   }
   return found.length === 0 ? [] : ['The smoke play checks only that a page loads and runs. It found:', ...found];
@@ -104,7 +107,7 @@ export async function raiseFunEval(deps: EngineDeps, project: ProjectRow, r: num
   const checkout = await prototypesCheckout(deps, project);
   const served = await mountPrototypes(deps, project, checkout);
   const pages = await pagesOf(r, plan, checkout, served);
-  const smoke = await smokeLines(deps, pages);
+  const smoke = await smokeLines(deps, pages, served !== undefined);
   const task = await store.getTaskByTicket(project.id, protoPlanId(r));
   if (!task) throw new Error(`Round ${r} has no ${protoPlanId(r)} task`);
 
@@ -118,7 +121,7 @@ export async function raiseFunEval(deps: EngineDeps, project: ProjectRow, r: num
     asked_by: 'pm',
     why: [intro, ...(smoke.length === 0 ? [] : ['', ...smoke])].join('\n'),
     blocks: ['Discovery'],
-    evidence: [{ label: protoPlanId(r), value: pin, pin }, ...pages.map(({ key, link }) => ({ label: `Play ${key}`, value: link }))],
+    evidence: [{ label: protoPlanId(r), value: pin, pin }, ...pages.map(({ key, link }) => ({ label: `${PLAY}${key}`, value: link }))],
     recommendation: await noteOf(store, task.id),
     options: [],
     checks: pages.map(({ check }) => check),

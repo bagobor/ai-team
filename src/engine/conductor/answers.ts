@@ -10,7 +10,7 @@ import type { EngineDeps, Runner } from '../runner.ts';
 import type { ProjectRow, Store } from '../store.ts';
 import { applyRequest } from './change-requests.ts';
 import { removeTryWorktree } from './try.ts';
-import { discoveryDocs, discoveryInputs, discoveryTask, ensureTask, funInputs, isClosed, isTerminal, latestPin, markHalted, profileTask, protoPlanTask, replanTask, reviseInputs, roundOf, specSources, specTask, stopProjectWork } from './tasks.ts';
+import { discoveryDocs, discoveryInputs, discoveryTask, ensureTask, funInputs, isClosed, isTerminal, latestPin, markHalted, profileTask, protoPlanTask, replanInputs, replanTask, roundOf, specSources, specTask, stopProjectWork } from './tasks.ts';
 
 // What an answer does once the work outside SQLite is finished. It never holds a key named then: Effect comes out of async functions, and a promise would take it for a thenable.
 type Effect = { status?: StatusChange[]; after?: (s: Store) => Promise<void> };
@@ -104,8 +104,8 @@ async function answerCp4(deps: EngineDeps, runner: Runner, project: ProjectRow, 
     // The Eng Lead replans the tickets; a change to the design itself goes through a Change Request.
     const scope = await deps.artifacts.latest(project.id, scopeId(n));
     if (!scope) throw new Error(`Milestone ${n} has no ticket scope to replan`);
-    const inputs = await reviseInputs(deps, project, scope);
     const open = await openTickets(deps, project, n, 'T');
+    const inputs = await replanInputs(deps, project, scope, open);
     // The replan reads only this comment, so what failed has to be in it.
     const failed = marks.filter(({ status }) => status === 'failing');
     const comment = [words ?? '', ...(failed.length === 0 ? [] : ['', 'Failed checks:', ...failed.map(({ ac, note }) => `- ${ac}: ${oneLine(note)}`)])].join('\n');

@@ -13,6 +13,8 @@ export type InboxEvidence = { label: string; value: string; pin?: string };
 
 // The label of CP4's evidence that links to the milestone's build. The Inbox links no other evidence to a page off the app.
 export const TRY_IT = 'Try it';
+// The prefix of a fun evaluation's evidence that links to a prototype, as in `Play P-1`. Its check says to play the same link.
+export const PLAY = 'Play ';
 
 export type InboxOption = { id: string; label: string };
 // A criterion only the stakeholder can judge, listed on the approval so their answer can say whether it holds.

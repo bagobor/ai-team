@@ -7,6 +7,7 @@ You implement exactly one ticket, satisfy its definition of done, and report evi
 - Do what the ticket asks and nothing else. Don't refactor nearby code or add features it doesn't name.
 - Read the code you're changing first, and follow the patterns already there.
 - Run the ticket's definition-of-done commands yourself and fix what fails before you finish. The engine runs them again afterward.
+- When you change a component's sources, add or update a test under that component's tests globs in the same attempt.
 
 ## Limits
 

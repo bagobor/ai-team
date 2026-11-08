@@ -7,7 +7,10 @@ import type { Criterion } from '../src/artifacts/acs.ts';
 import { renderArtifact, sectionsOf, sectionText } from '../src/artifacts/format.ts';
 import type { PlayProblem } from '../src/checks/play.ts';
 import { applyOutput } from '../src/engine/apply/index.ts';
+import type { ProfileData } from '../src/engine/apply/discovery.ts';
 import { bugTicket, playRun } from '../src/engine/apply/qa.ts';
+import type { ComponentSpec } from '../src/engine/apply/tech-structure.ts';
+import { playBug } from '../src/engine/conductor/play-gate.ts';
 import { worktreePath } from '../src/paths.ts';
 import { parseTicket } from '../src/tickets/ticket.ts';
 import { addAttemptWorktree } from '../src/git/workspace.ts';
@@ -28,6 +31,28 @@ const covers = (ac: string, ...commands: string[]): Coverage => ({ ac, commands,
 const fresh = (ac: string, ...commands: string[]): Coverage => ({ ac, commands, notes: '' });
 // As QA wrote one in a real run: a pin, and a section beside the criterion.
 const disputes = (ac: string) => ({ target_artifact: 'TEST-PLAN-M1@1', target_section: `${ac} commands`, target_ac: ac, proposed_text: 'true', rationale: 'The command checks the wrong file', evidence: 'It reads README.txt, which the Spec never names' });
+
+// A Tech Design's components: one its tests keep, one exempt. The hooks hold a Bug's change to every one of them.
+const COMPONENTS: ComponentSpec[] = [
+  { name: 'core', responsibility: 'The rules', sources: ['src/core/**'], tests: ['test/core/**', 'test/core.test.ts'], no_tests_reason: null, complexity: 'S', complexity_notes: 'Small' },
+  { name: 'ui', responsibility: 'The page', sources: ['src/ui/**', '*.html'], tests: [], no_tests_reason: 'The play script covers it', complexity: 'S', complexity_notes: 'Small' },
+];
+const STRUCTURE = { components: COMPONENTS, complexity: { overall: 'S', rationale: 'Small' }, performance: [], test_strategy: 'Tests beside the code', risks: [] };
+const HELD_TO = [
+  '## Tests',
+  '',
+  "The engine refuses an attempt that changes a component's sources without changing that component's tests.",
+  '',
+  '- core: sources src/core/** — tests test/core/**, test/core.test.ts',
+  '- ui: sources src/ui/**, *.html — no tests (The play script covers it)',
+  '',
+].join('\n');
+const structured = async (e: TestEngine): Promise<void> => {
+  await e.artifacts.commit(await projectOf(e), {
+    message: 'the structured design',
+    publish: [{ id: 'TECH-M1', type: 'tech_design', status: 'approved', ownerRole: 'tech_lead', approvedBy: 'owner:tech_lead', derivedFrom: ['SPEC-M1@1'], milestone: 1, body: '# Design\n', fields: { data: STRUCTURE } }],
+  });
+};
 
 describe('qa_verify applier', () => {
   let e: TestEngine;
@@ -319,9 +344,21 @@ describe('qa_verify applier', () => {
     const doc = await e.artifacts.read(project, 'M1-B-1');
     const parsed = parseTicket(renderArtifact(doc));
     expect(parsed).toMatchObject({ id: 'M1-B-1', milestone: 1, specialty: 'engineer', size: 'S', inputs: ['BUG-M1-1@1', 'TECH-M1@1'] });
+    // A Tech Design with no components holds the change to no tests, so the ticket names none.
+    expect(doc.body).toBe('Fix what BUG-M1-1 describes, so that AC-1 passes.\n');
     for (const pin of parsed.inputs) await expect(e.artifacts.readInput(project, pin)).resolves.toMatchObject({ pin });
     expect((await e.artifacts.latest(project.id, 'M1-B-1'))?.derived_from).toContain('SPEC-M1@1#ac-1');
     expect(await e.store.getTaskByTicket(project.id, 'M1-B-1')).toBeUndefined();
+  });
+
+  it('lists in a Bug ticket the tests each component of the Tech Design is held to', async () => {
+    await start([covers('AC-1', 'exit 1'), covers('AC-2', 'true')]);
+    await structured(e);
+    await publish(e, await verify({ results: [pass('AC-1'), pass('AC-2')] }));
+
+    const doc = await e.artifacts.read(await projectOf(e), 'M1-B-1');
+    expect(doc.body).toBe(`Fix what BUG-M1-1 describes, so that AC-1 passes.\n\n${HELD_TO}`);
+    expect(parseTicket(renderArtifact(doc))).toMatchObject({ id: 'M1-B-1', inputs: ['BUG-M1-1@1', 'TECH-M1@2'] });
   });
 
   it('finds a definition of done for a Bug with no failing command', async () => {
@@ -951,5 +988,41 @@ describe('a Bug ticket', () => {
   // The engine files it, but it is a product ticket like the others, so the Eng Lead's scope revision decides it.
   it('belongs to the Eng Lead', () => {
     expect(bugTicket(1, 2, { ...draft, acs: ['AC-1'] })).toMatchObject({ ownerRole: 'eng_lead', approvedBy: 'engine' });
+  });
+
+  // The hooks hold a Bug's change to every component, so its ticket says which tests go with which sources.
+  it('lists the tests every component is held to', () => {
+    expect(bugTicket(1, 2, { ...draft, acs: ['AC-1'], components: COMPONENTS }).body).toBe(`Fix what BUG-M1-2 describes, so that AC-1 passes.\n\n${HELD_TO}`);
+  });
+});
+
+describe("the play gate's Bug ticket", () => {
+  let e: TestEngine;
+  const profile: ProfileData = { commands: { build: 'true', test: 'npm test', lint: 'true', smoke: 'true' }, toolchains: [], network_allow: [], setup: null, play: null };
+
+  afterEach(async () => {
+    await e.cleanup();
+  });
+
+  async function gameFailed(fields?: Record<string, unknown>) {
+    e = await makeEngine({ steps: [] });
+    await lockSpec(e);
+    const project = await projectOf(e);
+    await e.artifacts.commit(project, {
+      message: 'the design and the profile',
+      publish: [
+        { id: 'TECH-M1', type: 'tech_design', status: 'approved', ownerRole: 'tech_lead', approvedBy: 'owner:tech_lead', derivedFrom: ['SPEC-M1@1'], milestone: 1, body: '# Design\n', ...(fields ? { fields } : {}) },
+        { id: 'ENV-PROFILE', type: 'environment_profile', status: 'approved', ownerRole: 'tech_lead', derivedFrom: [], body: '# Env\n', fields: { data: profile } },
+      ],
+    });
+    return (await playBug(e, project, 1, 1, { kind: 'failed', headSha: 'a'.repeat(40), problems: [{ kind: 'exception', detail: 'boom' }], profile })).ticket;
+  }
+
+  it('lists the tests every component of the Tech Design is held to', async () => {
+    expect((await gameFailed({ data: STRUCTURE })).body).toBe(`Fix what BUG-M1-1 describes, so that AC-1, AC-2 pass.\n\n${HELD_TO}`);
+  });
+
+  it('lists none when the Tech Design has no components', async () => {
+    expect((await gameFailed()).body).toBe('Fix what BUG-M1-1 describes, so that AC-1, AC-2 pass.\n');
   });
 });

@@ -16,7 +16,8 @@ import type { Applier, ApplyCtx } from './index.ts';
 import { raisedOf, sentBack, withRaised, type Raised } from './raised.ts';
 import { sandboxEnv } from './sandbox.ts';
 import { fenced, oneLine, quoted } from './text.ts';
-import { renderTicket, ticketIdFor, touchesProblem } from './tickets.ts';
+import { structureOf, type ComponentSpec } from './tech-structure.ts';
+import { renderTicket, ticketIdFor, touchesProblem, withComponentTests } from './tickets.ts';
 
 type QaResult = { ac: string; status: 'passing' | 'failing'; commands: string[]; notes: string };
 type QaBug = { ac: string; title: string; description: string; touches: string[]; commands: string[] };
@@ -315,15 +316,17 @@ function reportSection({ ac, claimed, status, notes, runs, disputedIn, onBase }:
 
 // Tickets take their shape from a Bug: the failing commands are its definition of done, and only a commandless Bug falls further back.
 // A QA Bug is against one criterion. A game that doesn't run fails them all, so the play gate's Bug names every automated one.
-export function bugTicket(milestone: number, k: number, bug: { acs: string[]; title: string; touches: string[]; definition_of_done: string[]; techPin: string; specPin: string }): NewVersion {
+// A Tech Design with components holds the fix to their tests, so the body lists them.
+export function bugTicket(milestone: number, k: number, bug: { acs: string[]; title: string; touches: string[]; definition_of_done: string[]; techPin: string; specPin: string; components?: ComponentSpec[] }): NewVersion {
   const key = `B-${k}`;
   const id = ticketIdFor(milestone, key);
   const inputs = [`BUG-M${milestone}-${k}@1`, bug.techPin];
   // A milestone of human checks only leaves the play gate's Bug no criterion to name.
   const passes = bug.acs.length === 0 ? '' : bug.acs.length === 1 ? `, so that ${bug.acs[0]} passes` : `, so that ${bug.acs.join(', ')} pass`;
+  const text = `Fix what BUG-M${milestone}-${k} describes${passes}.\n`;
   const { fields, body } = renderTicket(
     milestone,
-    { key, title: oneLine(bug.title), ac_refs: bug.acs, specialty: 'engineer', touches: bug.touches, depends_on: [], definition_of_done: bug.definition_of_done, inputs, size: 'S', body: `Fix what BUG-M${milestone}-${k} describes${passes}.\n` },
+    { key, title: oneLine(bug.title), ac_refs: bug.acs, specialty: 'engineer', touches: bug.touches, depends_on: [], definition_of_done: bug.definition_of_done, inputs, size: 'S', body: bug.components && bug.components.length > 0 ? withComponentTests(text, bug.components) : text },
     { id, dependsOn: [], inputs },
   );
   // The engine files it, but it is a product ticket, so it is the Eng Lead's, whose scope revision decides it like the others.
@@ -430,6 +433,8 @@ export const applyQaVerify: Applier = async (ctx) => {
   if (failing.length > 0) {
     const tech = await artifacts.latest(project.id, techId(milestone));
     if (!tech) throw new Error(`QA task ${task.ticket_id} found failures, but milestone ${milestone} has no Tech Design`);
+    const techPin = `${tech.artifact_id}@${tech.version}`;
+    const components = structureOf(await artifacts.read(project, techPin))?.components;
     let k = await nextBugNumber(ctx.deps, project, milestone);
     for (const verdict of failing) {
       const { ac, runs } = verdict;
@@ -445,7 +450,7 @@ export const applyQaVerify: Applier = async (ctx) => {
         const fallbacks = [failedCommands(runs), nonBlank(bug?.commands ?? []), proof, shellRuns(runs).map(({ command }) => command), [criterion.verification.how]];
         const definition_of_done = fallbacks.find((commands) => commands.length > 0) ?? [];
         publish.push(bugDoc(milestone, k, reportId, verdict, bug, title, touches));
-        publish.push(bugTicket(milestone, k, { acs: [ac], title, touches, definition_of_done, techPin: `${tech.artifact_id}@${tech.version}`, specPin }));
+        publish.push(bugTicket(milestone, k, { acs: [ac], title, touches, definition_of_done, techPin, specPin, components }));
         k += 1;
       }
     }

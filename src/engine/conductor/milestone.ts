@@ -6,7 +6,7 @@ import { ensureIntegrationBranch } from '../../git/workspace.ts';
 import { stateRepoDir, worktreePath } from '../../paths.ts';
 import type { ProfileData } from '../apply/discovery.ts';
 import { milestoneCoverage, type EngFinding, type EngReviewData } from '../apply/eng-review.ts';
-import { engReviewId, ENV_PROFILE, reviewId, scopeId, specId, techId, testPlanId } from '../apply/ids.ts';
+import { engReviewId, ENV_PROFILE, isPolishTicket, reviewId, scopeId, specId, techId, testPlanId } from '../apply/ids.ts';
 import { structureOf } from '../apply/tech-structure.ts';
 import { oneLine, sentence } from '../apply/text.ts';
 import { TRY_IT } from '../inbox.ts';
@@ -23,7 +23,6 @@ const HOLD_KINDS = ['smoke', 'base_conflict', 'base_refused', 'qa_cap', 'play'] 
 const STALE_BLOCKS: readonly string[] = ['tech_design', 'test_plan', 'ticket_scope', 'ticket'];
 
 const byId = (tasks: TaskRow[], id: string) => tasks.find(({ ticket_id }) => ticket_id === id);
-const isPolishTicket = (id: string) => /-E-\d+$/.test(id);
 
 // A checkout offered at CP4 is the engine's, not the stakeholder's, so they are told not to keep work in it. A CP4 for the
 // same head keeps it as it is (ensureTryWorktree).
@@ -321,8 +320,10 @@ async function engReview(deps: EngineDeps, project: ProjectRow, m: MilestoneRow,
   });
 }
 
-// CP4 shows only so many of the eng review's budgets and findings; the review itself is pinned beside them.
+// CP4 shows only so many of the eng review's findings and budgets, the worst findings first; the review itself is pinned
+// beside them. A critical or major finding is always shown, however many there are.
 const ENG_ROWS = 10;
+const SEVERITY: Record<EngFinding['severity'], number> = { critical: 0, major: 1, minor: 2 };
 const findingText = ({ severity, file, line, issue }: EngFinding) => `${oneLine(severity)} ${oneLine(file)}${line === null ? '' : `:${line}`}: ${oneLine(issue)}`;
 
 async function engEvidence(deps: EngineDeps, project: ProjectRow, n: number, round: number, tasks: TaskRow[]): Promise<{ pins: string[]; rows: { label: string; value: string }[]; unbuilt: boolean }> {
@@ -335,12 +336,14 @@ async function engEvidence(deps: EngineDeps, project: ProjectRow, n: number, rou
   const task = byId(tasks, `M${n}-ENGREV-${round}`);
   const note = task ? await noteOf(deps.store, task.id) : '';
   const label = unbuilt ? 'polish, not built' : verdict;
+  const worstFirst = [...findings].sort((a, b) => SEVERITY[a.severity] - SEVERITY[b.severity]);
   const detail = [
+    ...worstFirst.map((finding) => ({ label: unbuilt ? 'Known issue' : 'Finding', value: findingText(finding) })),
     ...performance.map(({ metric, target, measured, status }) => ({ label: `Budget: ${oneLine(metric)}`, value: `${status}: ${oneLine(measured)} against ${oneLine(target)}` })),
-    ...findings.map((finding) => ({ label: unbuilt ? 'Known issue' : 'Finding', value: findingText(finding) })),
   ];
-  const more = detail.length > ENG_ROWS ? [{ label: 'More', value: `${detail.length - ENG_ROWS} more in ${pinOf(review)}` }] : [];
-  return { pins: [pinOf(review)], rows: [{ label: 'Eng review', value: note === '' ? label : `${label}: ${oneLine(note)}` }, ...detail.slice(0, ENG_ROWS), ...more], unbuilt: unbuilt && findings.length > 0 };
+  const shown = Math.max(ENG_ROWS, findings.filter(({ severity }) => SEVERITY[severity] < SEVERITY.minor).length);
+  const more = detail.length > shown ? [{ label: 'More', value: `${detail.length - shown} more in ${pinOf(review)}` }] : [];
+  return { pins: [pinOf(review)], rows: [{ label: 'Eng review', value: note === '' ? label : `${label}: ${oneLine(note)}` }, ...detail.slice(0, shown), ...more], unbuilt: unbuilt && findings.length > 0 };
 }
 
 async function afterMilestoneReview(deps: EngineDeps, project: ProjectRow, m: MilestoneRow, tasks: TaskRow[]): Promise<void> {

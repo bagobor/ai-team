@@ -3,7 +3,8 @@ import { join } from 'node:path';
 import type { Criterion } from '../src/artifacts/acs.ts';
 import { applyAnswers } from '../src/engine/conductor/answers.ts';
 import { engReviewSpec } from '../src/engine/conductor/milestone.ts';
-import { ensureTask, protoPlanTask, qaTask, recommendationTask, replanTask, reviseInputs, reviseTask, scopeTask, specTask, techTask, testPlanTask, type TaskSpec } from '../src/engine/conductor/tasks.ts';
+import { openTickets } from '../src/engine/apply/design.ts';
+import { ensureTask, protoPlanTask, qaTask, recommendationTask, replanInputs, replanTask, reviseInputs, reviseTask, scopeTask, specTask, techTask, testPlanTask, type TaskSpec } from '../src/engine/conductor/tasks.ts';
 import type { CheckMark } from '../src/engine/inbox.ts';
 import type { AttemptRow, ProjectRow } from '../src/engine/store.ts';
 import type { WorkOrder } from '../src/engine/workorder.ts';
@@ -381,6 +382,36 @@ describe('what a role reads on a milestone of 10 tickets and 30 criteria', () =>
       expectRoomForM4(ran);
       expect(ran.state).toBe('done');
       expect(taskText('M1-REPLAN-1')).not.toContain('design-prose-marker');
+    });
+
+    // CP4 can cut a polish round short, which leaves its tickets open, and the replan reads the eng review that asked for them.
+    it('of the ticket scope after CP4 fits the budget beside the eng review behind open polish tickets', async () => {
+      const polish = largeTickets.slice(0, 3).map((ticket, i) => ({ ...ticket, key: `E-${i + 1}`, title: `Polish ${i + 1}`, ac_refs: [], body: `polish-marker ${words(400)}\n` }));
+      const findings = Array.from({ length: 10 }, (_, i) => ({ severity: i < 2 ? 'critical' : i < 6 ? 'major' : 'minor', file: `src/part-${i + 1}/index.js`, line: 10 * (i + 1), issue: `finding-marker ${words(250)}` }));
+      const engPolish = { verdict: 'polish', summary: `eng-summary-marker ${words(600)}`, performance: [{ metric: 'Test time', target: 'Under a minute', measured: '12 s', status: 'met', evidence: 'npm test' }], findings, polish_tickets: polish, stakeholder_note: 'Three to polish' };
+      const decided = [...largeTickets, ...polish].map(({ key }) => ({ ticket: `M1-${key}`, decision: 'still_valid', rationale: 'Yes' }));
+      e = await makeEngine({ steps: { byTask: { 'M1-QA-1': resultStep(QA_OUTPUT), 'M1-ENGREV-1': resultStep(engPolish), 'M1-REPLAN-1': resultStep({ ...SCOPE_STILL_RIGHT, ticket_decisions: decided }) } } });
+      const project = await publishLargeSpec(e);
+      await publishLargeDesign(e, proseDesign);
+      expect((await workOn(qaTask(project, 1, 1, QA_PINS))).state).toBe('done');
+      expect((await workOn(await engReviewSpec(e, project, (await e.store.getMilestone(project.id, 1))!))).state).toBe('done');
+      const scope = (await e.artifacts.latest(project.id, 'SCOPE-M1'))!;
+      const open = await openTickets(e, project, 1, 'T');
+      expect(open.filter((id) => id.includes('-E-'))).toEqual(['M1-E-1', 'M1-E-2', 'M1-E-3']);
+
+      const inputs = await replanInputs(e, project, scope, open);
+      const ran = await workOn(replanTask(project, 1, 1, inputs, 'The second part is too slow', open));
+
+      expect(inputs).toContain('ENG-REVIEW-M1-1@1');
+      expectRoomForM4(ran);
+      expect(ran.state).toBe('done');
+      // The manifest says the review's verdict, and the whole of it goes to a file the Eng Lead reads before it keeps a polish ticket.
+      const text = taskText('M1-REPLAN-1');
+      expect(text).toContain('.aiteam-reference/eng-review.md');
+      expect(text).toContain('Its verdict: polish, with 2 critical, 4 major and 4 minor findings.');
+      expect(text).not.toContain('finding-marker');
+      const { reference } = await roleInputs(e, project, ['ENG-REVIEW-M1-1@1'], { eng: 'verdict' });
+      expect(reference?.['eng-review.md']?.match(/finding-marker/g)).toHaveLength(10);
     });
   });
 

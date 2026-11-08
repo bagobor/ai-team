@@ -241,6 +241,20 @@ describe('the prototype phase', () => {
     expect(await funEvals(h)).toHaveLength(1);
   });
 
+  // The stakeholder plays each page under the project's mount, where a path that resolves only from the server root
+  // finds nothing, so the smoke plays the very link they get.
+  it('smoke-plays each page at the link the stakeholder gets', async () => {
+    const h = await harness();
+    const player = fakePlayer(playResult());
+    h.player = player;
+    const smoke = vi.spyOn(player, 'smoke');
+
+    await toFunEval(h);
+
+    expect(smoke.mock.calls.map(([url]) => url)).toEqual([linkOf(h, 1, 1), linkOf(h, 1, 2)]);
+    expect(player.calls.map(({ body }) => body)).toEqual([PAGE, PAGE]);
+  });
+
   it('evaluates only the prototypes that have a page', async () => {
     const h = await harness();
 
@@ -289,8 +303,14 @@ describe('the prototype phase', () => {
   it('links each page in the checkout when there is no try server to serve it', async () => {
     const h = await harness();
     Object.assign(h, { tryServer: undefined });
+    const player = fakePlayer(playResult());
+    h.player = player;
 
     const item = await toFunEval(h);
+
+    // With no mount to play, the smoke serves each page from its own folder.
+    expect(player.calls.map(({ url }) => url)).toEqual([expect.stringMatching(/^http:\/\/127\.0\.0\.1:\d+\/index\.html$/), expect.stringMatching(/^http:\/\/127\.0\.0\.1:\d+\/index\.html$/)]);
+    expect(player.calls.map(({ body }) => body)).toEqual([PAGE, PAGE]);
 
     const pageIn = (k: number) => join(tryWorktree(h, h.project, 0).worktree, `prototypes/r1/p${k}/index.html`);
     expect(item.evidence.slice(1)).toEqual([

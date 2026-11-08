@@ -111,7 +111,7 @@ const MAX_BACKOFF_S = 3600;
 const VIEWS: Partial<Record<Purpose, Views>> = {
   qa_verify: { design: 'sections' },
   ticket_scope: { design: 'components', plan: 'coverage' },
-  revise_scope: { design: 'components', plan: 'coverage' },
+  revise_scope: { design: 'components', plan: 'coverage', eng: 'verdict' },
   eng_review: { design: 'components', plan: 'coverage', report: 'verdicts' },
 };
 

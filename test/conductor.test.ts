@@ -1391,6 +1391,61 @@ describe('the eng review', () => {
     expect(cp4.evidence).toContainEqual({ label: 'Known issue', value: 'major src/M1-T-1.txt: Says work where it should say what' });
   });
 
+  // CP4 after an eng review whose polish was never built, with M1-E-1 left open.
+  async function toCp4Unbuilt(h: Harness, findings: (typeof FINDING)[] = [FINDING], performance = ENG_APPROVE.performance): Promise<InboxRow> {
+    await toVerify(h);
+    await h.store.patchMilestone(h.project.id, 1, { eng_cap: 0 });
+    await finish(h, 'M1-QA-1', PASS);
+    await h.conductor.tick();
+    await finish(h, 'M1-ENGREV-1', { ...engPolish(), performance, findings });
+    await h.conductor.tick();
+    await finish(h, 'M1-REVIEW-1', REVIEW);
+    await h.conductor.tick();
+    return pending(h, 'cp4');
+  }
+
+  // What CP4 shows of that eng review: its rows after the verdict.
+  async function cp4Rows(h: Harness, findings: (typeof FINDING)[]): Promise<{ label: string; value: string }[]> {
+    const { evidence } = await toCp4Unbuilt(h, findings);
+    const start = evidence.findIndex(({ label }) => label === 'Eng review');
+    return evidence.slice(start + 1).filter(({ label }) => label === 'Known issue' || label === 'More' || label.startsWith('Budget: ')).map(({ label, value }) => ({ label, value }));
+  }
+  const finding = (severity: string, issue: string) => ({ ...FINDING, severity, issue });
+  const known = (severity: string, issue: string) => ({ label: 'Known issue', value: `${severity} src/M1-T-1.txt: ${issue}` });
+  const LOAD = { label: 'Budget: Load time', value: 'met: 0.2 s against Under a second' };
+
+  it('cp4 lists the findings first, the worst first, and the budgets after them', async () => {
+    const h = await harness();
+
+    const rows = await cp4Rows(h, [finding('minor', 'm1'), finding('major', 'M1'), finding('critical', 'C1'), finding('minor', 'm2'), finding('major', 'M2')]);
+
+    expect(rows).toEqual([known('critical', 'C1'), known('major', 'M1'), known('major', 'M2'), known('minor', 'm1'), known('minor', 'm2'), LOAD]);
+  });
+
+  it('cp4 drops no critical or major finding to keep its rows short', async () => {
+    const h = await harness();
+    const worst = Array.from({ length: 11 }, (_, i) => finding(i % 3 === 0 ? 'critical' : 'major', `W${i}`));
+
+    const rows = await cp4Rows(h, [finding('minor', 'm1'), ...worst, finding('minor', 'm2')]);
+
+    const critical = worst.filter(({ severity }) => severity === 'critical').map(({ issue }) => known('critical', issue));
+    const major = worst.filter(({ severity }) => severity === 'major').map(({ issue }) => known('major', issue));
+    expect(rows).toEqual([...critical, ...major, { label: 'More', value: '3 more in ENG-REVIEW-M1-1@1' }]);
+  });
+
+  // The replan decides the polish ticket nobody built, so it reads the eng review that asked for it.
+  it('a request for changes at cp4 gives the replan the eng review behind an open polish ticket', async () => {
+    const h = await harness();
+    const cp4 = await toCp4Unbuilt(h);
+
+    await h.store.answerInbox(cp4.id, { action: 'request_changes', comment: 'Polish it after all' });
+    await h.conductor.tick();
+
+    const replan = orderOf(await byTicket(h, 'M1-REPLAN-1'));
+    expect(replan.instructions).toContain('still valid or superseded: M1-E-1.');
+    expect(replan.inputs).toEqual(['SPEC-M1@1', 'ENV-PROFILE@1', 'TECH-M1@1', 'TEST-PLAN-M1@1', 'SCOPE-M1@1', 'ENG-REVIEW-M1-1@1']);
+  });
+
   it('build cancels an open eng review', async () => {
     const h = await harness();
     await toEngReview(h);
@@ -1503,6 +1558,9 @@ describe('the play gate', () => {
     expect(bug.body).toContain('- exception: boom at game.js:3\n- console: Uncaught TypeError: x is undefined\n');
     expect(await h.artifacts.latest(h.project.id, 'BUG-M1-1')).toMatchObject({ status: 'approved', approved_by: 'engine' });
     expect(await byTicket(h, 'M1-B-1')).toMatchObject({ kind: 'ticket', role_id: 'engineer', state: 'queued', ac_refs: ['AC-1', 'AC-2'], dod: ['test -f index.html'], touches: ['**'] });
+    // The hooks hold the fix to the Tech Design's components, so the ticket says what each one's tests are.
+    expect((await h.artifacts.read(h.project, 'M1-B-1')).body).toContain('\n## Tests\n\n');
+    expect((await h.artifacts.read(h.project, 'M1-B-1')).body).toContain('\n- app: sources src/**, *.html — no tests (The scripted tickets add no tests; the Test Plan and the play gate check the app.)\n');
     expect(await milestoneOf(h)).toMatchObject({ phase: 'build', verify_round: 1 });
     expect(await taskIds(h)).not.toContain('M1-QA-1');
   });

@@ -31,6 +31,16 @@ function withTests(body: string, named: ComponentSpec[]): string {
   return `${head === '' ? '' : `${head}\n\n`}## Tests\n\n${lines.join('\n')}\n`;
 }
 
+export const HELD_TO_TESTS = "The engine refuses an attempt that changes a component's sources without changing that component's tests.";
+
+// A Bug's ticket names no components, yet the hooks hold its change to every one, so it lists each one's sources beside its tests.
+export function withComponentTests(body: string, components: ComponentSpec[]): string {
+  const globs = (list: string[]) => list.map(oneLine).join(', ');
+  const lines = components.map(({ name, sources, tests, no_tests_reason }) => `- ${oneLine(name.trim())}: sources ${globs(sources)} — ${tests.length > 0 ? `tests ${globs(tests)}` : `no tests (${oneLine(no_tests_reason ?? '')})`}`);
+  const head = body.trimEnd();
+  return `${head === '' ? '' : `${head}\n\n`}## Tests\n\n${HELD_TO_TESTS}\n\n${lines.join('\n')}\n`;
+}
+
 const isAimedAtStateFolder = (glob: string): boolean => {
   const matches = picomatch(glob, { dot: true, nocase: true });
   // ** matches the state folder too, and is fine: only a glob that singles it out says the ticket means to work there.

@@ -8,6 +8,7 @@ import { serveStatic, type StaticServer } from '../../checks/static-server.ts';
 import type { PlayBlock, ProfileData } from '../apply/discovery.ts';
 import { ENV_PROFILE, specId, techId } from '../apply/ids.ts';
 import { bugTicket, nextBugNumber } from '../apply/qa.ts';
+import { structureOf } from '../apply/tech-structure.ts';
 import { fenced } from '../apply/text.ts';
 import type { EngineDeps } from '../runner.ts';
 import type { ProjectRow } from '../store.ts';
@@ -173,6 +174,8 @@ export async function playBug(deps: EngineDeps, project: ProjectRow, n: number, 
     ...(full.length === 0 ? [] : ['## In full', '', ...full.flatMap(({ kind, detail }) => [`${kind}:`, '', fenced(detail), ''])]),
   ].join('\n');
   const bug: NewVersion = { id, type: 'bug', status: 'approved', ownerRole: 'qa_engineer', approvedBy: 'engine', milestone: n, derivedFrom: [specPin, await latestPin(deps, project, ENV_PROFILE)], fields: { data: { acs, headSha, problems } }, body };
-  const ticket = bugTicket(n, k, { acs, title: 'The game does not run', touches: ['**'], definition_of_done: [profile.commands.test], techPin: await latestPin(deps, project, techId(n)), specPin });
+  const techPin = await latestPin(deps, project, techId(n));
+  const components = structureOf(await deps.artifacts.read(project, techPin))?.components;
+  const ticket = bugTicket(n, k, { acs, title: 'The game does not run', touches: ['**'], definition_of_done: [profile.commands.test], techPin, specPin, components });
   return { bug, ticket };
 }

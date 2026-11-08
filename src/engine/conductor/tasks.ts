@@ -1,5 +1,5 @@
-import { parsePin } from '../../artifacts/format.ts';
-import { ENV_PROFILE, FUN_DEFINITION, PROTO_PLAN_ID, protoPlanId, techId } from '../apply/ids.ts';
+import { formatPin, parsePin } from '../../artifacts/format.ts';
+import { ENG_REVIEW_ID, ENV_PROFILE, FUN_DEFINITION, isPolishTicket, PROTO_PLAN_ID, protoPlanId, techId } from '../apply/ids.ts';
 import { IllegalTransition } from '../fsm.ts';
 import type { InboxOption, InboxRef, InboxRow, NewInboxItem } from '../inbox.ts';
 import type { EngineDeps, Runner } from '../runner.ts';
@@ -339,6 +339,20 @@ export async function reviseInputs(deps: Pick<EngineDeps, 'artifacts'>, project:
     if (row) pins.push(pinOf(row));
   }
   return [...pins, pinOf(doc)];
+}
+
+// What a replan after CP4 reads: what the scope was based on and the scope itself, as any revision of it does, and the
+// eng review behind each open polish ticket, which the replan must decide on and would otherwise know only by its id.
+export async function replanInputs(deps: Pick<EngineDeps, 'artifacts'>, project: ProjectRow, scope: ArtifactVersionRow, open: string[]): Promise<string[]> {
+  const reviews: string[] = [];
+  for (const id of open.filter(isPolishTicket)) {
+    const row = await deps.artifacts.latest(project.id, id);
+    for (const pin of row?.derived_from ?? []) {
+      const { id: source, version } = parsePin(pin);
+      if (ENG_REVIEW_ID.test(source)) reviews.push(formatPin({ id: source, ...(version === undefined ? {} : { version }) }));
+    }
+  }
+  return [...(await reviseInputs(deps, project, scope)), ...new Set(reviews)];
 }
 
 // What discovery hands the stakeholder at CP1 besides the Environment Profile. A prototyping project's also holds its FUN-DEFINITION.

@@ -108,7 +108,7 @@ function prototypeTicket(round: number, k: number, prototype: Prototype, pin: st
     inputs: [pin],
     size: 'S' as const,
     components: [],
-    body: `Build prototype ${key} as a self-contained static page at ${root}/index.html: plain JavaScript, no build step, no dependencies, no network. It must open by loading index.html. Controls: ${controlsOf(prototype.controls)}.\n\n${prototype.build.trim()}\n`,
+    body: `Build prototype ${key} as a self-contained static page at ${root}/index.html: plain JavaScript, no build step, no dependencies, no network. It must open by loading index.html. Reference every other file by a relative path. Controls: ${controlsOf(prototype.controls)}.\n\n${prototype.build.trim()}\n`,
   };
   const { fields, body } = renderTicket(0, draft, { id, dependsOn: [], inputs: [pin] });
   // The runner parses it like any other ticket, so one it would refuse is the engine's bug and not the worker's.

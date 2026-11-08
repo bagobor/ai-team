@@ -91,10 +91,10 @@ describe('prototype_plan', () => {
     await publish(e, await plan());
 
     expect((await read('PROTO-1-P-1')).body).toBe(
-      'Build prototype P-1 as a self-contained static page at prototypes/r1/p1/index.html: plain JavaScript, no build step, no dependencies, no network. It must open by loading index.html. Controls: ArrowLeft, ArrowRight, Space.\n\nBuild P-1 with one ship and falling rocks.\n',
+      'Build prototype P-1 as a self-contained static page at prototypes/r1/p1/index.html: plain JavaScript, no build step, no dependencies, no network. It must open by loading index.html. Reference every other file by a relative path. Controls: ArrowLeft, ArrowRight, Space.\n\nBuild P-1 with one ship and falling rocks.\n',
     );
     expect((await read('PROTO-1-P-2')).body).toBe(
-      'Build prototype P-2 as a self-contained static page at prototypes/r1/p2/index.html: plain JavaScript, no build step, no dependencies, no network. It must open by loading index.html. Controls: KeyW.\n\nBuild P-2 with one ship and falling rocks.\n',
+      'Build prototype P-2 as a self-contained static page at prototypes/r1/p2/index.html: plain JavaScript, no build step, no dependencies, no network. It must open by loading index.html. Reference every other file by a relative path. Controls: KeyW.\n\nBuild P-2 with one ship and falling rocks.\n',
     );
   });
 

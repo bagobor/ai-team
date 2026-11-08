@@ -142,7 +142,7 @@
         ],
         "properties": {
           "key": {
-            "description": "T-n for a build ticket, or E-n for a polish ticket from an eng review, with a number no ticket of this milestone has used, even a superseded one.",
+            "description": "T-n, with a number no ticket of this milestone has used, even a superseded one.",
             "type": "string"
           },
           "title": {
