@@ -3,9 +3,11 @@ import { useEffect, useState } from 'react';
 import type { ArtifactDoc } from '../../src/artifacts/format.ts';
 import type { LineageGraph } from '../../src/artifacts/lineage.ts';
 import type { InboxAnswer } from '../../src/engine/inbox.ts';
+import type { Ledger } from '../../src/engine/ledger.ts';
 import type { ArtifactVersionRow, AttemptRow, CriterionRow, MilestoneRow, ProjectRow, TaskRow } from '../../src/engine/store.ts';
 import type { EventRow } from '../../src/events.ts';
 import type { TaskManifest } from '../../src/manifest/build.ts';
+import type { RoleProvenance, RoleSummary } from '../../src/roles/provenance.ts';
 import type { InboxItem } from './lib/inbox.ts';
 import { applyEvent, EMPTY_LOG, EVENT_TYPES, type LogState } from './logState.ts';
 
@@ -78,7 +80,11 @@ export const listArtifacts = (name: string) => request<ArtifactSummary[]>(`${pro
 export const getArtifact = (name: string, id: string, version: number | null) => request<ArtifactDetails>(`${artifactApi(name, id)}${version === null ? '' : `?version=${version}`}`);
 export const getArtifactDiff = (name: string, id: string, from: number, to: number) => request<{ diff: string }>(`${artifactApi(name, id)}/diff?from=${from}&to=${to}`);
 export const getLineage = (name: string) => request<LineageGraph>(`${projectApi(name)}/lineage`);
+export const getLedger = (name: string) => request<Ledger>(`${projectApi(name)}/ledger`);
 export const listCriteria = (name: string, milestone: number) => request<CriterionSummary[]>(`${projectApi(name)}/acs?milestone=${milestone}`);
+
+export const listRoles = () => request<RoleSummary[]>('/api/roles');
+export const getRoleProvenance = (id: string) => request<RoleProvenance>(`/api/roles/${encodeURIComponent(id)}/provenance`);
 
 // The badge and the Inbox page share one poll, so they can't disagree. It covers every project: the page narrows it down itself.
 export const useInbox = () => useQuery({ queryKey: ['inbox'], queryFn: () => listInbox(), refetchInterval: INBOX_POLL_MS });
@@ -95,7 +101,7 @@ export function useProjectEvents(name: string): void {
     const receive = () => {
       flush ??= setTimeout(() => {
         flush = undefined;
-        for (const queryKey of [['project', name], ['tasks', name], ['inbox'], ['artifacts', name]]) void queryClient.invalidateQueries({ queryKey });
+        for (const queryKey of [['project', name], ['tasks', name], ['inbox'], ['artifacts', name], ['ledger', name]]) void queryClient.invalidateQueries({ queryKey });
       }, REFRESH_MS);
     };
 

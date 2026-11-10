@@ -32,7 +32,7 @@ export function inboxLabel({ id, ref }: { id: number; ref: InboxRef }): string {
   return `Q-${id}`;
 }
 
-export const projectPath = (project: string, page: 'inbox' | 'board' | 'documents') => `/projects/${encodeURIComponent(project)}/${page}`;
+export const projectPath = (project: string, page: 'inbox' | 'board' | 'documents' | 'iterations') => `/projects/${encodeURIComponent(project)}/${page}`;
 
 export const documentLink = (project: string, pin: string) => `${projectPath(project, 'documents')}#${encodeURIComponent(pin)}`;
 

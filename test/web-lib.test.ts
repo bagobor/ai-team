@@ -1,4 +1,5 @@
 import type { LineageGraph } from '../src/artifacts/lineage.ts';
+import type { CharterLine } from '../src/roles/provenance.ts';
 import { PLAY, type InboxRef } from '../src/engine/inbox.ts';
 import type { ArtifactSummary, TaskSummary } from '../web/src/api.ts';
 import { BOARD_COLUMNS, boardColumns, boardSummary, currentMilestone, diffLines, selectTasks } from '../web/src/lib/board.ts';
@@ -25,7 +26,9 @@ import {
   requestChangesLabel,
   type InboxItem,
 } from '../web/src/lib/inbox.ts';
+import { duration, foldedQuote, ledgerTotals, purposeLabel, roleChip, runLabel, thenOf, when } from '../web/src/lib/ledger.ts';
 import { layoutLineage, staleNotes } from '../web/src/lib/lineageLayout.ts';
+import { changeKey, charterRows, day, fileLabel, linesFrom, roleName, rolePath, unwrap } from '../web/src/lib/roles.ts';
 
 const item = (id: number, type: InboxItem['type']): InboxItem => ({ id, type, title: `Item ${id}` }) as InboxItem;
 
@@ -511,5 +514,100 @@ describe('staleNotes', () => {
 
   it('has nothing to say when nothing is stale', () => {
     expect(staleNotes({ nodes: graph.nodes, edges: graph.edges.map((edge) => ({ ...edge, stale: false })) })).toEqual([]);
+  });
+});
+
+describe('the iteration ledger’s wording', () => {
+  it('says how long something took in the unit that reads best', () => {
+    expect([duration(0.2), duration(29), duration(90), duration(59 * 60), duration(3 * 3600 + 5 * 60), duration(3 * 86400)]).toEqual(['1 s', '29 s', '2 min', '59 min', '3 h 05 min', '3 days']);
+  });
+
+  it('gives the day and the local time a visit started', () => {
+    expect(when(new Date(2026, 10, 9, 14, 5).toISOString())).toBe('9 Nov 14:05');
+  });
+
+  it('labels a run by what came of it, with a failure named', () => {
+    const run = { attemptId: 1, k: 2, outcome: 'fail' as const, failureKind: 'check_failed', startedAt: '', seconds: 90, usdEst: 0.1, review: false };
+    expect(runLabel(run)).toBe('Attempt 2: checks failed, 2 min, $0.10');
+    expect(runLabel({ ...run, k: 1, outcome: 'ok', failureKind: null, seconds: 8, usdEst: null, review: true })).toBe('Review 1: passed, 8 s, –');
+    expect(runLabel({ ...run, outcome: 'back', failureKind: 'changes_requested' })).toBe('Attempt 2: sent back by review, 2 min, $0.10');
+  });
+
+  it('names a task by its purpose, and plain work as a ticket', () => {
+    expect([purposeLabel(null), purposeLabel('cr_recommendation'), purposeLabel('new_kind_of_work')]).toEqual(['ticket', 'change request advice', 'new kind of work']);
+    expect([roleChip('qa_engineer'), roleChip('designer')]).toEqual(['QA', 'DES']);
+  });
+
+  it('folds a long quote and leaves a short one whole', () => {
+    expect(foldedQuote('Make it faster')).toBeNull();
+    const folded = foldedQuote(`${'a'.repeat(179)} ${'b'.repeat(60)}`);
+    expect(folded).toBe(`${'a'.repeat(179)}…`);
+  });
+
+  it('says where a visit went next', () => {
+    const visit = { stage: 'verify', to: '2026-11-01T10:00:00Z', exit: 'build', back: true };
+    expect(thenOf(visit)).toEqual({ tag: 'back', text: 'back to Build' });
+    expect(thenOf({ ...visit, exit: 'eng_review', back: false })).toEqual({ tag: null, text: 'Eng review' });
+    expect(thenOf({ ...visit, to: null, exit: null, back: false })).toEqual({ tag: 'run', text: 'in progress' });
+    expect(thenOf({ ...visit, stage: 'merged', exit: null, back: false })).toEqual({ tag: 'ok', text: 'merged' });
+    expect(thenOf({ ...visit, exit: 'halted', back: false })).toEqual({ tag: null, text: 'Halted' });
+  });
+
+  it('adds up the sections, with no cost when no run had one', () => {
+    const section = { scope: 0, title: '', visits: [], seconds: 0, runs: 3, failed: 1, usdEst: 0.5, decisions: 2, loops: 1 };
+    expect(ledgerTotals({ sections: [section, { ...section, usdEst: null }] })).toEqual({ runs: 6, failed: 2, usdEst: 0.5, decisions: 4, loops: 2 });
+    expect(ledgerTotals({ sections: [{ ...section, usdEst: null }] }).usdEst).toBeNull();
+  });
+});
+
+describe('a role’s provenance, as the page draws it', () => {
+  const line = (text: string, sha: string | null, date: string | null): CharterLine => ({ text, sha, date, source: sha === null ? null : 'knowledge', subject: sha === null ? null : `${sha} subject` });
+  const lines = [
+    line('one', 'aaa', '2026-01-01T00:00:00.000Z'),
+    line('two', 'aaa', '2026-01-01T00:00:00.000Z'),
+    line('three', 'bbb', '2026-03-01T00:00:00.000Z'),
+    line('four', null, null),
+    line('five', 'aaa', '2026-01-01T00:00:00.000Z'),
+  ];
+
+  it('names a commit on the first line of each run of lines it wrote, and shades older lines lighter', () => {
+    const rows = charterRows(lines, null);
+
+    expect(rows.map(({ first }) => first)).toEqual([true, false, true, true, true]);
+    expect(rows.map(({ ink }) => ink)).toEqual([25, 25, 90, null, 25]);
+    expect(rows.map(({ look }) => look)).toEqual(['', '', '', '', '']);
+  });
+
+  it('lights the selected change’s lines and dims the rest, what no commit has yet included', () => {
+    expect(charterRows(lines, 'aaa').map(({ look }) => look)).toEqual(['hit', 'hit', 'dim', 'dim', 'hit']);
+    expect(charterRows(lines, changeKey({ sha: null })).map(({ look }) => look)).toEqual(['dim', 'dim', 'dim', 'hit', 'dim']);
+    expect(linesFrom(lines, 'aaa')).toBe(3);
+    expect(linesFrom(lines, 'ccc')).toBe(0);
+  });
+
+  it('shades a charter from a single commit as new, and one no commit has seen not at all', () => {
+    expect(charterRows([line('x', 'aaa', '2026-01-01T00:00:00.000Z')], null).map(({ ink }) => ink)).toEqual([90]);
+    expect(charterRows([line('x', null, null)], null)).toEqual([expect.objectContaining({ ink: null, first: true, key: 'uncommitted' })]);
+    expect(charterRows([], 'aaa')).toEqual([]);
+  });
+
+  it('names roles, files and days for people', () => {
+    expect(roleName('pm')).toBe('Product Manager');
+    expect(roleName('engineer.watchos')).toBe('Engineer watchos');
+    expect(roleName('data_scientist')).toBe('Data scientist');
+    expect(rolePath('a b')).toBe('/roles/a%20b');
+    expect(fileLabel({ kind: 'schema', path: 'schemas/spec.json' })).toBe('spec.json');
+    expect(fileLabel({ kind: 'other', path: 'roles/pm/notes.md' })).toBe('notes.md');
+    expect(fileLabel({ kind: 'charter', path: 'roles/pm/charter.md' })).toBe('charter');
+    expect(day('2026-11-07T12:00:00.000Z')).toBe('7 Nov 2026');
+  });
+
+  it('joins a commit message’s wrapped lines and keeps its list items and paragraphs', () => {
+    const body = ['- QA tickets carry a Tests section from the', '  Tech Design, and the engineer', 'charter says so.', '- One Play label.', 'Then a sentence.', '', 'Co-Authored-By: someone'].join('\n');
+
+    expect(unwrap(body)).toBe(
+      ['- QA tickets carry a Tests section from the Tech Design, and the engineer charter says so.', '- One Play label.', 'Then a sentence.', '', 'Co-Authored-By: someone'].join('\n'),
+    );
+    expect(unwrap('')).toBe('');
   });
 });

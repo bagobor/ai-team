@@ -730,6 +730,17 @@ export class Store {
     return rows.map(toAttemptRow);
   }
 
+  async listProjectAttempts(projectId: number): Promise<AttemptRow[]> {
+    const rows = await this.db
+      .selectFrom('attempts')
+      .innerJoin('tasks', 'tasks.id', 'attempts.task_id')
+      .selectAll('attempts')
+      .where('tasks.project_id', '=', projectId)
+      .orderBy('attempts.id')
+      .execute();
+    return rows.map(toAttemptRow);
+  }
+
   async listLiveAttempts(): Promise<AttemptRow[]> {
     const rows = await this.db.selectFrom('attempts').selectAll().where('state', 'in', LIVE_ATTEMPT_STATES).orderBy('id').execute();
     return rows.map(toAttemptRow);

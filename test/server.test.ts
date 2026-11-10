@@ -917,6 +917,54 @@ describe('the API', () => {
     });
   });
 
+  describe('the iteration ledger', () => {
+    type Ledger = { sections: { title: string; runs: number; visits: { stage: string; exit: string | null; runs: number; tasks: { ticketId: string }[] }[] }[] };
+
+    it('lists the project’s visits with the runs in them', async () => {
+      const task = await ticketTask(e, 'M1-T-1', { milestone: 0 });
+      await e.store.createAttempt({ task_id: task.id, adapter: 'claude', model: 'm', worktree_path: e.repoPath, branch: 'b' });
+      await post('/api/projects/p/halt', { reason: 'Not needed' });
+
+      const ledger = (await (await req('/api/projects/p/ledger')).json()) as Ledger;
+
+      expect(ledger.sections).toMatchObject([{ title: 'Project setup', runs: 1, visits: [{ stage: 'intake', exit: 'halted', runs: 1, tasks: [{ ticketId: 'M1-T-1' }] }] }]);
+    });
+
+    it('is 404 for an unknown project', async () => {
+      expect((await req('/api/projects/nope/ledger')).status).toBe(404);
+    });
+  });
+
+  describe('the roles', () => {
+    type Line = { text: string; source: string | null };
+
+    // A seed with no history of its own leaves every line to the knowledge repo setup committed.
+    beforeEach(() => {
+      app = createApp({ ...e, seedDir: tempDir('aiteam-seed-') });
+    });
+
+    it('lists every role in the knowledge repo', async () => {
+      const roles = (await (await req('/api/roles')).json()) as { id: string; lessons: number }[];
+
+      expect(roles.map(({ id }) => id)).toEqual(expect.arrayContaining(['engineer', 'pm', 'qa_engineer']));
+      expect(roles.every(({ lessons }) => lessons >= 1)).toBe(true);
+    });
+
+    it('credits a role’s charter lines to their commits', async () => {
+      const { lines, lessons } = (await (await req('/api/roles/pm/provenance')).json()) as { lines: Line[]; lessons: { subject: string }[] };
+
+      expect(lines.length).toBeGreaterThan(0);
+      expect(lines.every(({ source }) => source === 'knowledge')).toBe(true);
+      expect(lessons.map(({ subject }) => subject)).toContain('Seed the knowledge repo');
+    });
+
+    it.each([['nope'], ['..%2Fpm'], ['bad%20id']])('is 404 for the role %s', async (id) => {
+      const res = await req(`/api/roles/${id}/provenance`);
+
+      expect(res.status).toBe(404);
+    });
+  });
+
   describe('an attempt’s diff', () => {
     const attemptOf = async (shas: { base_sha?: string; head_sha?: string }) => {
       const task = await ticketTask(e, `M1-T-${Math.random()}`);

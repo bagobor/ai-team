@@ -13,9 +13,12 @@ import { isTerminal } from '../engine/conductor/tasks.ts';
 import { IllegalTransition } from '../engine/fsm.ts';
 import { AlreadyAnswered, InvalidAnswer, type CheckMark, type InboxAnswer } from '../engine/inbox.ts';
 import { addBrief, addProject, addTicket, DuplicateError, ProjectError } from '../engine/intake.ts';
+import { projectLedger } from '../engine/ledger.ts';
 import type { EngineDeps, Runner } from '../engine/runner.ts';
 import type { MilestoneRow, ProjectRow, TaskRow } from '../engine/store.ts';
 import { git } from '../git/git.ts';
+import { listRoles, roleProvenance } from '../roles/provenance.ts';
+import { DEFAULT_SEED } from '../setup/setup.ts';
 import { SAFE_ID, TicketError } from '../tickets/ticket.ts';
 import { streamEvents } from './events-stream.ts';
 
@@ -118,7 +121,8 @@ const unframed: MiddlewareHandler = async (c, next) => {
   c.header('Content-Security-Policy', "frame-ancestors 'none'");
 };
 
-export function createApp(deps: EngineDeps & { runner: Runner }): Hono {
+// seedDir is where the seed's history lives, for a role's provenance. Tests point it at a repo of their own.
+export function createApp(deps: EngineDeps & { runner: Runner; seedDir?: string }): Hono {
   const { store, log, runner } = deps;
   const app = new Hono();
 
@@ -280,6 +284,19 @@ export function createApp(deps: EngineDeps & { runner: Runner }): Hono {
   });
 
   app.get('/api/projects/:name/lineage', async (c) => c.json(await lineageGraph(store, (await projectOf(c)).id)));
+
+  app.get('/api/projects/:name/ledger', async (c) => c.json(await projectLedger(deps, await projectOf(c), deps.now?.() ?? new Date())));
+
+  const provenanceDirs = { knowledge: deps.paths.knowledge, seed: deps.seedDir ?? DEFAULT_SEED };
+
+  app.get('/api/roles', async (c) => c.json(await listRoles(provenanceDirs)));
+
+  app.get('/api/roles/:id/provenance', async (c) => {
+    const id = c.req.param('id');
+    const provenance = await roleProvenance(provenanceDirs, id);
+    if (provenance === null) throw new NotFound(`Unknown role ${id}`);
+    return c.json(provenance);
+  });
 
   // The status comes from the registry and nowhere else: only a QA verification task can change it there.
   app.get('/api/projects/:name/acs', async (c) => {

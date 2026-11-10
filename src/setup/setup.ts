@@ -8,7 +8,7 @@ import type { Paths } from '../paths.ts';
 
 const run = promisify(execFile);
 
-const DEFAULT_SEED = fileURLToPath(new URL('../../seed/knowledge', import.meta.url));
+export const DEFAULT_SEED = fileURLToPath(new URL('../../seed/knowledge', import.meta.url));
 
 function seedFiles(seedDir: string): string[] {
   return readdirSync(seedDir, { recursive: true, withFileTypes: true })

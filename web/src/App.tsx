@@ -4,12 +4,14 @@ import { newPendingIds, projectPath } from './lib/inbox.ts';
 import { Board } from './pages/Board.tsx';
 import { Documents } from './pages/Documents.tsx';
 import { Inbox } from './pages/Inbox.tsx';
+import { Ledger } from './pages/Ledger.tsx';
 import { Projects } from './pages/Projects.tsx';
+import { RoleDetail, Roles } from './pages/Roles.tsx';
 import { TaskDetail } from './pages/TaskDetail.tsx';
 import { TaskList } from './pages/TaskList.tsx';
 import { Link, usePath } from './router.tsx';
 
-const PROJECT_PAGE = /^\/projects\/([^/]+)\/(inbox|board|documents)\/?$/;
+const PROJECT_PAGE = /^\/projects\/([^/]+)\/(inbox|board|documents|iterations)\/?$/;
 
 function decoded(segment: string | undefined): string | undefined {
   if (segment === undefined) return undefined;
@@ -24,16 +26,22 @@ function Page({ path }: { path: string }) {
   if (path === '/') return <Wide><Projects /></Wide>;
   if (path === '/inbox') return <Inbox />;
   if (path === '/tasks') return <Wide><TaskList /></Wide>;
+  if (path === '/roles') return <Wide><Roles /></Wide>;
 
   const project = PROJECT_PAGE.exec(path);
   const name = decoded(project?.[1]);
   if (name !== undefined && project?.[2] === 'inbox') return <Inbox key={name} project={name} />;
   if (name !== undefined && project?.[2] === 'board') return <Board key={name} project={name} />;
   if (name !== undefined && project?.[2] === 'documents') return <Documents key={name} project={name} />;
+  if (name !== undefined && project?.[2] === 'iterations') return <Ledger key={name} project={name} />;
 
   const id = /^\/tasks\/(\d+)\/?$/.exec(path)?.[1];
   // The key starts a new task's live log from nothing.
   if (id !== undefined) return <Wide><TaskDetail key={id} id={Number(id)} /></Wide>;
+
+  const role = decoded(/^\/roles\/([^/]+)\/?$/.exec(path)?.[1]);
+  // The key drops one role's selected change when another role opens.
+  if (role !== undefined) return <RoleDetail key={role} id={role} />;
 
   return (
     <p className="notice">
@@ -105,6 +113,9 @@ export function App() {
           <NavLink to="/tasks" active={path.startsWith('/tasks')}>
             Tasks
           </NavLink>
+          <NavLink to="/roles" active={path.startsWith('/roles')}>
+            Roles
+          </NavLink>
           {project !== undefined && (
             <>
               <div className="sep" />
@@ -117,6 +128,9 @@ export function App() {
               </NavLink>
               <NavLink to={projectPath(project, 'documents')} active={path === projectPath(project, 'documents')}>
                 Documents
+              </NavLink>
+              <NavLink to={projectPath(project, 'iterations')} active={path === projectPath(project, 'iterations')}>
+                Iterations
               </NavLink>
             </>
           )}
