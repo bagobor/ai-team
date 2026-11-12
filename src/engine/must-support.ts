@@ -105,9 +105,10 @@ const GROUPS: [MsItem['group'], string][] = [
   ['built_with', "## How it's built"],
 ];
 
-// Each item is its own section, so a pin reads MUST-SUPPORT@v#ms-1.
+// The whole body, so the PM's list and the engine's republished one read the same. Each item is its own section, so a
+// pin reads MUST-SUPPORT@v#ms-1.
 export function renderMustSupport(items: MsItem[]): string {
-  const lines = ['# Must support', ''];
+  const lines = ["# What the game must run on and how it's played", ''];
   for (const [group, heading] of GROUPS) {
     const members = items.filter((item) => item.group === group);
     if (members.length > 0) lines.push(heading, '', ...members.flatMap(renderItem));

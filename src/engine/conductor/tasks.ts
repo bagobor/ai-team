@@ -143,6 +143,28 @@ export function discoveryTask(project: ProjectRow, round: number, inputs: string
   };
 }
 
+// The list of what the game must run on comes before discovery, from the brief alone. A revision reads the stakeholder's comment.
+export function mustSupportTask(project: ProjectRow, k: number, inputs: string[], comment?: string): TaskSpec {
+  return {
+    project,
+    ticket_id: roundId('MUST-SUPPORT-PM', k),
+    title: 'Must support: what the game runs on and how it is built',
+    milestone: 0,
+    role_id: 'pm',
+    kind: 'authoring',
+    order: workOrder(
+      'must_support',
+      comment === undefined ? MUST_SUPPORT_INSTRUCTIONS : `${MUST_SUPPORT_INSTRUCTIONS}\n\nThe stakeholder asked for changes: ${comment}`,
+      inputs,
+      BASE,
+      withComment(comment),
+    ),
+  };
+}
+
+const MUST_SUPPORT_INSTRUCTIONS =
+  "List what this game must run on and how it is played (group runs_on), and what the brief says about how it must be built (group built_with). Quote the brief's own words in brief_quote for every item it states. If the brief says nothing about where the game runs, propose what a game like this needs: set proposed to true and give the reason. The stakeholder confirms every item. Check an item by play when a browser can show it: name the viewport (desktop, phone_portrait, phone_landscape or tablet), the input (keys, touch, mouse, or null for none) and whether it must fit the screen. Check it by command when a shell command can prove it, and by human when only the stakeholder can judge it, saying how. Keep the ids of the items you keep, and give a new item the next id above every id used before.";
+
 // A prototype round belongs to no milestone, as discovery doesn't. What the PM reads of the stakeholder's verdicts is in its inputs.
 export function protoPlanTask(project: ProjectRow, r: number, inputs: string[]): TaskSpec {
   return {

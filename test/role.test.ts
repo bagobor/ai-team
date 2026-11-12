@@ -136,7 +136,7 @@ describe('loadRole', () => {
 
   it('accepts a change request from each schema a worker can answer with', () => {
     const names = readdirSync(join(seedKnowledge, 'schemas'));
-    expect(names).toHaveLength(16);
+    expect(names).toHaveLength(17);
     for (const name of names) {
       const schema = JSON.parse(readFileSync(join(seedKnowledge, 'schemas', name), 'utf8')) as { required: string[]; properties: Record<string, unknown> };
       expect(schema.properties.change_requests, name).toBeDefined();
