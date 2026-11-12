@@ -1,4 +1,4 @@
-import { ArtifactError, formatPin, parseArtifact, parsePin, renderArtifact, sectionsOf, sectionText, type ArtifactDoc } from '../src/artifacts/format.ts';
+import { ARTIFACT_TYPES, ArtifactError, formatPin, parseArtifact, parsePin, renderArtifact, sectionsOf, sectionText, type ArtifactDoc } from '../src/artifacts/format.ts';
 
 const doc: ArtifactDoc = {
   id: 'ROADMAP',
@@ -62,6 +62,12 @@ describe('renderArtifact and parseArtifact', () => {
     const broken = renderArtifact(doc).replace(new RegExp(`^${key}: .*$`, 'm'), line);
 
     expect(() => parseArtifact(broken)).toThrow(ArtifactError);
+  });
+});
+
+describe('ARTIFACT_TYPES', () => {
+  it('has the must-support list', () => {
+    expect(ARTIFACT_TYPES).toContain('must_support');
   });
 });
 

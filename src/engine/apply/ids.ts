@@ -1,4 +1,6 @@
 export const ENV_PROFILE = 'ENV-PROFILE';
+// What the game must run on, how it's played and how it's built, as the stakeholder confirmed it.
+export const MUST_SUPPORT = 'MUST-SUPPORT';
 // What a prototyping project's stakeholder found fun, written down in discovery.
 export const FUN_DEFINITION = 'FUN-DEFINITION';
 

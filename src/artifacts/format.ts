@@ -7,6 +7,7 @@ export const ARTIFACT_TYPES = [
   'team_proposal',
   'human_requirements',
   'environment_profile',
+  'must_support',
   'spec',
   'tech_design',
   'test_plan',
