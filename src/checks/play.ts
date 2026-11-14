@@ -104,13 +104,17 @@ export type PlayProblem = {
     | 'still'
     | 'key'
     | 'expect'
+    | 'touch'
+    | 'fits'
     | 'timeout'
     | 'browser';
   detail: string;
 };
 export type PlayResult = { ok: boolean; problems: PlayProblem[]; durationMs: number; log: string[] };
 // `animated` is the play block's: false for a page with no animation loop, true when it doesn't say, as a game's does.
-export type SmokeOptions = { animated?: boolean };
+// `viewport` is the screen the page is laid out for, `touch` plays it with a thumb after the keys, and `fitsScreen`
+// holds it to that screen. With none of them the page is played on Chrome's own window, with the keys alone.
+export type SmokeOptions = { animated?: boolean; viewport?: { width: number; height: number; mobile: boolean; touch: boolean }; touch?: boolean; fitsScreen?: boolean };
 export type Player = {
   unavailable(): string | undefined;
   smoke(url: string, keys: string[], opts?: SmokeOptions): Promise<PlayResult>;
@@ -120,6 +124,9 @@ export type Player = {
 const DEFAULT_TIMEOUT_MS = 20_000;
 const SETTLE_MS = 1_000;
 const SMOKE_HOLD_MS = 100;
+const TAP_MS = 50;
+const DRAG_MS = 300;
+const DRAG_STEPS = 10;
 const MIN_FRAMES = 30;
 // Problem details become Bug evidence and the log rides along with them, so a noisy page must not flood either.
 const MAX_LOG_LINES = 200;
@@ -139,6 +146,54 @@ const FRAME_COUNTER = `(() => {
     return callback(time);
   });
 })();`;
+
+// Counts the times the page's own code ran for a touch, pointer, mouse or click event, whether it listens with
+// addEventListener or with an on… handler. Removing a listener still works, since each one keeps a single wrapper.
+const TOUCH_COUNTER = `(() => {
+  const types = new Set(['touchstart', 'touchmove', 'touchend', 'pointerdown', 'pointermove', 'pointerup', 'mousedown', 'mouseup', 'click']);
+  const add = EventTarget.prototype.addEventListener;
+  const remove = EventTarget.prototype.removeEventListener;
+  const counted = new WeakMap();
+  window.__aiteamHandled = 0;
+  const counting = (listener) => {
+    const callable = typeof listener === 'function';
+    if (!callable && typeof listener?.handleEvent !== 'function') return listener;
+    if (!counted.has(listener)) {
+      counted.set(listener, function (event) {
+        window.__aiteamHandled += 1;
+        return callable ? listener.call(this, event) : listener.handleEvent(event);
+      });
+    }
+    return counted.get(listener);
+  };
+  EventTarget.prototype.addEventListener = function (type, listener, options) {
+    return add.call(this, type, types.has(type) ? counting(listener) : listener, options);
+  };
+  EventTarget.prototype.removeEventListener = function (type, listener, options) {
+    return remove.call(this, type, (types.has(type) && counted.get(listener)) || listener, options);
+  };
+  // An on… handler, set as a property or written in the markup, is found on the event's path.
+  for (const type of types) {
+    add.call(window, type, (event) => {
+      if (event.composedPath().some((target) => typeof target['on' + type] === 'function')) window.__aiteamHandled += 1;
+    }, true);
+  }
+})();`;
+
+export type ScreenMetrics = { scrollWidth: number; scrollHeight: number; innerWidth: number; innerHeight: number; scrollX: number; scrollY: number };
+
+const SCREEN_METRICS = `(() => {
+  const page = document.scrollingElement ?? document.documentElement;
+  return { scrollWidth: page.scrollWidth, scrollHeight: page.scrollHeight, innerWidth: window.innerWidth, innerHeight: window.innerHeight, scrollX: window.scrollX, scrollY: window.scrollY };
+})()`;
+
+// A pixel is allowed for rounding. A page that has scrolled is reported first, since its size no longer says what is on screen.
+export function fitsProblem(m: ScreenMetrics, when: 'after load' | 'after the keys' | 'after the gestures'): string | undefined {
+  if (m.scrollX > 1 || m.scrollY > 1) return `The page scrolled ${when}, so the screen moved off the game`;
+  if (m.scrollWidth > m.innerWidth + 1) return `The page is ${m.scrollWidth}px wide on a ${m.innerWidth}px-wide screen ${when}, so part of it is off screen`;
+  if (m.scrollHeight > m.innerHeight + 1) return `The page is ${m.scrollHeight}px tall on a ${m.innerHeight}px-tall screen ${when}, so part of it is off screen`;
+  return undefined;
+}
 
 // Runs in a blank tab, since Node has no PNG decoder. The screenshot is the composited frame, so a WebGL canvas counts
 // like any other.
@@ -394,18 +449,81 @@ async function evaluate(run: Run, page: Session, expression: string): Promise<{ 
   }
 }
 
-async function smokeSteps(run: Run, cdp: Cdp, context: string, page: Session, keys: string[], animated: boolean): Promise<void> {
-  const frames = async () => Number((await evaluate(run, page, 'window.__aiteamFrames')).value) || 0;
+// Sent before the page loads, so it lays itself out for the screen it is played on.
+async function emulate(page: Session, { viewport, touch }: SmokeOptions): Promise<void> {
+  if (viewport) {
+    const { width, height, mobile } = viewport;
+    await page.send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile });
+    if (viewport.touch) await page.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 });
+  }
+  if (touch) await page.send('Page.addScriptToEvaluateOnNewDocument', { source: TOUCH_COUNTER });
+}
+
+// A tap, a drag across the middle and a hold, as a thumb makes them.
+async function gestures(run: Run, page: Session, { width, height }: { width: number; height: number }): Promise<void> {
+  const touch = (type: 'touchStart' | 'touchMove' | 'touchEnd', at?: { x: number; y: number }) => page.send('Input.dispatchTouchEvent', { type, touchPoints: at ? [at] : [] });
+  const centre = { x: Math.round(width / 2), y: Math.round(height / 2) };
+  const from = Math.round(width / 4);
+  const to = Math.round((width * 3) / 4);
+
+  run.note(`tap at ${centre.x},${centre.y}`);
+  await touch('touchStart', centre);
+  await run.wait(TAP_MS);
+  await touch('touchEnd');
+
+  run.note(`drag from ${from},${centre.y} to ${to},${centre.y} in ${DRAG_MS} ms`);
+  await touch('touchStart', { x: from, y: centre.y });
+  for (let step = 1; step <= DRAG_STEPS; step += 1) {
+    await run.wait(DRAG_MS / DRAG_STEPS);
+    await touch('touchMove', { x: Math.round(from + ((to - from) * step) / DRAG_STEPS), y: centre.y });
+  }
+  await touch('touchEnd');
+
+  run.note(`hold at ${centre.x},${centre.y}, ${SMOKE_HOLD_MS} ms`);
+  await touch('touchStart', centre);
+  await run.wait(SMOKE_HOLD_MS);
+  await touch('touchEnd');
+}
+
+async function smokeSteps(run: Run, cdp: Cdp, context: string, page: Session, keys: string[], opts: SmokeOptions): Promise<void> {
+  const { animated = true, viewport, touch = false, fitsScreen = false } = opts;
+  const count = async (name: string) => Number((await evaluate(run, page, `window.${name}`)).value) || 0;
+  const frames = () => count('__aiteamFrames');
   const screenshot = async () => (await page.send<{ data: string }>('Page.captureScreenshot', { format: 'png' })).data;
+  const measure = async (): Promise<ScreenMetrics> => {
+    const { value, threw } = await evaluate(run, page, SCREEN_METRICS);
+    if (threw) throw new Error(`could not measure the page: ${threw}`);
+    return value as ScreenMetrics;
+  };
+  // The first time the page doesn't fit is the one to fix, and a page that didn't fit at load won't after it either.
+  let fitted = !fitsScreen;
+  const fits = async (when: Parameters<typeof fitsProblem>[1]) => {
+    if (fitted) return;
+    const problem = fitsProblem(await measure(), when);
+    if (!problem) return;
+    fitted = true;
+    run.problem('fits', problem);
+  };
 
   // Frames are counted from load, so a page that animates only for its first second still counts as frozen after it.
   const framesBefore = await frames();
   const counting = Date.now();
   await run.wait(SETTLE_MS);
   const before = await screenshot();
+  await fits('after load');
   for (const key of keys) await press(run, page, key, SMOKE_HOLD_MS);
+  if (keys.length > 0) await fits('after the keys');
+  const handledBefore = touch ? await count('__aiteamHandled') : 0;
+  // An animated page changes on its own, so only a page with no animation loop is held to showing something for the touch.
+  const untouched = touch && !animated ? await screenshot() : undefined;
+  if (touch) await gestures(run, page, viewport ?? (await measure().then(({ innerWidth: width, innerHeight: height }) => ({ width, height }))));
   await run.wait(SETTLE_MS);
   const after = await screenshot();
+  if (touch) {
+    await fits('after the gestures');
+    if ((await count('__aiteamHandled')) === handledBefore) run.problem('touch', 'Nothing on the page answered a tap, a drag or a hold');
+    else if (untouched === after) run.problem('touch', 'The page did not change when it was tapped, dragged and held');
+  }
   const ran = (await frames()) - framesBefore;
   const seconds = ((Date.now() - counting) / 1000).toFixed(1);
 
@@ -451,6 +569,7 @@ async function play(
   strict: boolean,
   url: string,
   steps: Steps,
+  prepare?: (page: Session) => Promise<void>,
 ): Promise<PlayResult> {
   const started = Date.now();
   const port = servedPort(url);
@@ -472,6 +591,7 @@ async function play(
     const domains = ['Runtime.enable', 'Log.enable', 'Network.enable', 'Page.enable'];
     await Promise.all(domains.map((method) => page.send(method)));
     await page.send('Page.addScriptToEvaluateOnNewDocument', { source: FRAME_COUNTER });
+    await prepare?.(page);
     if (await load(run, cdp, page, url)) await steps(run, cdp, browserContextId, page);
   } catch (err) {
     if (run.timedOut) {
@@ -503,9 +623,9 @@ export function chromePlayer(config: Config, opts: { timeoutMs?: number } = {}):
 
   return {
     unavailable,
-    smoke: async (url, keys, { animated = true } = {}) => {
-      const steps: Steps = (run, cdp, context, page) => smokeSteps(run, cdp, context, page, keys, animated);
-      return missing() ?? play(chromePath(config)!, timeoutMs, true, url, steps);
+    smoke: async (url, keys, opts = {}) => {
+      const steps: Steps = (run, cdp, context, page) => smokeSteps(run, cdp, context, page, keys, opts);
+      return missing() ?? play(chromePath(config)!, timeoutMs, true, url, steps, (page) => emulate(page, opts));
     },
     script: async (url, script) => {
       const invalid = scriptProblems(script);

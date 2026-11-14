@@ -22,8 +22,10 @@ import { ENV_PROFILE, techId } from './apply/ids.ts';
 import { applyOutput } from './apply/index.ts';
 import { raisedRequests } from './apply/raised.ts';
 import { structureOf } from './apply/tech-structure.ts';
+import { checkPrototype } from './conductor/must-support-play.ts';
+import { withListInForce } from './conductor/tasks.ts';
 import { IllegalTransition } from './fsm.ts';
-import { isHarnessTicket, protectedPaths, type ProtectedPath } from './protected.ts';
+import { checkProtectedPaths, isHarnessTicket, protectedPaths, type ProtectedPath } from './protected.ts';
 import { reviewInputs } from './review-inputs.ts';
 import { roleInputs, writeReference, type Reference, type Views } from './role-inputs.ts';
 import type { AttemptPatch, AttemptRow, ProjectRow, Store, TaskRow } from './store.ts';
@@ -404,13 +406,14 @@ export class Runner {
       doneCommands: ticket.definition_of_done,
       acRefs: ticket.ac_refs,
       protectedPaths: (await this.protectedFrom(project, task)).map(({ glob }) => glob),
-      ...(await roleInputs(this.deps, project, ticket.inputs)),
+      ...(await roleInputs(this.deps, project, await withListInForce(this.deps, project, ticket.inputs))),
     };
   }
 
-  // Every ticket but QA's harness tickets, bug tickets included, since they are the engineers' to write.
+  // Every ticket but QA's harness tickets, bug tickets included, since they are the engineers' to write. What the
+  // must-support checks read is held from the harness tickets too: nobody's ticket rewrites what judges every milestone.
   private async protectedFrom(project: ProjectRow, task: TaskRow): Promise<ProtectedPath[]> {
-    return isHarnessTicket(task.ticket_id) ? [] : protectedPaths(this.deps, project, task.milestone);
+    return isHarnessTicket(task.ticket_id) ? checkProtectedPaths(this.deps, project) : protectedPaths(this.deps, project, task.milestone);
   }
 
   // What a ticket's changes are held to. QA's harness tickets are tests themselves, a prototype (milestone 0) has no design,
@@ -546,7 +549,7 @@ export class Runner {
 
     const reporter = this.commandReporter(project, task.id, attempt.id);
     const components = await this.componentsFor(project, task);
-    const checks = await runChecks({
+    const ran = await runChecks({
       repoPath: project.repo_path,
       worktree: attempt.worktree_path,
       baseSha: work.baseSha,
@@ -564,6 +567,11 @@ export class Runner {
 
     if (live.stop) return this.applyStop(task.id, live);
     if (reporter.error() !== undefined) throw reporter.error();
+
+    // A prototype that passed its own checks is then played against the must-support list, and one that doesn't meet
+    // it has failed a check like any other.
+    const played = ran.ok ? await checkPrototype(this.deps, project, task.ticket_id, attempt.worktree_path) : ran;
+    const checks = ran.ok && !played.ok ? { ...played, kind: 'check_failed' as const } : ran;
 
     const { docs, dropped } = await raisedRequests(this.deps, project, task, output);
     if (checks.ok) {

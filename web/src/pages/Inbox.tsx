@@ -18,6 +18,8 @@ import {
   projectPath,
   rejectConfirm,
   requestChangesLabel,
+  waiveLabel,
+  waivers,
   type InboxItem,
   type Marks,
 } from '../lib/inbox.ts';
@@ -38,12 +40,14 @@ function NotifyMe() {
   );
 }
 
-function Actions({ item, marks, onAnswer, busy }: { item: InboxItem; marks: Marks; onAnswer: (answer: InboxAnswer) => void; busy: boolean }) {
+function Actions({ item, marks, waive, onAnswer, busy }: { item: InboxItem; marks: Marks; waive: string[]; onAnswer: (answer: InboxAnswer) => void; busy: boolean }) {
   const [mode, setMode] = useState<'choose' | 'changes' | 'reject'>('choose');
   const [text, setText] = useState('');
   const blank = text.trim() === '';
   const fun = item.ref.kind === 'fun_eval';
-  const approvable = canApproveItem(item.ref, item.checks, marks);
+  const approvable = canApproveItem(item.ref, item.checks, marks, item.waivable, waive);
+  const unwaived = item.waivable.some(({ id }) => !waive.includes(id));
+  const needMarks = fun ? 'Mark every prototype Fun or Not fun to approve' : 'Mark every check passing to approve';
   const changeable = canRequestChanges(item.checks, marks);
   // A not-fun mark is a valid answer to approve on, but the server wants the reason for it all the same.
   const needNote = fun ? 'Say what you felt about each Not fun prototype' : 'Say what was wrong with each failing check';
@@ -118,7 +122,7 @@ function Actions({ item, marks, onAnswer, busy }: { item: InboxItem; marks: Mark
   return (
     <div className="acts">
       {!changeable && <span className="muted">{needNote}</span>}
-      {!approvable && <span className="muted">{fun ? 'Mark every prototype Fun or Not fun to approve' : 'Mark every check passing to approve'}</span>}
+      {!approvable && <span className="muted">{unwaived ? 'Tick each item you approve without, or request changes' : needMarks}</span>}
       <button type="button" className="btn danger" disabled={busy} onClick={() => setMode('reject')}>
         Reject
       </button>
@@ -134,9 +138,39 @@ function Actions({ item, marks, onAnswer, busy }: { item: InboxItem; marks: Mark
       >
         {requestChangesLabel(item.ref)}
       </button>
-      <button type="button" className="btn primary" disabled={busy || !approvable || !changeable} onClick={() => onAnswer({ action: 'approve', checks: checkMarks(item.checks, marks) })}>
+      <button
+        type="button"
+        className="btn primary"
+        disabled={busy || !approvable || !changeable}
+        onClick={() => onAnswer({ action: 'approve', checks: checkMarks(item.checks, marks), ...(waive.length > 0 ? { waive } : {}) })}
+      >
         Approve
       </button>
+    </div>
+  );
+}
+
+// What the build doesn't meet of the must-support list, and what on it only the stakeholder can judge. Each has a tick
+// to approve the milestone without it, and says why it is offered.
+function Waivers({ item, waive, busy, onToggle }: { item: InboxItem; waive: string[]; busy: boolean; onToggle: (id: string) => void }) {
+  const offered = waivers(item);
+  if (offered.length === 0) return null;
+  return (
+    <div className="d-sec">
+      <h3>Approve without</h3>
+      <ul className="d-checks">
+        {offered.map(({ id, text, why }) => (
+          <li key={id} className="d-check">
+            <span className="acts">
+              <label>
+                <input type="checkbox" checked={waive.includes(id)} disabled={busy} onChange={() => onToggle(id)} />
+                <span className="mono">{id}</span> <b>{waiveLabel(text)}</b>
+              </label>
+            </span>
+            <span className="how">{why}</span>
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }
@@ -180,6 +214,7 @@ function Checks({ item, marks, busy, onMark }: { item: InboxItem; marks: Marks; 
 function Detail({ item, onSettled }: { item: InboxItem; onSettled: (message: string) => void }) {
   const queryClient = useQueryClient();
   const [marks, setMarks] = useState<Marks>({});
+  const [waive, setWaive] = useState<string[]>([]);
   const answer = useMutation({
     mutationFn: (body: InboxAnswer) => answerInbox(item.id, body),
     onSuccess: () => onSettled('Answer saved. Pick the next item from the list.'),
@@ -240,12 +275,13 @@ function Detail({ item, onSettled }: { item: InboxItem; onSettled: (message: str
         </dl>
       </div>
       {item.checks.length > 0 && <Checks item={item} marks={marks} busy={answer.isPending} onMark={(ac, mark) => setMarks((prev) => ({ ...prev, [ac]: mark }))} />}
+      <Waivers item={item} waive={waive} busy={answer.isPending} onToggle={(id) => setWaive((prev) => (prev.includes(id) ? prev.filter((other) => other !== id) : [...prev, id]))} />
       <div className="d-foot">
         <div className="d-note">
           {item.type === 'question' && <span className="muted">Team recommends: {item.recommendation}</span>}
           {answer.error && !(answer.error instanceof ApiError && answer.error.status === 409) && <p className="err">{answer.error.message}</p>}
         </div>
-        <Actions item={item} marks={marks} busy={answer.isPending} onAnswer={(body) => answer.mutate(body)} />
+        <Actions item={item} marks={marks} waive={waive} busy={answer.isPending} onAnswer={(body) => answer.mutate(body)} />
       </div>
     </div>
   );

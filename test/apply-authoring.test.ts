@@ -12,7 +12,7 @@ import { renderTechDesign, structureProblems, type TechStructure } from '../src/
 import { loadRole } from '../src/roles/role.ts';
 import { stateRepoDir } from '../src/paths.ts';
 import { apply, CRITERIA, ctxFor, evidenceOf, lockSpec, projectOf, publish, specBody, ticketTask } from './helpers/apply.ts';
-import { makeEngine, type TestEngine } from './helpers/engine.ts';
+import { makeEngine, seedMustSupport, type TestEngine } from './helpers/engine.ts';
 import { commitAll, commitOnBranch, revParse, tempDir } from './helpers/repo.ts';
 
 const DISCOVERY = {
@@ -405,6 +405,49 @@ describe('appliers', () => {
       const doc = await read('SPEC-M1');
       expect(sectionText(doc.body, 'ac-2')).toContain('Checked by the stakeholder: Play two minutes');
       expect(sectionText(doc.body, 'ac-2')).not.toContain('Verified by');
+    });
+
+    describe('with a must-support list', () => {
+      const phone = { id: 'MS-1', group: 'runs_on' as const, text: 'Plays in a phone browser held upright', brief_quote: 'On my phone', check: 'play' as const, viewport: 'phone_portrait' as const, input: 'touch' as const, fits_screen: true };
+      const cmd = { id: 'MS-2', group: 'built_with' as const, text: 'Has no build step', brief_quote: 'No build step', check: 'command' as const };
+      const lines = [{ item: 'MS-1', change: 'Adds the touch controls' }, { item: 'MS-2', change: 'Nothing new: still one page' }];
+
+      beforeEach(async () => {
+        await seedMustSupport(e, await projectOf(e), [phone, cmd]);
+      });
+
+      it('a spec without a line for every item is sent back', async () => {
+        const evidence = evidenceOf(await apply(e, 'milestone_spec', { ...SPEC, must_support: [lines[1]] }));
+
+        expect(evidence).toBe('The spec has no must_support line for MS-1 (Plays in a phone browser held upright): say what this milestone does for it, or name it in gaps');
+      });
+
+      it('a spec renders Must support before Acceptance criteria', async () => {
+        await publish(e, await apply(e, 'milestone_spec', { ...SPEC, must_support: lines }));
+
+        const { body } = await read('SPEC-M1');
+        expect(body).toContain('\n\n## Must support\n\n- MS-1 Plays in a phone browser held upright: Adds the touch controls\n- MS-2 Has no build step: Nothing new: still one page\n\n## Acceptance criteria\n\n### AC-1\n');
+        expect(sectionText(body, 'must-support')).not.toContain('Acceptance criteria');
+        expect(sectionText(body, 'ac-1')).toContain('The first thing works');
+      });
+
+      it('a gapped item reads as not met in this milestone', async () => {
+        await publish(e, await apply(e, 'milestone_spec', { ...SPEC, must_support: [lines[1]], gaps: [{ item: 'MS-1', why: 'The map needs a wide screen' }] }));
+
+        expect(sectionText((await read('SPEC-M1')).body, 'must-support')).toContain('- MS-1 Plays in a phone browser held upright: Not met in this milestone (raised with the stakeholder)\n');
+      });
+
+      it('refuses a body with a Must support section of its own', async () => {
+        const evidence = evidenceOf(await apply(e, 'milestone_spec', { ...SPEC, body: '# Milestone one\n\n## Must support\n\nPhones, probably.\n', must_support: lines }));
+
+        expect(evidence).toBe('The body has its own "Must support" heading: the engine writes that section from must_support');
+      });
+    });
+
+    it('a spec written against no list has no Must support section', async () => {
+      await publish(e, await apply(e, 'milestone_spec', SPEC));
+
+      expect((await read('SPEC-M1')).body).not.toContain('Must support');
     });
 
     it('rejects a Spec whose criteria are all human checks', async () => {

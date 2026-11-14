@@ -44,15 +44,25 @@ function checkRow(p: Payload): RowParts {
   return { kind: 'test', bold: text(run.command), text: `${checkOutcome(run)}${took}`, tone: run.exitCode === 0 ? 'good' : 'bad' };
 }
 
-// The play gate's outcome, with what went wrong when the game didn't run or couldn't be played. A build's or a
-// setup's output runs to many lines, all of them in the Bug or the hold, so a row takes the first.
+// The play gate's outcome, with what went wrong when the game didn't run, couldn't be played, or runs and fails items
+// of the must-support list. A build's or a setup's output runs to many lines, all of them in the Bug or the hold, so a
+// row takes the first.
 const firstLine = (value: unknown): string => text(value).trim().split(/\r?\n/)[0]!;
 
 function playRow(p: Payload): RowParts {
   const problems = Array.isArray(p.problems) ? p.problems.map((problem: { kind?: unknown; detail?: unknown } | null) => `${text(problem?.kind)}: ${firstLine(problem?.detail)}`) : [];
-  const said = p.outcome === 'unavailable' ? firstLine(p.why) : problems.join('; ');
+  const failing = Array.isArray(p.statuses) ? p.statuses.filter((found: { status?: unknown } | null) => found?.status === 'failing').map((found: { item_id?: unknown } | null) => text(found?.item_id)) : [];
+  const said = p.outcome === 'unavailable' ? firstLine(p.why) : p.outcome === 'short' ? `${failing.join(', ')} failing` : problems.join('; ');
   const bold = typeof p.milestone === 'number' ? `play M${p.milestone}` : 'play';
   return { kind: 'test', bold, text: said ? `${text(p.outcome)}: ${said}` : text(p.outcome), tone: p.outcome === 'passed' ? 'good' : 'bad' };
+}
+
+// A check of a build against the must-support list: where it was checked, and what each item came to there.
+function mustSupportRow(p: Payload): RowParts {
+  const where = p.scope === 'project' ? 'the whole project' : p.scope === 'prototype' ? `round ${String(p.n)}${p.subject ? ` ${text(p.subject)}` : ''}` : `milestone ${String(p.n)}`;
+  const statuses = Array.isArray(p.statuses) ? p.statuses.map((found: { item_id?: unknown; status?: unknown } | null) => `${text(found?.item_id)} ${text(found?.status).replace('_', ' ')}`) : [];
+  const failing = statuses.some((found) => found.endsWith(' failing'));
+  return { kind: 'engine', text: `Must support, ${where}: ${statuses.join(', ')}`, ...(failing ? { tone: 'bad' as const } : {}) };
 }
 
 const change = (subject: string, p: Payload, detail: unknown): string => {
@@ -90,6 +100,8 @@ const FORMAT: Record<EventType, (p: Payload) => RowParts> = {
   'change_request.dropped': (p) => ({ kind: 'engine', text: `Change Request dropped: ${text(p.reason)}`, tone: 'bad' }),
   'conductor.error': (p) => ({ kind: 'error', text: text(p.message), tone: 'bad' }),
   'play.result': playRow,
+  'must_support.status': mustSupportRow,
+  'must_support.gap_dropped': (p) => ({ kind: 'engine', text: `Must-support gap dropped: ${text(p.reason)}`, tone: 'bad' }),
 };
 
 export const EVENT_TYPES = Object.keys(FORMAT) as EventType[];

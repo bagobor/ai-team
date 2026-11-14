@@ -7,6 +7,7 @@ import { applyReviseDesign, applyReviseTestPlan, applyTechDesign, applyTestPlan 
 import { applyDiscovery, applyEnvironmentProfile } from './discovery.ts';
 import { applyEngReview } from './eng-review.ts';
 import { applyMilestoneReview, applyMilestoneSpec } from './milestone.ts';
+import { applyMustSupport, applyMustSupportChecks } from './must-support.ts';
 import { applyPrototypePlan } from './prototype.ts';
 import { applyQaVerify } from './qa.ts';
 import { applyCodeReview, applyCrRecommendation } from './review.ts';
@@ -47,6 +48,8 @@ const APPLIERS: Record<Purpose, Applier> = {
   revise_scope: applyReviseScope,
   eng_review: applyEngReview,
   prototype_plan: applyPrototypePlan,
+  must_support: applyMustSupport,
+  must_support_checks: applyMustSupportChecks,
 };
 
 // An applier's refusal is the worker's failed attempt. An applier's exception is the engine's bug, and escalates.

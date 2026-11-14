@@ -79,11 +79,14 @@ function markFrom(entry: unknown): CheckMark {
   return { ac: String(ac), status: String(status) as CheckMark['status'], note: note === undefined || note === null ? '' : String(note) };
 }
 
-// Only the fields of an answer reach the durable record, whatever else the request carried.
+// Only the fields of an answer reach the durable record, whatever else the request carried. An approval may name the
+// must-support items it goes without, each made text here: whether it may is the answer's own rule.
 function answerFrom(body: Record<string, unknown>): InboxAnswer {
-  const { action, comment, option, text, checks } = body;
+  const { action, comment, option, text, checks, waive } = body;
   const marks = Array.isArray(checks) ? { checks: checks.map(markFrom) } : {};
-  if (action === 'approve' || action === 'reject') return { action, ...marks };
+  if (waive !== undefined && !Array.isArray(waive)) throw new BadRequest('waive is a list of must-support item ids');
+  if (action === 'approve') return { action, ...marks, ...(waive === undefined ? {} : { waive: waive.map(String) }) };
+  if (action === 'reject') return { action, ...marks };
   if (action === 'request_changes') return { action, comment: typeof comment === 'string' ? comment : '', ...marks };
   if (typeof option === 'string') return { option };
   if (typeof text === 'string') return { text };

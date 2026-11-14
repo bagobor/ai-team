@@ -7,6 +7,7 @@ import { applyOutput } from '../src/engine/apply/index.ts';
 import { Conductor } from '../src/engine/conductor/index.ts';
 import { tryWorktree } from '../src/engine/conductor/try.ts';
 import type { CheckMark, InboxAnswer, InboxRow } from '../src/engine/inbox.ts';
+import type { MsItem } from '../src/engine/must-support.ts';
 import { Runner } from '../src/engine/runner.ts';
 import { Store, type ProjectRow, type TaskRow } from '../src/engine/store.ts';
 import { TryServer } from '../src/engine/try-server.ts';
@@ -15,7 +16,7 @@ import { EventLog } from '../src/events.ts';
 import { addAttemptWorktree, ensureIntegrationBranch, snapshotAttempt } from '../src/git/workspace.ts';
 import { worktreePath } from '../src/paths.ts';
 import { CRITERIA, projectOf } from './helpers/apply.ts';
-import { makeEngine, type TestEngine } from './helpers/engine.ts';
+import { makeEngine, seedMustSupport, type TestEngine } from './helpers/engine.ts';
 import { fakePlayer, playResult } from './helpers/play.ts';
 import { revParse, run } from './helpers/repo.ts';
 
@@ -27,8 +28,9 @@ const PLAN = {
   stakeholder_note: 'Please play both',
 };
 const PAGE = '<!doctype html><title>Prototype</title><canvas></canvas>\n';
+// A plan reads the must-support list, so it is told what to do about an item it can't meet.
 const instructions = (r: number) =>
-  `Plan prototype round ${r}. Suggest candidate fun elements from general knowledge as hypotheses, and the smallest playable prototype for each. Only the stakeholder judges fun: read their notes in the Decision Records and build on what they found fun.`;
+  `Plan prototype round ${r}. Suggest candidate fun elements from general knowledge as hypotheses, and the smallest playable prototype for each. Only the stakeholder judges fun: read their notes in the Decision Records and build on what they found fun.\n\nIf an item on the must-support list can't be met, name it in gaps and say why. Never leave an item out silently.`;
 const FUN_CHECK = 'When a milestone changes an element of FUN-DEFINITION, its Spec carries a human check that names the F-n element, so the stakeholder confirms at CP4 that the fun still holds.';
 const DISCOVERY = {
   roadmap: { body: '# Roadmap\n', milestones: [{ n: 1, title: 'First', goal: 'Start' }] },
@@ -94,8 +96,9 @@ async function pendingFun(h: Harness): Promise<InboxRow> {
   return found[0]!;
 }
 
-async function addBrief(h: Harness): Promise<void> {
+async function addBrief(h: Harness, items: MsItem[] = []): Promise<void> {
   await h.artifacts.commit(h.project, { message: 'brief', publish: [{ id: 'BRIEF', type: 'brief', status: 'approved', approvedBy: 'stakeholder', ownerRole: 'stakeholder', derivedFrom: [], body: '# Brief\n' }] });
+  await seedMustSupport(h, h.project, items);
 }
 
 async function advanceTo(h: Harness, taskId: number, states: TaskRow['state'][]): Promise<void> {
@@ -180,7 +183,7 @@ describe('the prototype phase', () => {
     expect(await taskIds(h)).toEqual(['PROTO-PLAN-1']);
     const plan = await byTicket(h, 'PROTO-PLAN-1');
     expect(plan).toMatchObject({ milestone: 0, role_id: 'pm', kind: 'authoring', purpose: 'prototype_plan' });
-    expect(orderOf(plan)).toEqual({ purpose: 'prototype_plan', instructions: instructions(1), inputs: ['BRIEF@1'], checks: [], base: { kind: 'base' } });
+    expect(orderOf(plan)).toEqual({ purpose: 'prototype_plan', instructions: instructions(1), inputs: ['BRIEF@1', 'MUST-SUPPORT@1'], checks: [], base: { kind: 'base' } });
 
     // Until the PM's plan is in, the round waits.
     await h.conductor.tick();
@@ -330,7 +333,7 @@ describe('the prototype phase', () => {
     expect(await phaseOf(h)).toBe('prototype');
     const next = await byTicket(h, 'PROTO-PLAN-2');
     expect(next).toMatchObject({ milestone: 0, role_id: 'pm', purpose: 'prototype_plan', state: 'queued' });
-    expect(orderOf(next)).toMatchObject({ instructions: instructions(2), inputs: ['BRIEF@1', 'PROTO-PLAN-1@1', `DEC-${item.id}@1`] });
+    expect(orderOf(next)).toMatchObject({ instructions: instructions(2), inputs: ['BRIEF@1', 'MUST-SUPPORT@1', 'PROTO-PLAN-1@1', `DEC-${item.id}@1`] });
 
     const record = await h.artifacts.read(h.project, `DEC-${item.id}@1`);
     expect(record.fields.data).toEqual({ ref: { kind: 'fun_eval', round: 1 }, answer: { action: 'request_changes', comment: 'More rocks, and faster', checks: [fun('P-1', 'Dodging felt great'), notFun('P-2')] } });
@@ -349,7 +352,7 @@ describe('the prototype phase', () => {
     await answer(h, second, { action: 'approve', checks: [notFun('P-1'), notFun('P-2')] });
 
     expect(await phaseOf(h)).toBe('discovery');
-    expect(orderOf(await byTicket(h, 'DISCOVERY-PM')).inputs).toEqual(['BRIEF@1', 'PROTO-PLAN-1@1', `DEC-${first.id}@1`, 'PROTO-PLAN-2@1', `DEC-${second.id}@1`]);
+    expect(orderOf(await byTicket(h, 'DISCOVERY-PM')).inputs).toEqual(['BRIEF@1', 'MUST-SUPPORT@1', 'PROTO-PLAN-1@1', `DEC-${first.id}@1`, 'PROTO-PLAN-2@1', `DEC-${second.id}@1`]);
     expect(await byTicket(h, 'DISCOVERY-TL')).toBeDefined();
     expect(h.tryServer.mounted('p', 0)).toBe(false);
     expect(await status(linkOf(h, 2, 1))).toBe(404);
@@ -381,6 +384,96 @@ describe('the prototype phase', () => {
     expect(served.status).toBe(200);
     expect(await served.text()).toBe(PAGE);
     expect(await funEvals(restarted)).toHaveLength(1);
+  });
+
+  describe('against the must-support list', () => {
+    const phone: MsItem = { id: 'MS-1', group: 'runs_on', text: 'Plays in a phone browser held upright', brief_quote: 'On my phone', check: 'play', viewport: 'phone_portrait', input: 'touch', fits_screen: true };
+    const cmd: MsItem = { id: 'MS-2', group: 'built_with', text: 'Has no build step', brief_quote: 'No build step', check: 'command' };
+    const sound: MsItem = { id: 'MS-3', group: 'runs_on', text: 'Sounds right on phone speakers', brief_quote: 'Good sound', check: 'human', how: 'Play with the sound on' };
+    const tablet: MsItem = { id: 'MS-4', group: 'runs_on', text: 'Plays in a tablet browser', brief_quote: 'And on tablets', check: 'play', viewport: 'tablet', input: 'touch', fits_screen: false };
+    const meeting = (...ids: string[]) => ({ ...PLAN, prototypes: PLAN.prototypes.map((p) => ({ ...p, must_support: ids.map((item) => ({ item, how: 'Big touch buttons' })) })) });
+    const protoTasks = async (h: Harness) => (await taskIds(h)).filter((id) => id.startsWith('PROTO-1-P-'));
+    const gapOf = async (h: Harness) => (await h.store.inboxByPrefix(h.project.id, 'ms_gap:'))[0]!;
+
+    async function gapped(h: Harness): Promise<InboxRow> {
+      await addBrief(h, [phone, cmd]);
+      await h.conductor.tick();
+      await finish(h, 'PROTO-PLAN-1', { ...PLAN, gaps: [{ item: 'MS-1', why: 'Both prototypes need a keyboard' }] });
+      await h.conductor.tick();
+      await h.conductor.tick();
+      return gapOf(h);
+    }
+
+    it('a round waits while a gap for it is pending', async () => {
+      const h = await harness();
+      const gap = await gapped(h);
+
+      expect(gap).toMatchObject({ state: 'pending', dedupe_key: 'ms_gap:prototype:1:MS-1' });
+      expect(await protoTasks(h)).toEqual([]);
+
+      await answer(h, gap, { option: 'milestone' });
+      await h.conductor.tick();
+
+      expect(await protoTasks(h)).toEqual(['PROTO-1-P-1', 'PROTO-1-P-2']);
+    });
+
+    it('a round waits for a change to the list, then goes on with the plan it has', async () => {
+      const h = await harness();
+      await answer(h, await gapped(h), { option: 'change' });
+      await h.conductor.tick();
+      expect(await protoTasks(h)).toEqual([]);
+
+      await finish(h, 'MUST-SUPPORT-PM', { items: [cmd], stakeholder_note: 'Phones are out' });
+      await h.conductor.tick();
+      await h.conductor.tick();
+      expect(await protoTasks(h)).toEqual([]);
+
+      const confirm = (await h.store.inboxByPrefix(h.project.id, 'must_support:')).find(({ state }) => state === 'pending')!;
+      await answer(h, confirm, { action: 'approve' });
+      await h.conductor.tick();
+
+      expect(await protoTasks(h)).toEqual(['PROTO-1-P-1', 'PROTO-1-P-2']);
+      expect((await h.store.listTasks(h.project.id)).filter(({ ticket_id }) => ticket_id.startsWith('PROTO-PLAN-'))).toHaveLength(1);
+    });
+
+    it("the fun evaluation leads with what the prototypes don't meet", async () => {
+      const h = await harness();
+      await addBrief(h, [phone, cmd, sound, tablet]);
+      await h.conductor.tick();
+      await finish(h, 'PROTO-PLAN-1', meeting('MS-1', 'MS-3', 'MS-4'));
+      await h.conductor.tick();
+      for (const k of [1, 2]) await toReview(h, `PROTO-1-P-${k}`, page(1, k));
+      const found = (status: 'met' | 'failing' | 'not_measured', evidence: string, item_id = 'MS-1') => ({ item_id, status, evidence, source: 'prototype_check' as const, must_support_version: 1 });
+      await h.store.recordMustSupport(h.project.id, { scope: 'prototype', n: 1, subject: 'P-1' }, [found('failing', 'Phone browser, held upright: Nothing on the page answered a tap, a drag or a hold'), found('met', 'Played in a Tablet browser at 820×1180', 'MS-4')]);
+      await h.store.recordMustSupport(h.project.id, { scope: 'prototype', n: 1, subject: 'P-2' }, [found('met', 'Played in a Phone browser, held upright at 390×844'), found('not_measured', 'Chrome at /x exited before DevTools opened\nMore', 'MS-4')]);
+      await h.conductor.tick();
+      await h.conductor.tick();
+
+      const item = await pendingFun(h);
+      const lines = item.why.split('\n');
+      expect(lines.slice(0, 3)).toEqual([
+        "Round 1's prototypes don't meet: Plays in a phone browser held upright (P-1).",
+        'The engine could not check: Plays in a tablet browser.',
+        "Round 1's prototypes are built. Only you can say whether they are fun: play each one and mark it.",
+      ]);
+      expect(lines.slice(lines.indexOf('What the game must support, as the engine found it:'))).toEqual([
+        'What the game must support, as the engine found it:',
+        '- MS-1 Plays in a phone browser held upright: Failing on P-1 (Phone browser, held upright: Nothing on the page answered a tap, a drag or a hold); Met on P-2',
+        '- MS-4 Plays in a tablet browser: Not measured on P-2 (Chrome at /x exited before DevTools opened); Met on P-1',
+        '- MS-2 Has no build step: Not checked on prototypes',
+        '- MS-3 Sounds right on phone speakers: Not measured: check it yourself as you play',
+      ]);
+      // A human item is shown, not marked: the checks are the stakeholder's verdict on each prototype.
+      expect(item.checks.map(({ ac }) => ac)).toEqual(['P-1', 'P-2']);
+    });
+
+    it('says nothing of the list when it has no items', async () => {
+      const h = await harness();
+      const item = await toFunEval(h);
+
+      expect(item.why).not.toContain('must support');
+      expect(item.why.split('\n')[0]).toBe("Round 1's prototypes are built. Only you can say whether they are fun: play each one and mark it.");
+    });
   });
 });
 
@@ -420,9 +513,9 @@ describe('the fun definition', () => {
 
     expect((await h.artifacts.latest(h.project.id, 'FUN-DEFINITION'))!.status).toBe('approved');
     const spec = orderOf(await byTicket(h, 'M1-SPEC'));
-    expect(spec.inputs).toEqual(['ROADMAP@1', 'HUMAN-REQUIREMENTS@1', 'FUN-DEFINITION@1']);
+    expect(spec.inputs).toEqual(['ROADMAP@1', 'HUMAN-REQUIREMENTS@1', 'FUN-DEFINITION@1', 'MUST-SUPPORT@1']);
     expect(spec.instructions).toMatch(/^Write the Spec for milestone 1 .*\n\n/);
-    expect(spec.instructions.endsWith(`\n\n${FUN_CHECK}`)).toBe(true);
+    expect(spec.instructions.endsWith(`\n\n${FUN_CHECK}\n\nIf an item on the must-support list can't be met, name it in gaps and say why. Never leave an item out silently.`)).toBe(true);
 
     // A Spec the stakeholder sends back is written under the same rule, from the same sources.
     await finish(h, 'M1-SPEC', SPEC);
@@ -431,7 +524,7 @@ describe('the fun definition', () => {
     await h.store.answerInbox(cp2.id, { action: 'request_changes', comment: 'Less scope' });
     await h.conductor.tick();
     const redo = orderOf(await byTicket(h, 'M1-SPEC-r2'));
-    expect(redo.inputs).toEqual(['ROADMAP@1', 'HUMAN-REQUIREMENTS@1', 'FUN-DEFINITION@1', 'SPEC-M1@1']);
+    expect(redo.inputs).toEqual(['ROADMAP@1', 'HUMAN-REQUIREMENTS@1', 'FUN-DEFINITION@1', 'MUST-SUPPORT@1', 'SPEC-M1@1']);
     expect(redo.instructions).toContain(FUN_CHECK);
   });
 
@@ -446,7 +539,7 @@ describe('the fun definition', () => {
     await h.conductor.tick();
 
     const spec = orderOf(await byTicket(h, 'M1-SPEC'));
-    expect(spec.inputs).toEqual(['ROADMAP@1', 'HUMAN-REQUIREMENTS@1']);
+    expect(spec.inputs).toEqual(['ROADMAP@1', 'HUMAN-REQUIREMENTS@1', 'MUST-SUPPORT@1']);
     expect(spec.instructions).not.toContain('FUN-DEFINITION');
   });
 
@@ -458,7 +551,7 @@ describe('the fun definition', () => {
     await h.conductor.tick();
 
     const redo = await byTicket(h, 'DISCOVERY-PM-r2');
-    expect(orderOf(redo).inputs).toEqual(['BRIEF@1', 'ROADMAP@1', 'TEAM-PROPOSAL@1', 'HUMAN-REQUIREMENTS@1', 'FUN-DEFINITION@1', 'PROTO-PLAN-1@1', `DEC-${dec}@1`]);
+    expect(orderOf(redo).inputs).toEqual(['BRIEF@1', 'MUST-SUPPORT@1', 'ROADMAP@1', 'TEAM-PROPOSAL@1', 'HUMAN-REQUIREMENTS@1', 'FUN-DEFINITION@1', 'PROTO-PLAN-1@1', `DEC-${dec}@1`]);
 
     // The revision is held to the same rule: the definition is not optional, and a mark that is not fun is not evidence.
     await expect(finish(h, 'DISCOVERY-PM-r2', DISCOVERY)).rejects.toThrow(/needs a fun_definition/);

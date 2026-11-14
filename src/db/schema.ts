@@ -145,11 +145,25 @@ export type InboxItemsTable = {
   recommendation: string;
   options: string;
   checks: Generated<string>;
+  waivable: Generated<string>;
   state: Generated<string>;
   answer: string | null;
   answered_at: string | null;
   applied_at: string | null;
   created_at: string;
+};
+
+export type MustSupportStatusTable = {
+  project_id: number;
+  scope: string;
+  n: number;
+  subject: Generated<string>;
+  item_id: string;
+  status: string;
+  evidence: Generated<string>;
+  source: string;
+  must_support_version: number;
+  recorded_at: string;
 };
 
 export type DB = {
@@ -163,4 +177,5 @@ export type DB = {
   artifact_deps: ArtifactDepsTable;
   acceptance_criteria: AcceptanceCriteriaTable;
   inbox_items: InboxItemsTable;
+  must_support_status: MustSupportStatusTable;
 };

@@ -3,6 +3,7 @@ import { ArtifactError, formatPin, parsePin, renderArtifact, sectionText } from 
 import type { NewVersion } from '../../artifacts/store.ts';
 import { loadRole } from '../../roles/role.ts';
 import { parseTicket, TicketError, type Ticket } from '../../tickets/ticket.ts';
+import { mustSupportPins } from '../conductor/tasks.ts';
 import { specId } from './ids.ts';
 import type { ApplyCtx } from './index.ts';
 import type { ComponentSpec } from './tech-structure.ts';
@@ -96,6 +97,8 @@ export async function validateTickets(
   const spec = await artifacts.latest(ctx.project.id, specId(milestone));
   if (!spec) throw new Error(`Milestone ${milestone} has tickets but no ${specId(milestone)}`);
   const latest = await artifacts.latest(ctx.project.id, docId);
+  // Every ticket is built against the must-support list in force, whatever else it names.
+  const [listPin] = await mustSupportPins(ctx.deps, ctx.project);
   const batch = batchBody === undefined ? undefined : { id: docId, version: (latest?.version ?? 0) + 1, body: batchBody };
 
   const batchIds = new Map<string, string>();
@@ -179,6 +182,7 @@ export async function validateTickets(
         say(`input ${input} does not resolve: ${err.message}`);
       }
     }
+    if (listPin !== undefined && !inputs.includes(listPin)) inputs.push(listPin);
 
     const { fields, body: text } = renderTicket(milestone, draft, { id, dependsOn, inputs });
     const body = components ? withTests(text, named) : text;

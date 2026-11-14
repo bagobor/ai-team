@@ -1,21 +1,25 @@
 import { AC_ID, AC_SLUG, type Criterion, isHumanCheck, MAX_HUMAN_CHECKS, verificationLabel } from '../../artifacts/acs.ts';
 import { parsePin, sectionsOf } from '../../artifacts/format.ts';
+import { milestoneStatuses, mustSupportItems, statusLines } from '../conductor/tasks.ts';
+import { specSection } from '../must-support.ts';
+import type { Gap } from './gaps.ts';
 import { reviewId, specId } from './ids.ts';
 import type { Applier } from './index.ts';
 import { withRaised } from './raised.ts';
 import { oneLine } from './text.ts';
 
-type SpecOutput = { body: string; criteria: Criterion[] };
+type SpecOutput = { body: string; criteria: Criterion[]; must_support?: { item: string; change: string }[]; gaps?: Gap[] };
 type ReviewOutput = { body: string; known_issues: string[]; deviations: string[] };
 
-
 const CRITERIA_HEADING = 'Acceptance criteria';
+const MUST_SUPPORT_HEADING = 'must support';
 const criterionSection = (criterion: Criterion) => `### ${criterion.id}\n\n${criterion.text.trim()}\n\n${verificationLabel(criterion)}: ${criterion.verification.how}\n`;
 
 // The engine writes these sections so that #ac-1 always resolves, which leaves nothing in the body or a criterion
-// that may look like one: a ticket pinned to it would follow the forgery.
-function specBody(body: string, criteria: Criterion[]): string {
-  return `${body.trimEnd()}\n\n## ${CRITERIA_HEADING}\n\n${criteria.map(criterionSection).join('\n')}`;
+// that may look like one: a ticket pinned to it would follow the forgery. What the milestone does for each
+// must-support item goes right before them, as the engine's own section too.
+function specBody(body: string, criteria: Criterion[], mustSupport = ''): string {
+  return `${body.trimEnd()}\n\n${mustSupport === '' ? '' : `${mustSupport}\n`}## ${CRITERIA_HEADING}\n\n${criteria.map(criterionSection).join('\n')}`;
 }
 
 // The PM may write a section under the same heading, which then takes the plain slug. The engine's always comes last.
@@ -23,7 +27,7 @@ export function criteriaSlug(body: string): string | undefined {
   return sectionsOf(body).filter(({ level, title }) => level === 2 && title === CRITERIA_HEADING).at(-1)?.slug;
 }
 
-function specProblems(body: string, criteria: Criterion[], locked: { ac_id: string; text: string; verification: Criterion['verification'] }[]): string[] {
+function specProblems(body: string, criteria: Criterion[], locked: { ac_id: string; text: string; verification: Criterion['verification'] }[], mustSupport = ''): string[] {
   const problems: string[] = [];
   if (criteria.length === 0) problems.push('The spec has no acceptance criteria');
 
@@ -55,7 +59,7 @@ function specProblems(body: string, criteria: Criterion[], locked: { ac_id: stri
   }
 
   if (problems.length === 0) {
-    const found = sectionsOf(specBody(body, criteria)).map(({ slug }) => slug).filter((slug) => AC_SLUG.test(slug));
+    const found = sectionsOf(specBody(body, criteria, mustSupport)).map(({ slug }) => slug).filter((slug) => AC_SLUG.test(slug));
     const wanted = criteria.map(({ id }) => id.toLowerCase());
     if (found.join() !== wanted.join()) problems.push(`The body or a criterion's text breaks the criterion sections: expected ${criteria.map(({ id }) => id).join(', ')}, found ${found.join(', ') || 'none'}`);
   }
@@ -63,11 +67,14 @@ function specProblems(body: string, criteria: Criterion[], locked: { ac_id: stri
 }
 
 export const applyMilestoneSpec: Applier = async (ctx) => {
-  const { body, criteria } = ctx.output as SpecOutput;
+  const { body, criteria, must_support: lines = [], gaps = [] } = ctx.output as SpecOutput;
   const { milestone } = ctx.task;
   const locked = await ctx.deps.store.listCriteria(ctx.project.id, milestone);
 
-  const problems = specProblems(body, criteria, locked);
+  const items = (await mustSupportItems(ctx.deps, ctx.project))?.items ?? [];
+  const listed = specSection(lines, items, gaps.map(({ item }) => item));
+  const own = items.length > 0 && sectionsOf(body).some(({ level, title }) => level === 2 && title.trim().toLowerCase() === MUST_SUPPORT_HEADING);
+  const problems = [...specProblems(body, criteria, locked, listed.section), ...listed.problems, ...(own ? ['The body has its own "Must support" heading: the engine writes that section from must_support'] : [])];
   if (problems.length > 0) return { ok: false, evidence: problems.join('\n') };
 
   return withRaised(ctx, {
@@ -80,7 +87,7 @@ export const applyMilestoneSpec: Applier = async (ctx) => {
         ownerRole: 'pm',
         derivedFrom: ctx.order.inputs.filter((pin) => parsePin(pin).id !== specId(milestone)),
         milestone,
-        body: specBody(body, criteria),
+        body: specBody(body, criteria, listed.section),
         acceptanceCriteria: criteria.map(({ id }) => id),
         fields: { data: { criteria } },
       },
@@ -91,7 +98,7 @@ export const applyMilestoneSpec: Applier = async (ctx) => {
 const cell = (text: string) => oneLine(text).replaceAll('|', '\\|');
 
 const bulletSection = (title: string, items: string[]) => (items.length > 0 ? [`## ${title}`, '', ...items.map((item) => `- ${oneLine(item)}`), ''] : []);
-const ENGINE_REVIEW_SECTIONS = new Set(['acceptance-criteria', 'known-issues', 'deviations', 'cost-and-time']);
+const ENGINE_REVIEW_SECTIONS = new Set(['acceptance-criteria', 'known-issues', 'deviations', 'cost-and-time', 'must-support']);
 
 export const applyMilestoneReview: Applier = async (ctx) => {
   const { body, known_issues, deviations } = ctx.output as ReviewOutput;
@@ -112,6 +119,9 @@ export const applyMilestoneReview: Applier = async (ctx) => {
     if (total?.usdEst != null) usd = (usd ?? 0) + total.usdEst;
     seconds += total?.seconds ?? 0;
   }
+  // What the engine's own check of the build against the must-support list came to, for the stakeholder who approves it.
+  const found = await milestoneStatuses(ctx.deps, ctx.project, milestone);
+  const supported = found ? statusLines(found, 'you check it at approval') : [];
 
   // The engine's sections come first, so nothing in the model's body (an unclosed fence, a table of its own) can swallow or pre-empt them.
   const composed = [
@@ -128,6 +138,7 @@ export const applyMilestoneReview: Applier = async (ctx) => {
     `Cost (estimate): ${usd === null ? 'unknown' : `$${usd.toFixed(2)}`}`,
     `Worker time (estimate): ${Math.round(seconds / 60)} min`,
     '',
+    ...(found && supported.length > 0 ? ['## Must support', '', `The engine's last check of milestone ${milestone} against ${found.pin}:`, '', ...supported.map((line) => `- ${line}`), ''] : []),
     '## Review',
     '',
     body.trimEnd(),

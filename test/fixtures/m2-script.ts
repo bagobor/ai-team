@@ -20,6 +20,11 @@ const CRITERIA = [
   { id: 'AC-2', text: 'f2c converts Fahrenheit to Celsius', verification: { method: 'automated', how: F2C_COMMAND } },
 ];
 
+const MUST_SUPPORT = {
+  items: [{ id: 'MS-1', group: 'built_with', text: 'Runs as a Node command line tool', brief_quote: 'A small Node command line tool', check: 'command' }],
+  stakeholder_note: 'One thing to confirm: it runs as a Node command line tool',
+};
+
 const DISCOVERY = {
   roadmap: { body: '# Roadmap\n\nOne milestone is enough.\n', milestones: [{ n: 1, title: 'Convert temperatures', goal: 'A tool that converts both ways' }] },
   team_proposal: { body: '# Team\n\nOne engineer.\n' },
@@ -35,6 +40,8 @@ const PROFILE = {
   network_allow: [],
   setup: null,
   play: null,
+  // The list's one item is checked by command, so the profile says which.
+  must_support_checks: [{ item: 'MS-1', command: 'node --version', protected: [] }],
   stakeholder_note: 'Node is all this needs',
 };
 
@@ -45,7 +52,12 @@ const HUMAN_CHECK = {
   verification: { method: 'human', how: 'Run node tempconv.mjs c2f 100 and read the line it prints; it should say 212 with a unit, in plain words' },
 };
 
-const spec = (humanCheck: boolean) => ({ body: '# Convert temperatures\n\n## Scope\n\nCelsius and Fahrenheit, one file.\n', criteria: humanCheck ? [...CRITERIA, HUMAN_CHECK] : CRITERIA, stakeholder_note: 'A small first milestone' });
+const spec = (humanCheck: boolean) => ({
+  body: '# Convert temperatures\n\n## Scope\n\nCelsius and Fahrenheit, one file.\n',
+  criteria: humanCheck ? [...CRITERIA, HUMAN_CHECK] : CRITERIA,
+  must_support: [{ item: 'MS-1', change: 'The whole tool is one Node file run from the command line' }],
+  stakeholder_note: 'A small first milestone',
+});
 
 // Both parts live in the one file the tickets write. Neither ticket adds a test: the Test Plan's harness and commands check them.
 const NO_TESTS = 'The tickets add no tests; the Test Plan checks each direction by running the command.';
@@ -103,6 +115,7 @@ const TICKETS = ['M1-T-1', 'M1-T-2', 'M1-Q-1', 'M1-B-1'];
 
 export function m2Script(opts: { failFirstQa?: boolean; humanCheck?: boolean } = {}): { byTask: Record<string, Record<string, unknown>> } {
   const byTask: Record<string, Record<string, unknown>> = {
+    'MUST-SUPPORT-PM': resultStep(MUST_SUPPORT),
     'DISCOVERY-PM': resultStep(DISCOVERY),
     'DISCOVERY-TL': resultStep(PROFILE),
     'M1-SPEC': resultStep(spec(opts.humanCheck === true)),

@@ -12,6 +12,7 @@ import {
   blankProblem,
   chromePath,
   chromePlayer,
+  fitsProblem,
   keyProblem,
   scriptProblems,
   type PlayResult,
@@ -20,6 +21,7 @@ import {
 } from '../src/checks/play.ts';
 import { serveStatic } from '../src/checks/static-server.ts';
 import { DEFAULT_CONFIG } from '../src/config.ts';
+import { VIEWPORTS } from '../src/engine/must-support.ts';
 import { groupAlive, killGroupNow } from '../src/proc.ts';
 import { until } from './helpers/engine.ts';
 import { tempDir } from './helpers/repo.ts';
@@ -69,6 +71,25 @@ function fakeChrome(body: string): FakeChrome {
 }
 
 const PROJECT = join(import.meta.dirname, '..');
+
+describe('fitsProblem', () => {
+  it('passes a page that fits, within a pixel', () => {
+    expect(fitsProblem({ scrollWidth: 391, scrollHeight: 844, innerWidth: 390, innerHeight: 844, scrollX: 0, scrollY: 0 }, 'after load')).toBeUndefined();
+  });
+
+  it('names the side that overflows and when', () => {
+    expect(fitsProblem({ scrollWidth: 390, scrollHeight: 2000, innerWidth: 390, innerHeight: 844, scrollX: 0, scrollY: 0 }, 'after the gestures')).toBe(
+      'The page is 2000px tall on a 844px-tall screen after the gestures, so part of it is off screen',
+    );
+    expect(fitsProblem({ scrollWidth: 900, scrollHeight: 844, innerWidth: 390, innerHeight: 844, scrollX: 0, scrollY: 0 }, 'after the keys')).toBe(
+      'The page is 900px wide on a 390px-wide screen after the keys, so part of it is off screen',
+    );
+  });
+
+  it('reports a page that scrolled before one that is too big', () => {
+    expect(fitsProblem({ scrollWidth: 390, scrollHeight: 2000, innerWidth: 390, innerHeight: 844, scrollX: 0, scrollY: 40 }, 'after load')).toBe('The page scrolled after load, so the screen moved off the game');
+  });
+});
 
 describe('keys and scripts', () => {
   it('names a key it does not know', () => {
@@ -455,6 +476,39 @@ describe.skipIf(!chrome && process.env.AITEAM_REQUIRE_CHROME !== '1')('chromePla
     expect(existsSync(profile)).toBe(false);
     // pgrep exits 1 when nothing matches.
     expect(() => execFileSync('pgrep', ['-f', profile], { stdio: 'pipe' })).toThrow();
+  });
+
+  const phone = { animated: true, viewport: VIEWPORTS.phone_portrait, touch: true, fitsScreen: true };
+  const onPhone = (name: string): Promise<PlayResult> => served(name, (url) => player.smoke(url + 'index.html', [], phone));
+
+  it('a phone run that answers touch passes', async () => {
+    expect(await onPhone('touch-ok')).toMatchObject({ ok: true, problems: [] });
+  });
+
+  it('a page that ignores touch fails with a touch problem', async () => {
+    const result = await onPhone('touch-ignored');
+    expect(result.problems).toEqual([{ kind: 'touch', detail: 'Nothing on the page answered a tap, a drag or a hold' }]);
+  });
+
+  it('a page with no animation loop that looks the same after the gestures fails touch', async () => {
+    const result = await served('touch-unseen', (url) => player.smoke(url + 'index.html', [], { ...phone, animated: false }));
+    expect(result.problems).toEqual([{ kind: 'touch', detail: 'The page did not change when it was tapped, dragged and held' }]);
+  });
+
+  it('a page taller than the phone fails fits after load', async () => {
+    const result = await onPhone('overflow');
+    expect(result.problems).toEqual([{ kind: 'fits', detail: expect.stringMatching(/^The page is \d+px tall on a 844px-tall screen after load, so part of it is off screen$/) }]);
+  });
+
+  it('a page that grows after a tap fails fits after the gestures', async () => {
+    const result = await onPhone('overflow-after-gesture');
+    expect(result.problems.filter((p) => p.kind === 'fits').map((p) => p.detail)).toEqual([expect.stringMatching(/after the gestures/)]);
+  });
+
+  it('a page that ignores touch passes a run that is not played by touch', async () => {
+    const result = await smoke('touch-ignored');
+    expect(result).toMatchObject({ ok: true, problems: [] });
+    expect(result.log.filter((line) => /^(tap|drag|hold) /.test(line))).toEqual([]);
   });
 });
 

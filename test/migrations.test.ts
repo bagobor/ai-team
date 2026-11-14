@@ -151,3 +151,53 @@ describe('migration 004', () => {
     await db.destroy();
   });
 });
+
+describe('migration 005', () => {
+  let dir: string;
+  let path: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'aiteam-migrations-'));
+    path = join(dir, 'aiteam.db');
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  const insertProject = (db: QueryExecutorProvider) =>
+    sql`INSERT INTO projects (name, repo_path, base_branch, created_at)
+      VALUES ('p', '/repo', 'main', '2026-11-14T00:00:00Z')`.execute(db);
+
+  it('adds must_support_status, which takes only the four statuses', async () => {
+    const db = await openDb(path);
+    await insertProject(db);
+    const record = (item: string, status: string) =>
+      sql`INSERT INTO must_support_status (project_id, scope, n, item_id, status, source, must_support_version, recorded_at)
+        VALUES (1, 'milestone', 1, ${item}, ${status}, 'play_gate', 1, '2026-11-14T00:00:00Z')`.execute(db);
+
+    await record('MS-1', 'met');
+    await expect(record('MS-2', 'maybe')).rejects.toThrow(/CHECK/i);
+    // One status per item at each place it is checked.
+    await expect(record('MS-1', 'failing')).rejects.toThrow(/UNIQUE/i);
+
+    expect((await sql`SELECT item_id, subject, evidence, status FROM must_support_status`.execute(db)).rows).toEqual([{ item_id: 'MS-1', subject: '', evidence: '', status: 'met' }]);
+    await db.destroy();
+  });
+
+  it('gives an inbox item raised before it an empty waivable list', async () => {
+    const before = new Kysely<unknown>({ dialect: new SqliteDialect({ database: new Database(path) }) });
+    const earlier = Object.fromEntries(Object.entries(migrations).filter(([name]) => name < '005'));
+    const { error } = await new Migrator({ db: before, provider: { getMigrations: async () => earlier } }).migrateToLatest();
+    if (error) throw error;
+    await insertProject(before);
+    await sql`INSERT INTO inbox_items (project_id, type, dedupe_key, ref, title, asked_by, why, blocks, evidence, recommendation, options, created_at)
+      VALUES (1, 'approval', 'cp4:1', '{"kind":"cp4","milestone":1}', 't', 'pm', 'w', '[]', '[]', 'r', '[]', '2026-11-14T00:00:00Z')`.execute(before);
+    await before.destroy();
+
+    const db = await openDb(path);
+
+    expect((await sql`SELECT waivable FROM inbox_items`.execute(db)).rows).toEqual([{ waivable: '[]' }]);
+    await db.destroy();
+  });
+});

@@ -1,0 +1,162 @@
+import { cp4MustSupport, gateStatuses, mustSupportProblems, playRuns, renderMustSupport, specSection, type ItemStatus, type MsItem } from '../src/engine/must-support.ts';
+
+const phone: MsItem = {
+  id: 'MS-1',
+  group: 'runs_on',
+  text: 'Plays in a phone browser held upright, by touch',
+  brief_quote: 'it must work on my phone',
+  check: 'play',
+  viewport: 'phone_portrait',
+  input: 'touch',
+  fits_screen: true,
+};
+const cmd: MsItem = { id: 'MS-2', group: 'built_with', text: 'Plain JavaScript, no build step', brief_quote: 'no build step', check: 'command' };
+const you: MsItem = { id: 'MS-3', group: 'runs_on', text: 'Touch feels good on a real phone', brief_quote: 'feels good on my phone', check: 'human', how: 'Play it on your phone' };
+
+describe('mustSupportProblems', () => {
+  it('refuses an empty list', () => {
+    expect(mustSupportProblems([], { current: [], used: [] })).toEqual(['The list is empty: name at least what the brief says the game runs on']);
+  });
+
+  it('keeps a current id and refuses a removed one coming back', () => {
+    expect(mustSupportProblems([phone], { current: ['MS-1'], used: ['MS-1', 'MS-2'] })).toEqual([]);
+    expect(mustSupportProblems([phone, cmd], { current: ['MS-1'], used: ['MS-1', 'MS-2'] })).toContain('MS-2 is new, so its id must be above MS-2, the highest used so far');
+  });
+
+  it('needs a viewport and an input on a play item, and a how on a human one', () => {
+    const p = mustSupportProblems([{ ...phone, viewport: undefined, input: undefined }, { ...you, how: ' ' }], { current: [], used: [] });
+    expect(p).toEqual(
+      expect.arrayContaining(['MS-1 is checked by play and needs a viewport', 'MS-1 is checked by play and needs an input: keys, touch, mouse or null', 'MS-3 is checked by you and needs a how']),
+    );
+  });
+
+  it('needs a brief quote unless the item is proposed with a reason', () => {
+    expect(mustSupportProblems([{ ...phone, brief_quote: '' }], { current: [], used: [] })).toContain('MS-1 quotes nothing from the brief: quote it, or mark it proposed and say why');
+    expect(mustSupportProblems([{ ...phone, brief_quote: '', proposed: true, reason: 'players hold phones upright' }], { current: [], used: [] })).toEqual([]);
+  });
+});
+
+describe('renderMustSupport', () => {
+  it('renders each item under its group as an MS-n section', () => {
+    const body = renderMustSupport([phone, cmd, { ...you, proposed: true, brief_quote: '', reason: 'touch feel needs a person' }]);
+    expect(body).toContain("## Where it runs and how it's played");
+    expect(body).toContain('### MS-1');
+    expect(body).toContain('Checked by the engine: Phone browser, held upright, played by touch, fitting the screen.');
+    expect(body).toContain('Not in your brief: suggested because touch feel needs a person');
+    expect(body.indexOf("## How it's built")).toBeGreaterThan(body.indexOf('### MS-1'));
+  });
+});
+
+describe('playRuns', () => {
+  it('plans one desktop run when no item is played', () => {
+    expect(playRuns([cmd, you])).toEqual([{ viewport: 'desktop', touch: false, fitsScreen: false, items: [] }]);
+  });
+
+  it('plans one run per viewport in a fixed order', () => {
+    const desk = { ...phone, id: 'MS-4', viewport: 'desktop', input: 'keys', fits_screen: false } as MsItem;
+    const runs = playRuns([phone, desk]);
+    expect(runs.map((r) => [r.viewport, r.touch, r.fitsScreen])).toEqual([
+      ['desktop', false, false],
+      ['phone_portrait', true, true],
+    ]);
+  });
+});
+
+describe('gateStatuses', () => {
+  it('gives every current item a status and ignores removed ones', () => {
+    expect(
+      gateStatuses(
+        [phone, cmd],
+        [
+          { item_id: 'MS-1', status: 'met', evidence: 'x' },
+          { item_id: 'MS-9', status: 'failing', evidence: 'y' },
+        ],
+        [],
+      ),
+    ).toEqual([
+      { item_id: 'MS-1', status: 'met', evidence: 'x' },
+      { item_id: 'MS-2', status: 'not_measured', evidence: '' },
+    ]);
+  });
+
+  it('a waiver for good stands unless the milestone met the item', () => {
+    const forGood = [{ item_id: 'MS-1', status: 'waived' as const, evidence: 'DEC-12@1' }];
+    expect(gateStatuses([phone], [{ item_id: 'MS-1', status: 'failing', evidence: 'f' }], forGood)[0]!.status).toBe('waived');
+    expect(gateStatuses([phone], [{ item_id: 'MS-1', status: 'met', evidence: 'm' }], forGood)[0]!.status).toBe('met');
+  });
+});
+
+describe('specSection', () => {
+  const line = (item: string, change = 'Adds the touch controls') => ({ item, change });
+
+  it('asks for one line for every item', () => {
+    expect(specSection([line('MS-1')], [phone, cmd], []).problems).toEqual(['The spec has no must_support line for MS-2 (Plain JavaScript, no build step): say what this milestone does for it, or name it in gaps']);
+    expect(specSection([line('MS-1'), line('MS-2')], [phone, cmd], []).problems).toEqual([]);
+  });
+
+  it('refuses an item the list does not have, a second line and a line that says nothing', () => {
+    expect(specSection([line('MS-1'), line('MS-9'), line('MS-1'), line('MS-2', ' \n')], [phone, cmd], []).problems).toEqual([
+      'The spec names MS-9, which is not on the must-support list',
+      'The spec lists MS-1 twice',
+      "The spec's line for MS-2 says nothing",
+    ]);
+  });
+
+  it('renders one line per item, in the list\'s order', () => {
+    const { section } = specSection([line('MS-2', 'Nothing new:\nstill one page'), line('MS-1')], [phone, cmd], []);
+
+    expect(section).toBe('## Must support\n\n- MS-1 Plays in a phone browser held upright, by touch: Adds the touch controls\n- MS-2 Plain JavaScript, no build step: Nothing new: still one page\n');
+  });
+
+  it('a gapped item needs no line and reads as not met in this milestone', () => {
+    const { problems, section } = specSection([line('MS-2')], [phone, cmd], ['MS-1']);
+
+    expect(problems).toEqual([]);
+    expect(section).toContain('- MS-1 Plays in a phone browser held upright, by touch: Not met in this milestone (raised with the stakeholder)\n');
+  });
+
+  it('writes no section for a list with no items', () => {
+    expect(specSection([], [], [])).toEqual({ problems: [], section: '' });
+  });
+});
+
+describe('cp4MustSupport', () => {
+  const found = (item_id: string, status: ItemStatus['status'], evidence = ''): ItemStatus => ({ item_id, status, evidence });
+
+  it('leads with what the build does not meet, and offers each one to approve without', () => {
+    const { lead, waivable } = cp4MustSupport([phone, cmd], [found('MS-1', 'failing', 'Phone browser, held upright: The page is 2000px tall\nmore'), found('MS-2', 'failing', '`test ! -f package.json` exited 1')]);
+
+    expect(lead).toEqual([
+      'This build does not meet: Plays in a phone browser held upright, by touch; Plain JavaScript, no build step.',
+      'Plays in a phone browser held upright, by touch: Phone browser, held upright: The page is 2000px tall',
+      'Plain JavaScript, no build step: `test ! -f package.json` exited 1',
+    ]);
+    expect(waivable).toEqual([
+      { id: 'MS-1', text: 'Plays in a phone browser held upright, by touch', why: 'Phone browser, held upright: The page is 2000px tall' },
+      { id: 'MS-2', text: 'Plain JavaScript, no build step', why: '`test ! -f package.json` exited 1' },
+    ]);
+  });
+
+  it('offers a play or command item the engine could not measure, without leading with it', () => {
+    const { lead, waivable } = cp4MustSupport([phone, cmd], [found('MS-1', 'not_measured', 'Chrome was not found'), found('MS-2', 'not_measured')]);
+
+    expect(lead).toEqual([]);
+    expect(waivable).toEqual([
+      { id: 'MS-1', text: 'Plays in a phone browser held upright, by touch', why: 'Not measured: Chrome was not found' },
+      { id: 'MS-2', text: 'Plain JavaScript, no build step', why: 'Not measured: the engine could not check it' },
+    ]);
+  });
+
+  it('makes each human item a check for the stakeholder, each time, unless they waived it', () => {
+    const check = { ac: 'MS-3', text: 'Touch feels good on a real phone', how: 'Play it on your phone' };
+
+    expect(cp4MustSupport([you], [found('MS-3', 'not_measured')])).toEqual({ lead: [], waivable: [], checks: [check] });
+    expect(cp4MustSupport([you], [found('MS-3', 'met', 'DEC-4@1#ms-3')]).checks).toEqual([check]);
+    expect(cp4MustSupport([you], [found('MS-3', 'waived', 'DEC-2@1')]).checks).toEqual([]);
+  });
+
+  it('asks nothing when every item the engine checks is met or waived', () => {
+    expect(cp4MustSupport([phone, cmd], [found('MS-1', 'met', 'Played'), found('MS-2', 'waived', 'DEC-2@1')])).toEqual({ lead: [], waivable: [], checks: [] });
+    expect(cp4MustSupport([], [])).toEqual({ lead: [], waivable: [], checks: [] });
+  });
+});

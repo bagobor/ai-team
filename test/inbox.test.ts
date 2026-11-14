@@ -257,6 +257,46 @@ describe('Inbox', () => {
       expect(() => assertValidAnswer(item, { action: 'approve' })).toThrow(/AC-2 is not marked: approve needs every check marked passing/);
     });
 
+    describe('approving without a must-support item', () => {
+      const waivable = [{ id: 'MS-1', text: 'Plays on a phone', why: 'Too tall' }];
+      const sound = { ac: 'MS-4', text: 'Sounds right', how: 'Listen' };
+      const cp4 = { ...item, checks: [], waivable };
+      const cp2 = { ...item, checks: [], ref: { kind: 'cp2' as const, milestone: 1 }, waivable: [] };
+
+      it('refuses a waive outside a milestone approval', () => {
+        expect(() => assertValidAnswer(cp2, { action: 'approve', waive: ['MS-1'] })).toThrow('Only a milestone approval can waive a must-support item');
+        expect(() => assertValidAnswer(cp4, { action: 'request_changes', comment: 'x', waive: ['MS-1'] } as InboxAnswer)).toThrow('Only a milestone approval can waive a must-support item');
+        expect(() => assertValidAnswer(cp2, { action: 'approve', waive: ['MS-1'] })).toThrow(InvalidAnswer);
+      });
+
+      it('refuses an approval that leaves a failing item unwaived', () => {
+        expect(() => assertValidAnswer(cp4, { action: 'approve', checks: [] })).toThrow('MS-1 does not meet the list: approve without it, or request changes');
+        expect(() => assertValidAnswer(cp4, { action: 'approve', waive: ['MS-1'] })).not.toThrow();
+      });
+
+      it('lets a request for changes and a reject leave it unwaived', () => {
+        expect(() => assertValidAnswer(cp4, { action: 'request_changes', comment: 'Make it fit' })).not.toThrow();
+        expect(() => assertValidAnswer(cp4, { action: 'reject' })).not.toThrow();
+      });
+
+      it('refuses an unknown id in waive, and something that is not a list', () => {
+        expect(() => assertValidAnswer(cp4, { action: 'approve', waive: ['MS-1', 'MS-9'] })).toThrow('MS-9 is not a must-support item on this approval');
+        expect(() => assertValidAnswer({ ...item, waivable }, { action: 'approve', checks: [passing], waive: ['MS-1', 'AC-2'] })).toThrow('AC-2 is not a must-support item on this approval');
+        expect(() => assertValidAnswer(cp4, { action: 'approve', waive: 'MS-1' as unknown as string[] })).toThrow('waive is a list of must-support item ids');
+      });
+
+      it('a waived MS check needs no mark, and may be marked failing', () => {
+        const checked = { ...item, checks: [...item.checks, sound], waivable: [] };
+
+        expect(() => assertValidAnswer(checked, { action: 'approve', checks: [passing], waive: ['MS-4'] })).not.toThrow();
+        expect(() => assertValidAnswer(checked, { action: 'approve', checks: [passing, { ac: 'MS-4', status: 'failing', note: 'Tinny' }], waive: ['MS-4'] })).not.toThrow();
+        // Every other check is still held to the rule, and so is an MS check that isn't waived.
+        expect(() => assertValidAnswer(checked, { action: 'approve', waive: ['MS-4'] })).toThrow(/AC-2 is not marked/);
+        expect(() => assertValidAnswer(checked, { action: 'approve', checks: [passing] })).toThrow(/MS-4 is not marked/);
+        expect(() => assertValidAnswer(checked, { action: 'approve', checks: [passing, { ac: 'MS-4', status: 'failing', note: 'Tinny' }] })).toThrow(/MS-4 is failing/);
+      });
+    });
+
     it('refuses an unmarked approve through the store, leaving the item pending', async () => {
       const raised = await s.raiseInbox(approval({ checks: [{ ac: 'AC-2', text: 't', how: 'h' }] }));
 

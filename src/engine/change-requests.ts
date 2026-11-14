@@ -218,6 +218,8 @@ function replacement(deps: Deps, project: ProjectRow, target: ArtifactVersionRow
 async function currentTarget(deps: Deps, project: ProjectRow, input: ChangeRequestInput): Promise<{ target: ArtifactVersionRow; doc: ArtifactDoc }> {
   const target = await deps.artifacts.latest(project.id, input.target_artifact);
   if (!target) throw new ChangeRequestError(`There is no document ${JSON.stringify(input.target_artifact)}`);
+  // The list is the stakeholder's own, so a role that can't meet an item raises a gap for them to decide.
+  if (target.type === 'must_support') throw new ChangeRequestError(`${target.artifact_id} is the must-support list, which changes only through the stakeholder: name the item in gaps and say why it can't be met`);
   // A proposed document isn't settled yet: Request changes is the way to change one.
   if (target.status !== 'approved' && target.status !== 'stale') throw new ChangeRequestError(`${target.artifact_id} is ${target.status}, and only an approved or stale document takes a Change Request`);
   return { target, doc: await deps.artifacts.read(project, `${target.artifact_id}@${target.version}`) };

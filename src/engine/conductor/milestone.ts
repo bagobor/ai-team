@@ -4,17 +4,19 @@ import { runSandboxed } from '../../checks/run-checks.ts';
 import { advanceBaseBranch, snapshotState, syncBaseIntoIntegration } from '../../git/merge.ts';
 import { ensureIntegrationBranch } from '../../git/workspace.ts';
 import { stateRepoDir, worktreePath } from '../../paths.ts';
-import type { ProfileData } from '../apply/discovery.ts';
+import { approvedProfile, missingChecks, type ProfileData } from '../apply/discovery.ts';
 import { milestoneCoverage, type EngFinding, type EngReviewData } from '../apply/eng-review.ts';
 import { engReviewId, ENV_PROFILE, isPolishTicket, reviewId, scopeId, specId, techId, testPlanId } from '../apply/ids.ts';
 import { structureOf } from '../apply/tech-structure.ts';
 import { oneLine, sentence } from '../apply/text.ts';
 import { TRY_IT } from '../inbox.ts';
+import { cp4MustSupport } from '../must-support.ts';
 import type { EngineDeps, Runner } from '../runner.ts';
 import type { MilestoneRow, ProjectRow, Store, TaskRow } from '../store.ts';
 import { withHeadWorktree } from './head-worktree.ts';
-import { playBug, problemLine, runPlayGate } from './play-gate.ts';
-import { designMoving, engReviewTask, ensureTask, isClosed, latestPin, milestoneReviewTask, noteOf, pinOf, qaTask, raiseHold, RETRY_OR_HALT, roundId, roundOf, scopeTask, specSources, specTask, techTask, testPlanTask, ticketTask, openHold, type TaskSpec, type TicketFields } from './tasks.ts';
+import { advanceMustSupport } from './must-support.ts';
+import { mustSupportBug, playBug, problemLine, runPlayGate } from './play-gate.ts';
+import { CHECKS_TASK, designMoving, engReviewTask, ensureTask, isClosed, latestPin, milestoneReviewTask, milestoneStatuses, mustSupportChecksTask, mustSupportFound, mustSupportItems, noteOf, pinOf, qaTask, raiseHold, RETRY_OR_HALT, roundId, roundOf, scopeTask, specSources, specTask, techTask, testPlanTask, ticketTask, openHold, withMustSupport, type TaskSpec, type TicketFields } from './tasks.ts';
 import { offerTry, removeTryWorktree, serveTryAgain } from './try.ts';
 
 type HoldKind = 'smoke' | 'base_conflict' | 'base_refused' | 'play';
@@ -68,7 +70,27 @@ const holdQaCap = (s: Store, project: ProjectRow, n: number, title: string, why:
     ],
   });
 
-async function setPending(deps: EngineDeps, project: ProjectRow, { n }: MilestoneRow): Promise<void> {
+// The milestone's gate runs a command for every item checked by command, so the Tech Lead writes any the profile lacks
+// before the milestone starts: the profile was approved before the list had the item, or the project is from before the list.
+async function checksPending(deps: EngineDeps, project: ProjectRow, tasks: TaskRow[]): Promise<boolean> {
+  const round = roundOf(tasks, CHECKS_TASK);
+  const current = byId(tasks, roundId(CHECKS_TASK, round));
+  if (current && current.state !== 'done') return true;
+  const list = await mustSupportItems(deps, project);
+  const profile = await approvedProfile({ deps, project });
+  if (!list || !profile) return false;
+  const missing = missingChecks(profile, list.items);
+  if (missing.length === 0) return false;
+  const inputs = [await latestPin(deps, project, ENV_PROFILE), list.pin];
+  await ensureTask(deps.store, mustSupportChecksTask(project, round + 1, inputs, list.items.filter(({ id }) => missing.includes(id))));
+  return true;
+}
+
+// No milestone starts on a list the stakeholder hasn't approved, nor while a change to it waits for them.
+async function setPending(deps: EngineDeps, project: ProjectRow, { n }: MilestoneRow, tasks: TaskRow[]): Promise<void> {
+  const ms = await advanceMustSupport(deps, project);
+  if (!ms.approved || ms.pending) return;
+  if (await checksPending(deps, project, tasks)) return;
   const inputs = await specSources(deps, project);
   await deps.store.atomically(async (s) => {
     await ensureTask(s, specTask(project, n, 1, inputs));
@@ -137,7 +159,7 @@ async function design(deps: EngineDeps, project: ProjectRow, { n }: MilestoneRow
       await holdBaseConflict(store, project, n, synced.conflicts);
       return;
     }
-    const inputs = [await latestPin(deps, project, specId(n)), await latestPin(deps, project, ENV_PROFILE)];
+    const inputs = await withMustSupport(deps, project, [await latestPin(deps, project, specId(n)), await latestPin(deps, project, ENV_PROFILE)]);
     await store.atomically(async (s) => {
       await ensureTask(s, techTask(project, n, inputs));
       await ensureTask(s, testPlanTask(project, n, inputs));
@@ -150,7 +172,7 @@ async function design(deps: EngineDeps, project: ProjectRow, { n }: MilestoneRow
   const scope = byId(tasks, `M${n}-SCOPE`);
   if (!scope) {
     if (designMoving(await deps.artifacts.list(project.id), tasks, n)) return;
-    const inputs = [await latestPin(deps, project, specId(n)), await latestPin(deps, project, ENV_PROFILE), await latestPin(deps, project, techId(n)), await latestPin(deps, project, testPlanId(n))];
+    const inputs = await withMustSupport(deps, project, [await latestPin(deps, project, specId(n)), await latestPin(deps, project, ENV_PROFILE), await latestPin(deps, project, techId(n)), await latestPin(deps, project, testPlanId(n))]);
     await store.atomically((s) => ensureTask(s, scopeTask(project, n, inputs)));
     return;
   }
@@ -201,31 +223,36 @@ async function build(deps: EngineDeps, runner: Runner, project: ProjectRow, m: M
     await hold(store, project, n, 'play', `Milestone ${n}'s game can't be played here`, played.why, 'Fix what stops the engine playing the game on this machine, such as a missing Chrome (chrome.binary in ~/.aiteam/config.yaml), then retry. No QA round starts until the game has been played.');
     return;
   }
-  if (played.kind === 'failed') {
-    if (m.verify_round >= m.verify_cap) {
-      // No QA ran, so these are rounds, not QA rounds. Only the first problem fits in a line; the Bugs hold the rest.
-      const rounds = (k: number) => `${k} round${k === 1 ? '' : 's'}`;
-      const used = m.verify_cap === 1 ? 'its only round' : `its ${rounds(m.verify_cap)}`;
-      const why = `The game doesn't run: ${sentence(problemLine(played.problems[0]!))} The milestone has used ${used}.`;
-      await holdQaCap(store, project, n, `Milestone ${n}'s game still doesn't run after ${rounds(m.verify_round)}`, why);
-      return;
-    }
+  if (played.kind === 'failed' && m.verify_round >= m.verify_cap) {
+    // No QA ran, so these are rounds, not QA rounds. Only the first problem fits in a line; the Bugs hold the rest.
+    const rounds = (k: number) => `${k} round${k === 1 ? '' : 's'}`;
+    const used = m.verify_cap === 1 ? 'its only round' : `its ${rounds(m.verify_cap)}`;
+    const why = `The game doesn't run: ${sentence(problemLine(played.problems[0]!))} The milestone has used ${used}.`;
+    await holdQaCap(store, project, n, `Milestone ${n}'s game still doesn't run after ${rounds(m.verify_round)}`, why);
+    return;
+  }
+  // A game that runs and fails the must-support list goes back to the Engineers too, while a round is left. Once the
+  // rounds are spent it goes on to QA, and the milestone's approval leads with what the build doesn't meet.
+  if (played.kind === 'failed' || (played.kind === 'short' && m.verify_round < m.verify_cap)) {
     // The round is spent with the Bug that records it, so a crash can't charge it twice or file a Bug for free.
-    const { bug, ticket } = await playBug(deps, project, n, m.verify_round + 1, played);
-    await artifacts.commit(project, { message: `milestone ${n}: the game does not run`, publish: [bug, ticket] }, async (s, rows) => {
+    const next = m.verify_round + 1;
+    const { bug, ticket } = played.kind === 'failed' ? await playBug(deps, project, n, next, played) : await mustSupportBug(deps, project, n, next, played);
+    const what = played.kind === 'failed' ? 'the game does not run' : 'the game does not meet what it must support';
+    await artifacts.commit(project, { message: `milestone ${n}: ${what}`, publish: [bug, ticket] }, async (s, rows) => {
       const row = rows.find(({ artifact_id }) => artifact_id === ticket.id);
       if (!row) throw new Error(`${ticket.id} was not published with ${bug.id}`);
-      await s.patchMilestone(project.id, n, { verify_round: m.verify_round + 1 });
+      await s.patchMilestone(project.id, n, { verify_round: next });
       await ensureTask(s, ticketTask(project, n, row, ticket.fields as TicketFields));
     });
     return;
   }
 
   const round = m.verify_round + 1;
-  const inputs = [await latestPin(deps, project, specId(n)), await latestPin(deps, project, techId(n)), await latestPin(deps, project, testPlanId(n))];
+  const inputs = await withMustSupport(deps, project, [await latestPin(deps, project, specId(n)), await latestPin(deps, project, techId(n)), await latestPin(deps, project, testPlanId(n))]);
+  const found = await mustSupportFound(deps, project, n);
   await store.atomically(async (s) => {
     await s.patchMilestone(project.id, n, { verify_round: round });
-    await ensureTask(s, qaTask(project, n, round, inputs));
+    await ensureTask(s, qaTask(project, n, round, inputs, found));
     await s.setMilestonePhase(project.id, n, 'verify');
   });
 }
@@ -260,20 +287,21 @@ async function verify(deps: EngineDeps, project: ProjectRow, m: MilestoneRow, ta
 
 // The Eng Lead reviews what QA passed against the Tech Design. Its work order carries the engine's own measure of each
 // component, which is what holds an approve to the tests, and says whether polish from this round will be built.
-export async function engReviewSpec(deps: Pick<EngineDeps, 'artifacts'>, project: ProjectRow, m: MilestoneRow): Promise<TaskSpec> {
+export async function engReviewSpec(deps: Pick<EngineDeps, 'artifacts' | 'store'>, project: ProjectRow, m: MilestoneRow): Promise<TaskSpec> {
   const { artifacts } = deps;
   const { n, verify_round: round } = m;
   const { from, to, rows } = await milestoneCoverage(deps, project, n);
   const budgets = structureOf(await artifacts.read(project, techId(n)))?.performance ?? [];
   const polished = (await artifacts.list(project.id)).filter((row) => row.type === 'ticket' && row.milestone === n && isPolishTicket(row.artifact_id)).map(({ artifact_id }) => artifact_id);
   const scope = await artifacts.latest(project.id, scopeId(n));
-  const inputs = [
+  const inputs = await withMustSupport(deps, project, [
     await latestPin(deps, project, specId(n)),
     await latestPin(deps, project, techId(n)),
     ...(scope ? [pinOf(scope)] : []),
     await latestPin(deps, project, testPlanId(n)),
     await latestPin(deps, project, `QA-REPORT-M${n}-${round}`),
-  ];
+  ]);
+  const found = await mustSupportFound(deps, project, n);
   const instructions = [
     `Review the code of milestone ${n}, ${from}..${to} on the integration branch, which QA has passed. Judge it against the Tech Design: its components, their tests and its performance budgets. Approve it, or file polish tickets for what falls short.`,
     '',
@@ -286,6 +314,7 @@ export async function engReviewSpec(deps: Pick<EngineDeps, 'artifacts'>, project
     `Polish tickets so far: ${polished.length > 0 ? polished.join(', ') : 'none'}. A new one takes a number none of them has.`,
     '',
     m.eng_round < m.eng_cap ? 'Polish tickets from this review will be built.' : 'This is the last polish round: polish tickets will not be built and open findings go to the stakeholder as known issues.',
+    ...(found === undefined ? [] : ['', found]),
   ].join('\n');
   return engReviewTask(project, n, round, inputs, instructions);
 }
@@ -312,7 +341,7 @@ async function engReview(deps: EngineDeps, project: ProjectRow, m: MilestoneRow,
     });
     return;
   }
-  const inputs = [await latestPin(deps, project, specId(n)), await latestPin(deps, project, techId(n)), await latestPin(deps, project, testPlanId(n)), await latestPin(deps, project, `QA-REPORT-M${n}-${round}`), pinOf(review)];
+  const inputs = await withMustSupport(deps, project, [await latestPin(deps, project, specId(n)), await latestPin(deps, project, techId(n)), await latestPin(deps, project, testPlanId(n)), await latestPin(deps, project, `QA-REPORT-M${n}-${round}`), pinOf(review)]);
   const note = verdict === 'polish' ? `No polish round is left to build what ${review.artifact_id} asked for: list its findings and polish tickets under known_issues.` : undefined;
   await store.atomically(async (s) => {
     await ensureTask(s, milestoneReviewTask(project, n, round, inputs, note));
@@ -365,9 +394,14 @@ async function afterMilestoneReview(deps: EngineDeps, project: ProjectRow, m: Mi
   const review = await artifacts.latest(project.id, reviewId(n));
   if (!review) throw new Error(`${task.ticket_id} finished without ${reviewId(n)}`);
   const eng = await engEvidence(deps, project, n, round, tasks);
-  const pins = [pinOf(review), await latestPin(deps, project, specId(n)), await latestPin(deps, project, `QA-REPORT-M${n}-${round}`), ...eng.pins];
+  // What the list asks of the stakeholder here: to read first what the build doesn't meet, to say item by item what they
+  // approve without, and to judge what only they can. Those checks come on top of the Spec's own.
+  const found = await milestoneStatuses(deps, project, n);
+  const listed = cp4MustSupport(found?.items ?? [], found?.statuses ?? []);
+  const pins = [pinOf(review), await latestPin(deps, project, specId(n)), await latestPin(deps, project, `QA-REPORT-M${n}-${round}`), ...eng.pins, ...(found && found.items.length > 0 ? [found.pin] : [])];
   const recommendation = await noteOf(store, task.id);
-  const checks = (await store.listCriteria(project.id, n)).filter(isHumanCheck).map(({ ac_id, text, verification }) => ({ ac: ac_id, text, how: verification.how }));
+  const criteria = (await store.listCriteria(project.id, n)).filter(isHumanCheck).map(({ ac_id, text, verification }) => ({ ac: ac_id, text, how: verification.how }));
+  const checks = [...criteria, ...listed.checks];
   // The stakeholder tries the milestone as it stands, not as the base was when they last looked, so the checkout is made after the sync.
   const { headSha } = await ensureIntegrationBranch(project.repo_path, n, project.base_branch);
   const tryIt = await offerTry(deps, project, n, headSha);
@@ -381,7 +415,10 @@ async function afterMilestoneReview(deps: EngineDeps, project: ProjectRow, m: Mi
       ref: { kind: 'cp4', milestone: n },
       title: `Approve milestone ${n} to merge into ${project.base_branch}`,
       asked_by: 'pm',
-      why: `${k > 0 ? 'Every automated criterion passed QA.' : 'Every acceptance criterion passed QA.'}${eng.unbuilt ? " The Eng Lead's last polish round was left unbuilt, so its findings are listed below as known issues." : ''} Nothing reaches ${project.base_branch} until you approve.${k > 0 ? ` Check the ${k} item${k === 1 ? '' : 's'} below yourself before approving.` : ''}${tryIt.link ? '' : ` ${DISPOSABLE}`}`,
+      why: [
+        ...listed.lead,
+        `${k > 0 ? 'Every automated criterion passed QA.' : 'Every acceptance criterion passed QA.'}${eng.unbuilt ? " The Eng Lead's last polish round was left unbuilt, so its findings are listed below as known issues." : ''} Nothing reaches ${project.base_branch} until you approve.${k > 0 ? ` Check the ${k} item${k === 1 ? '' : 's'} below yourself before approving.` : ''}${tryIt.link ? '' : ` ${DISPOSABLE}`}`,
+      ].join('\n'),
       blocks: [`Merging milestone ${n}`],
       evidence: [
         ...pins.map((pin) => ({ label: pin.split('@')[0]!, value: pin, pin })),
@@ -392,6 +429,7 @@ async function afterMilestoneReview(deps: EngineDeps, project: ProjectRow, m: Mi
       recommendation,
       options: [],
       checks,
+      waivable: listed.waivable,
     });
     await s.setMilestonePhase(project.id, n, 'cp4');
   });
@@ -403,6 +441,9 @@ async function merging(deps: EngineDeps, project: ProjectRow, { n }: MilestoneRo
   // Approval only gets here with every criterion judged, by QA or by the stakeholder at CP4. A milestone pushed to this phase any other way would put unchecked work on the base branch.
   const unverified = (await store.listCriteria(project.id, n)).filter(({ status }) => status !== 'passing' && status !== 'waived').map(({ ac_id }) => ac_id);
   if (unverified.length > 0) throw new Error(`Milestone ${n} can't merge: ${unverified.join(', ')} not verified`);
+  // The same holds for the must-support list: each item is met, or the stakeholder said they go without it.
+  const unmet = ((await milestoneStatuses(deps, project, n))?.statuses ?? []).filter(({ status }) => status !== 'met' && status !== 'waived').map(({ item_id }) => item_id);
+  if (unmet.length > 0) throw new Error(`Milestone ${n} can't merge: ${unmet.join(', ')} not met or waived`);
   const synced = await syncBaseIntoIntegration(project.repo_path, n, project.base_branch);
   if (!synced.ok) {
     await holdBaseConflict(store, project, n, synced.conflicts);
@@ -437,7 +478,7 @@ export async function advanceMilestone(deps: EngineDeps, runner: Runner, project
   const own = tasks.filter(({ milestone }) => milestone === m.n);
   switch (m.phase) {
     case 'pending':
-      return setPending(deps, project, m);
+      return setPending(deps, project, m, tasks);
     case 'spec':
       return afterSpec(deps, project, m, own);
     case 'design':

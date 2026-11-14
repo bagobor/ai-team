@@ -11,9 +11,11 @@ import { applyOutput } from '../src/engine/apply/index.ts';
 import { fileChangeRequest } from '../src/engine/change-requests.ts';
 import { applyAnswers } from '../src/engine/conductor/answers.ts';
 import { Conductor, haltProject } from '../src/engine/conductor/index.ts';
+import { reviseInputs } from '../src/engine/conductor/tasks.ts';
 import { ensureTryWorktree, offerTry, removeTryWorktree, tryWorktree } from '../src/engine/conductor/try.ts';
 import { addProject } from '../src/engine/intake.ts';
 import { AlreadyAnswered, type InboxRef, type InboxRow } from '../src/engine/inbox.ts';
+import type { MsItem } from '../src/engine/must-support.ts';
 import { Runner } from '../src/engine/runner.ts';
 import { Store, type ProjectRow, type TaskRow } from '../src/engine/store.ts';
 import { TryServer } from '../src/engine/try-server.ts';
@@ -23,7 +25,7 @@ import { mergeIntoBranch } from '../src/git/merge.ts';
 import { addAttemptWorktree, ensureIntegrationBranch, snapshotAttempt } from '../src/git/workspace.ts';
 import { isWithin, worktreePath } from '../src/paths.ts';
 import { CRITERIA, projectOf } from './helpers/apply.ts';
-import { eventTypes, makeEngine, ticket, type TestEngine } from './helpers/engine.ts';
+import { eventTypes, makeEngine, seedMustSupport, ticket, type TestEngine } from './helpers/engine.ts';
 import { fakePlayer, playResult } from './helpers/play.ts';
 import { commitAll, makeRepo, porcelain, revParse, run, tempDir } from './helpers/repo.ts';
 
@@ -211,18 +213,20 @@ const hasCommit = (h: Harness, sha: string, ref: string) => {
   }
 };
 
-async function addBrief(h: Harness): Promise<void> {
+async function addBrief(h: Harness, list: MsItem[] = []): Promise<void> {
   await h.artifacts.commit(h.project, { message: 'brief', publish: [{ id: 'BRIEF', type: 'brief', status: 'approved', approvedBy: 'stakeholder', ownerRole: 'stakeholder', derivedFrom: [], body: '# Brief\n' }] });
+  await seedMustSupport(h, h.project, list);
 }
 
-type Flow = { discovery?: unknown; profile?: unknown; spec?: unknown; design?: unknown; plan?: unknown; scope?: unknown; qa?: unknown };
+// `list` is the must-support list the stakeholder confirmed before discovery; none of the scripted flows has any item unless it says so.
+type Flow = { discovery?: unknown; profile?: unknown; spec?: unknown; design?: unknown; plan?: unknown; scope?: unknown; qa?: unknown; list?: MsItem[] };
 
 // AC-2 is built like any criterion, but the Test Plan skips it and QA reports on AC-1 alone.
 const AUTOMATED_PASS = { ...PASS, results: PASS.results.slice(0, 1) };
 const HUMAN_FLOW: Flow = { spec: { ...SPEC, criteria: [CRITERIA[0], HUMAN] }, plan: { ...TEST_PLAN, coverage: TEST_PLAN.coverage.slice(0, 1) }, qa: AUTOMATED_PASS };
 
 async function toCp1(h: Harness, flow: Flow = {}): Promise<InboxRow> {
-  await addBrief(h);
+  await addBrief(h, flow.list);
   await h.conductor.tick();
   await finish(h, 'DISCOVERY-PM', flow.discovery ?? DISCOVERY);
   await finish(h, 'DISCOVERY-TL', flow.profile ?? PROFILE);
@@ -312,7 +316,7 @@ describe('flow', () => {
 
     const pm = await byTicket(h, 'DISCOVERY-PM');
     const tl = await byTicket(h, 'DISCOVERY-TL');
-    expect([pm.role_id, pm.purpose, orderOf(pm).inputs, orderOf(pm).base]).toEqual(['pm', 'discovery', ['BRIEF@1'], { kind: 'base' }]);
+    expect([pm.role_id, pm.purpose, orderOf(pm).inputs, orderOf(pm).base]).toEqual(['pm', 'discovery', ['BRIEF@1', 'MUST-SUPPORT@1'], { kind: 'base' }]);
     expect([tl.role_id, tl.purpose, tl.depends_on]).toEqual(['tech_lead', 'environment_profile', ['DISCOVERY-PM']]);
     expect(await phaseOf(h)).toBe('discovery');
   });
@@ -354,7 +358,7 @@ describe('flow', () => {
     for (const id of ['ROADMAP', 'TEAM-PROPOSAL', 'HUMAN-REQUIREMENTS', 'ENV-PROFILE']) expect((await h.artifacts.latest(h.project.id, id))!).toMatchObject({ status: 'approved', approved_by: 'stakeholder' });
 
     const spec = await byTicket(h, 'M1-SPEC');
-    expect([spec.role_id, spec.purpose, orderOf(spec).inputs, orderOf(spec).base]).toEqual(['pm', 'milestone_spec', ['ROADMAP@1', 'HUMAN-REQUIREMENTS@1'], { kind: 'base' }]);
+    expect([spec.role_id, spec.purpose, orderOf(spec).inputs, orderOf(spec).base]).toEqual(['pm', 'milestone_spec', ['ROADMAP@1', 'HUMAN-REQUIREMENTS@1', 'MUST-SUPPORT@1'], { kind: 'base' }]);
     // The charter allows a human check, so the order that comes with it can't say every criterion is automated.
     expect(orderOf(spec).instructions).toContain('human check');
     expect(orderOf(spec).instructions).not.toContain('automated command');
@@ -483,8 +487,10 @@ describe('flow', () => {
     await h.conductor.tick();
 
     const scope = await byTicket(h, 'M1-SCOPE');
-    expect([scope.role_id, scope.kind, scope.purpose, orderOf(scope).base, orderOf(scope).inputs]).toEqual(['eng_lead', 'authoring', 'ticket_scope', { kind: 'base' }, ['SPEC-M1@1', 'ENV-PROFILE@1', 'TECH-M1@1', 'TEST-PLAN-M1@1']]);
-    expect(orderOf(scope).instructions).toBe("Split milestone 1 into tickets from the Tech Design's components. Every acceptance criterion must be covered by a ticket. Each ticket names its components and adds or updates their tests.");
+    expect([scope.role_id, scope.kind, scope.purpose, orderOf(scope).base, orderOf(scope).inputs]).toEqual(['eng_lead', 'authoring', 'ticket_scope', { kind: 'base' }, ['SPEC-M1@1', 'ENV-PROFILE@1', 'TECH-M1@1', 'TEST-PLAN-M1@1', 'MUST-SUPPORT@1']]);
+    expect(orderOf(scope).instructions).toBe(
+      "Split milestone 1 into tickets from the Tech Design's components. Every acceptance criterion must be covered by a ticket. Each ticket names its components and adds or updates their tests.\n\nIf an item on the must-support list can't be met, name it in gaps and say why. Never leave an item out silently.",
+    );
     expect(await ticketIds(h)).toEqual([]);
     expect(await milestonePhase(h)).toBe('design');
   });
@@ -651,7 +657,7 @@ describe('flow', () => {
     await h.conductor.tick();
 
     const qa = await byTicket(h, 'M1-QA-1');
-    expect([qa.role_id, qa.kind, qa.purpose, orderOf(qa).base, orderOf(qa).inputs]).toEqual(['qa_engineer', 'qa_verify', 'qa_verify', { kind: 'integration' }, ['SPEC-M1@1', 'TECH-M1@1', 'TEST-PLAN-M1@1']]);
+    expect([qa.role_id, qa.kind, qa.purpose, orderOf(qa).base, orderOf(qa).inputs]).toEqual(['qa_engineer', 'qa_verify', 'qa_verify', { kind: 'integration' }, ['SPEC-M1@1', 'TECH-M1@1', 'TEST-PLAN-M1@1', 'MUST-SUPPORT@1']]);
     expect((await h.store.getMilestone(h.project.id, 1))!).toMatchObject({ phase: 'verify', verify_round: 1 });
   });
 
@@ -677,6 +683,157 @@ describe('flow', () => {
     await finish(h, 'M1-ENGREV-1', ENG_APPROVE);
     await h.conductor.tick();
     expect(orderOf(await byTicket(h, 'M1-REVIEW-1')).instructions).toContain('each automated criterion has passed or been waived, and the stakeholder checks the rest');
+  });
+
+  describe('the must-support list on a milestone', () => {
+    // Only the stakeholder can judge it, so the flow needs no browser and no command for it.
+    const sound: MsItem = { id: 'MS-1', group: 'runs_on', text: 'Sounds right on phone speakers', brief_quote: 'Good sound', check: 'human', how: 'Play with the sound on' };
+    const LISTED: Flow = { list: [sound], spec: { ...SPEC, must_support: [{ item: 'MS-1', change: 'Adds the first sounds' }] } };
+
+    it('every milestone task and ticket pins the must-support list', async () => {
+      const h = await harness();
+      await toCp4(h, LISTED);
+
+      const tasks = (await h.store.listTasks(h.project.id)).filter(({ milestone, kind }) => milestone === 1 && kind !== 'code_review');
+      const inputsOf = async (task: TaskRow) => (task.kind === 'ticket' ? ((await h.artifacts.read(h.project, task.ticket_id)).fields.inputs as string[]) : orderOf(task).inputs);
+      const unpinned: string[] = [];
+      for (const task of tasks) if (!(await inputsOf(task)).includes('MUST-SUPPORT@1')) unpinned.push(task.ticket_id);
+
+      expect(tasks.map(({ ticket_id }) => ticket_id)).toEqual(['M1-SPEC', 'M1-TECH', 'M1-TESTPLAN', 'M1-SCOPE', 'M1-T-1', 'M1-QA-1', 'M1-ENGREV-1', 'M1-REVIEW-1']);
+      expect(unpinned).toEqual([]);
+    });
+
+    it('QA and the Eng Lead are told what the engine found', async () => {
+      const h = await harness();
+      await toVerify(h, LISTED);
+      const found = 'What the game must support, as the engine last found it:\n- MS-1 Sounds right on phone speakers: Not measured';
+      expect(orderOf(await byTicket(h, 'M1-QA-1')).instructions).toContain(found);
+
+      await finish(h, 'M1-QA-1', PASS);
+      await h.conductor.tick();
+      expect(orderOf(await byTicket(h, 'M1-ENGREV-1')).instructions).toContain(found);
+    });
+
+    it('says nothing of the list to QA when it has no items', async () => {
+      const h = await harness();
+      await toVerify(h);
+
+      expect(orderOf(await byTicket(h, 'M1-QA-1')).instructions).not.toContain('must support');
+    });
+
+    it('a revision reads the list in force, not one still waiting for the stakeholder', async () => {
+      const h = await harness();
+      await toBuild(h, LISTED);
+      await h.artifacts.commit(h.project, { message: 'revision', publish: [{ id: 'MUST-SUPPORT', type: 'must_support', status: 'proposed', ownerRole: 'pm', derivedFrom: ['BRIEF@1'], body: '# List\n', fields: { data: { items: [], used: ['MS-1'] } } }] });
+      const scope = (await h.artifacts.latest(h.project.id, 'SCOPE-M1'))!;
+
+      expect(await reviseInputs(h, h.project, scope)).toContain('MUST-SUPPORT@1');
+      expect(await reviseInputs(h, h.project, scope)).not.toContain('MUST-SUPPORT@2');
+    });
+
+    it('a human item is a check at the milestone approval, and marking it there records it', async () => {
+      const h = await harness();
+      const cp4 = await toCp4(h, { ...HUMAN_FLOW, list: [sound], spec: { ...SPEC, criteria: [CRITERIA[0], HUMAN], must_support: [{ item: 'MS-1', change: 'Adds the first sounds' }] } });
+
+      expect(cp4.checks).toEqual([
+        { ac: 'AC-2', text: HUMAN.text, how: HUMAN.verification.how },
+        { ac: 'MS-1', text: 'Sounds right on phone speakers', how: 'Play with the sound on' },
+      ]);
+      expect(cp4.why).toMatch(/Check the 2 items below/);
+      expect(cp4.waivable).toEqual([]);
+      expect(cp4.evidence).toContainEqual({ label: 'MUST-SUPPORT', value: 'MUST-SUPPORT@1', pin: 'MUST-SUPPORT@1' });
+      await expect(h.store.answerInbox(cp4.id, { action: 'approve', checks: [{ ac: 'AC-2', status: 'passing', note: '' }] })).rejects.toThrow(/MS-1 is not marked/);
+
+      await h.store.answerInbox(cp4.id, { action: 'approve', checks: [{ ac: 'AC-2', status: 'passing', note: '' }, { ac: 'MS-1', status: 'passing', note: 'Clear enough' }] });
+      await h.conductor.tick();
+
+      expect(await h.store.listMustSupport(h.project.id, { scope: 'milestone', n: 1 })).toMatchObject([{ item_id: 'MS-1', status: 'met', evidence: `DEC-${cp4.id}@1#ms-1`, source: 'stakeholder', must_support_version: 1 }]);
+      expect((await h.store.listCriteria(h.project.id, 1)).map(({ ac_id, status }) => [ac_id, status])).toEqual([['AC-1', 'passing'], ['AC-2', 'passing']]);
+      expect(await milestonePhase(h)).toBe('merged');
+    });
+
+    it('a human item approved without is recorded as waived, with no mark needed', async () => {
+      const h = await harness();
+      const cp4 = await toCp4(h, LISTED);
+
+      await h.store.answerInbox(cp4.id, { action: 'approve', waive: ['MS-1'] });
+      await h.conductor.tick();
+
+      expect(await h.store.listMustSupport(h.project.id, { scope: 'milestone', n: 1 })).toMatchObject([{ item_id: 'MS-1', status: 'waived', evidence: `DEC-${cp4.id}@1#ms-1`, source: 'stakeholder' }]);
+      expect((await h.artifacts.read(h.project, `DEC-${cp4.id}`)).body).toContain('## MS-1\n\nApproved without it.\n');
+      expect(await milestonePhase(h)).toBe('merged');
+    });
+
+    it('the merge guard refuses an item that is neither met nor waived', async () => {
+      const h = await harness();
+      await toCp4(h, LISTED);
+      await h.store.setMilestonePhase(h.project.id, 1, 'merging');
+      await h.conductor.tick();
+
+      expect((await pending(h, 'engine_error')).why).toBe("Milestone 1 can't merge: MS-1 not met or waived");
+      expect(await milestonePhase(h)).toBe('merging');
+    });
+
+    it("a removed item's rows do not hold up the merge", async () => {
+      const h = await harness();
+      const cp4 = await toCp4(h);
+      await h.store.recordMustSupport(h.project.id, { scope: 'milestone', n: 1 }, [{ item_id: 'MS-9', status: 'failing', evidence: 'Too tall', source: 'play_gate', must_support_version: 1 }]);
+
+      await h.store.answerInbox(cp4.id, { action: 'approve' });
+      await h.conductor.tick();
+
+      expect(await milestonePhase(h)).toBe('merged');
+    });
+
+    it('the Milestone Review says a human item is the stakeholder\'s to check', async () => {
+      const h = await harness();
+      await toCp4(h, LISTED);
+
+      const { body } = await h.artifacts.read(h.project, 'MILESTONE-REVIEW-M1');
+      expect(body).toContain("## Must support\n\nThe engine's last check of milestone 1 against MUST-SUPPORT@1:\n\n- MS-1 Sounds right on phone speakers: Not measured — you check it at approval\n");
+      expect(body.indexOf('## Must support')).toBeLessThan(body.indexOf('## Review'));
+    });
+
+    it('a Milestone Review of a project with no items has no such section', async () => {
+      const h = await harness();
+      await toCp4(h);
+
+      expect((await h.artifacts.read(h.project, 'MILESTONE-REVIEW-M1')).body).not.toContain('Must support');
+    });
+
+    // The PM's revision of the list, as its applier leaves it: proposed, with one more item only the stakeholder can judge.
+    const revise = (h: Harness) =>
+      h.artifacts.commit(h.project, { message: 'revision', publish: [{ id: 'MUST-SUPPORT', type: 'must_support', status: 'proposed', ownerRole: 'pm', derivedFrom: ['BRIEF@1'], body: '# List\n', fields: { data: { items: [sound, { ...sound, id: 'MS-2', text: 'Reads well in sunlight' }], used: ['MS-1', 'MS-2'] } } }] });
+
+    it('a change to the list approved while the milestone waits for approval sends it back to be checked', async () => {
+      const h = await harness();
+      const cp4 = await toCp4(h, LISTED);
+      await revise(h);
+      await h.conductor.tick();
+
+      await h.store.answerInbox((await pending(h, 'must_support')).id, { action: 'approve' });
+      await h.conductor.tick();
+
+      // The approval it had offered nothing for the new item, so it could never have merged.
+      expect((await h.store.getInbox(cp4.id))!.state).toBe('withdrawn');
+      expect(await milestonePhase(h)).toBe('build');
+    });
+
+    it('rejecting a change to the list leaves the milestone and its documents as they were', async () => {
+      const h = await harness();
+      const cp4 = await toCp4(h, LISTED);
+      await revise(h);
+      await h.conductor.tick();
+
+      await h.store.answerInbox((await pending(h, 'must_support')).id, { action: 'reject' });
+      await h.conductor.tick();
+      await h.conductor.tick();
+
+      for (const id of ['SPEC-M1', 'TECH-M1', 'TEST-PLAN-M1', 'SCOPE-M1', 'M1-T-1']) expect([id, await statusOf(h, id)]).toEqual([id, 'approved']);
+      expect((await taskIds(h)).filter((id) => id.includes('REVISE'))).toEqual([]);
+      expect((await h.store.getInbox(cp4.id))!.state).toBe('pending');
+      expect(await milestonePhase(h)).toBe('cp4');
+    });
   });
 
   it('tells the stakeholder at milestone approval that the automated criteria passed QA', async () => {
@@ -851,7 +1008,7 @@ describe('flow', () => {
     await finish(h, 'M1-ENGREV-1', ENG_APPROVE);
     await h.conductor.tick();
 
-    expect(orderOf(await byTicket(h, 'M1-REVIEW-1')).inputs).toEqual(['SPEC-M1@1', 'TECH-M1@1', 'TEST-PLAN-M1@1', 'QA-REPORT-M1-1@1', 'ENG-REVIEW-M1-1@1']);
+    expect(orderOf(await byTicket(h, 'M1-REVIEW-1')).inputs).toEqual(['SPEC-M1@1', 'TECH-M1@1', 'TEST-PLAN-M1@1', 'QA-REPORT-M1-1@1', 'ENG-REVIEW-M1-1@1', 'MUST-SUPPORT@1']);
   });
 
   it('counts a cancelled ticket as finished for QA', async () => {
@@ -1093,7 +1250,7 @@ describe('flow', () => {
 
     const replan = await byTicket(h, 'M1-REPLAN-1');
     expect([replan.role_id, replan.purpose, orderOf(replan).comment, orderOf(replan).base]).toEqual(['eng_lead', 'revise_scope', 'The second thing is too slow', { kind: 'integration' }]);
-    expect(orderOf(replan).inputs).toEqual(['SPEC-M1@1', 'ENV-PROFILE@1', 'TECH-M1@1', 'TEST-PLAN-M1@1', 'SCOPE-M1@1']);
+    expect(orderOf(replan).inputs).toEqual(['SPEC-M1@1', 'ENV-PROFILE@1', 'TECH-M1@1', 'TEST-PLAN-M1@1', 'MUST-SUPPORT@1', 'SCOPE-M1@1']);
     expect(orderOf(replan).instructions).toContain('raise a Change Request against TECH-M1');
     expect(await milestonePhase(h)).toBe('build');
     await h.conductor.tick();
@@ -1127,7 +1284,7 @@ describe('flow', () => {
     await ownerApplies(h, scopeChange);
     expect(await statusOf(h, 'TECH-M1')).toBe('stale');
     const first = await byTicket(h, 'M1-REVISE-TECH-M1-1');
-    expect([first.role_id, first.purpose, orderOf(first).inputs]).toEqual(['tech_lead', 'revise_design', ['SPEC-M1@2', 'ENV-PROFILE@1', 'TECH-M1@1']]);
+    expect([first.role_id, first.purpose, orderOf(first).inputs]).toEqual(['tech_lead', 'revise_design', ['SPEC-M1@2', 'ENV-PROFILE@1', 'MUST-SUPPORT@1', 'TECH-M1@1']]);
     expect(orderOf(first).instructions).not.toContain('M1-T-1');
     const plan = await byTicket(h, 'M1-REVISE-TEST-PLAN-M1-1');
     expect([plan.role_id, plan.purpose]).toEqual(['qa_engineer', 'revise_test_plan']);
@@ -1143,14 +1300,14 @@ describe('flow', () => {
 
     // The scope is split from the design, so its revision comes once the design's is in, and decides the tickets.
     const scope = await byTicket(h, 'M1-REVISE-SCOPE-M1-1');
-    expect([scope.role_id, scope.purpose, orderOf(scope).inputs]).toEqual(['eng_lead', 'revise_scope', ['SPEC-M1@2', 'ENV-PROFILE@1', 'TECH-M1@1', 'TEST-PLAN-M1@1', 'SCOPE-M1@1']]);
+    expect([scope.role_id, scope.purpose, orderOf(scope).inputs]).toEqual(['eng_lead', 'revise_scope', ['SPEC-M1@2', 'ENV-PROFILE@1', 'TECH-M1@1', 'TEST-PLAN-M1@1', 'MUST-SUPPORT@1', 'SCOPE-M1@1']]);
     expect(orderOf(scope).instructions).toContain('M1-T-1');
     await finish(h, 'M1-REVISE-SCOPE-M1-1', revised([stillValid('M1-T-1')]));
     await h.conductor.tick();
     expect(await statusOf(h, 'SCOPE-M1')).toBe('approved');
 
     await ownerApplies(h, { ...scopeChange, proposed_text: 'Smaller still.' });
-    expect(orderOf(await byTicket(h, 'M1-REVISE-TECH-M1-2')).inputs).toEqual(['SPEC-M1@3', 'ENV-PROFILE@1', 'TECH-M1@1']);
+    expect(orderOf(await byTicket(h, 'M1-REVISE-TECH-M1-2')).inputs).toEqual(['SPEC-M1@3', 'ENV-PROFILE@1', 'MUST-SUPPORT@1', 'TECH-M1@1']);
   });
 
   it('revises again when the spec moves while a revision is running', async () => {
@@ -1166,7 +1323,7 @@ describe('flow', () => {
 
     expect(await statusOf(h, 'TECH-M1')).toBe('stale');
     expect(await statusOf(h, 'TEST-PLAN-M1')).toBe('stale');
-    expect(orderOf(await byTicket(h, 'M1-REVISE-TECH-M1-2')).inputs).toEqual(['SPEC-M1@3', 'ENV-PROFILE@1', 'TECH-M1@1']);
+    expect(orderOf(await byTicket(h, 'M1-REVISE-TECH-M1-2')).inputs).toEqual(['SPEC-M1@3', 'ENV-PROFILE@1', 'MUST-SUPPORT@1', 'TECH-M1@1']);
     expect(orderOf(await byTicket(h, 'M1-REVISE-TEST-PLAN-M1-2')).inputs).toContain('SPEC-M1@3');
     // The design is still moving, so the scope waits for it.
     expect(await taskIds(h)).not.toContain('M1-REVISE-SCOPE-M1-1');
@@ -1180,7 +1337,7 @@ describe('flow', () => {
     await h.conductor.tick();
 
     const revise = await byTicket(h, 'M1-REVISE-SCOPE-M1-1');
-    expect([revise.role_id, revise.purpose, orderOf(revise).inputs]).toEqual(['eng_lead', 'revise_scope', ['SPEC-M1@1', 'ENV-PROFILE@1', 'TECH-M1@1', 'TEST-PLAN-M1@1', 'SCOPE-M1@1']]);
+    expect([revise.role_id, revise.purpose, orderOf(revise).inputs]).toEqual(['eng_lead', 'revise_scope', ['SPEC-M1@1', 'ENV-PROFILE@1', 'TECH-M1@1', 'TEST-PLAN-M1@1', 'MUST-SUPPORT@1', 'SCOPE-M1@1']]);
     expect(orderOf(revise).instructions).toContain('M1-T-1');
     expect(await taskIds(h)).not.toContain('M1-REVISE-TECH-M1-1');
     await finish(h, 'M1-REVISE-SCOPE-M1-1', revised([stillValid('M1-T-1')]));
@@ -1235,6 +1392,7 @@ describe('flow', () => {
     const other = await addProject(h, { name: 'other', repoPath: path, create: false });
     await addBrief(h);
     await h.artifacts.commit(other, { message: 'brief', publish: [{ id: 'BRIEF', type: 'brief', status: 'approved', approvedBy: 'stakeholder', ownerRole: 'stakeholder', derivedFrom: [], body: '# Brief\n' }] });
+    await seedMustSupport(h, other);
 
     const latest = h.artifacts.latest.bind(h.artifacts);
     const spy = vi.spyOn(h.artifacts, 'latest').mockImplementation(async (projectId, id) => {
@@ -1313,7 +1471,7 @@ describe('the eng review', () => {
     expect(await milestonePhase(h)).toBe('eng_review');
     const task = await byTicket(h, 'M1-ENGREV-1');
     expect([task.role_id, task.kind, task.purpose, orderOf(task).base]).toEqual(['eng_lead', 'authoring', 'eng_review', { kind: 'integration' }]);
-    expect(orderOf(task).inputs).toEqual(['SPEC-M1@1', 'TECH-M1@1', 'SCOPE-M1@1', 'TEST-PLAN-M1@1', 'QA-REPORT-M1-1@1']);
+    expect(orderOf(task).inputs).toEqual(['SPEC-M1@1', 'TECH-M1@1', 'SCOPE-M1@1', 'TEST-PLAN-M1@1', 'QA-REPORT-M1-1@1', 'MUST-SUPPORT@1']);
     const { instructions } = orderOf(task);
     const from = run(h.repoPath, 'merge-base', 'refs/heads/main', 'refs/heads/aiteam/m1');
     expect(instructions).toContain(`${from}..${await revParse(h.repoPath, 'refs/heads/aiteam/m1')}`);
@@ -1443,7 +1601,7 @@ describe('the eng review', () => {
 
     const replan = orderOf(await byTicket(h, 'M1-REPLAN-1'));
     expect(replan.instructions).toContain('still valid or superseded: M1-E-1.');
-    expect(replan.inputs).toEqual(['SPEC-M1@1', 'ENV-PROFILE@1', 'TECH-M1@1', 'TEST-PLAN-M1@1', 'SCOPE-M1@1', 'ENG-REVIEW-M1-1@1']);
+    expect(replan.inputs).toEqual(['SPEC-M1@1', 'ENV-PROFILE@1', 'TECH-M1@1', 'TEST-PLAN-M1@1', 'MUST-SUPPORT@1', 'SCOPE-M1@1', 'ENG-REVIEW-M1-1@1']);
   });
 
   it('build cancels an open eng review', async () => {
@@ -1511,11 +1669,11 @@ describe('the play gate', () => {
     { kind: 'console', detail: 'Uncaught TypeError: x is undefined' },
   ]);
 
-  async function playing(results: PlayResult | PlayResult[], opts: { unavailable?: string; profile?: unknown } = {}) {
+  async function playing(results: PlayResult | PlayResult[], opts: { unavailable?: string; profile?: unknown; flow?: Flow } = {}) {
     const h = await harness();
     const player = fakePlayer(results, opts);
     h.player = player;
-    await toBuild(h, { profile: opts.profile ?? PLAY_PROFILE });
+    await toBuild(h, { profile: opts.profile ?? PLAY_PROFILE, ...opts.flow });
     return { h, player };
   }
 
@@ -1536,7 +1694,7 @@ describe('the play gate', () => {
     expect(player.calls).toHaveLength(1);
     expect(player.calls[0]!.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/index\.html$/);
     expect(player.calls[0]!.body).toBe(PAGE);
-    expect(smoke).toHaveBeenCalledWith(player.calls[0]!.url, ['Space'], { animated: undefined });
+    expect(smoke).toHaveBeenCalledWith(player.calls[0]!.url, ['Space'], { animated: undefined, touch: false, fitsScreen: false });
     expect(await taskIds(h)).toContain('M1-QA-1');
     expect(await milestonePhase(h)).toBe('verify');
   });
@@ -1546,7 +1704,128 @@ describe('the play gate', () => {
     const smoke = vi.spyOn(player, 'smoke');
     await mergeGame(h);
 
-    expect(smoke).toHaveBeenCalledWith(player.calls[0]!.url, ['Space'], { animated: false });
+    expect(smoke).toHaveBeenCalledWith(player.calls[0]!.url, ['Space'], { animated: false, touch: false, fitsScreen: false });
+  });
+
+  describe('against the must-support list', () => {
+    const phone: MsItem = { id: 'MS-1', group: 'runs_on', text: 'Plays in a phone browser held upright', brief_quote: 'On my phone', check: 'play', viewport: 'phone_portrait', input: 'touch', fits_screen: true };
+    const cmd: MsItem = { id: 'MS-2', group: 'built_with', text: 'Has no build step', brief_quote: 'No build step', check: 'command' };
+    const FITS = { kind: 'fits' as const, detail: 'The page is 2000px tall on a 844px-tall screen after load, so part of it is off screen' };
+    const TOO_TALL = `Phone browser, held upright: ${FITS.detail}`;
+    const listed = (list: MsItem[]): Flow => ({ list, spec: { ...SPEC, must_support: list.map(({ id }) => ({ item: id, change: 'Built in this milestone' })) } });
+    const checked = (command: string, profile: object = PLAY_PROFILE) => ({ ...profile, must_support_checks: [{ item: 'MS-2', command, protected: [] }] });
+    const statuses = (h: Harness) => h.store.listMustSupport(h.project.id, { scope: 'milestone', n: 1 });
+
+    it('a phone item that does not fit files a must-support Bug and spends a round', async () => {
+      const { h, player } = await playing(playResult([FITS]), { flow: listed([phone]) });
+      await mergeGame(h);
+
+      expect(player.calls).toHaveLength(1);
+      expect(player.calls[0]).toMatchObject({ keys: [], opts: { viewport: { width: 390, height: 844, mobile: true, touch: true }, touch: true, fitsScreen: true } });
+      expect(await statuses(h)).toMatchObject([{ item_id: 'MS-1', status: 'failing', evidence: TOO_TALL, source: 'play_gate', must_support_version: 1 }]);
+
+      const head = await revParse(h.repoPath, 'refs/heads/aiteam/m1');
+      const bug = await h.artifacts.read(h.project, 'BUG-M1-1');
+      expect(bug.body).toBe(
+        [
+          '# The game does not meet what it must support',
+          '',
+          `The engine built milestone 1 at ${head.slice(0, 7)} and checked it against MUST-SUPPORT@1 before QA round 1. These items failed:`,
+          '',
+          `- MS-1 Plays in a phone browser held upright: ${TOO_TALL}`,
+          '',
+          'Fix the build so that each of them holds.',
+          '',
+        ].join('\n'),
+      );
+      expect(bug.fields.data).toMatchObject({ items: ['MS-1'], headSha: head });
+      expect(await h.artifacts.latest(h.project.id, 'BUG-M1-1')).toMatchObject({ status: 'approved', approved_by: 'engine', derived_from: ['SPEC-M1@1', 'MUST-SUPPORT@1', 'ENV-PROFILE@1'] });
+      expect(await byTicket(h, 'M1-B-1')).toMatchObject({ kind: 'ticket', role_id: 'engineer', state: 'queued', title: 'The game does not meet what it must support', ac_refs: [], dod: ['test -f index.html'], touches: ['**'] });
+      expect(await milestoneOf(h)).toMatchObject({ phase: 'build', verify_round: 1 });
+      expect(await taskIds(h)).not.toContain('M1-QA-1');
+
+      // The round's Bug is open, so the gate doesn't play again.
+      await h.conductor.tick();
+      expect(player.calls).toHaveLength(1);
+    });
+
+    it('a failing command item files the same Bug, with its command for the fix to pass', async () => {
+      const { h } = await playing(playResult(), { flow: listed([cmd]), profile: checked('echo no-bundler-please; test -f no-such-file') });
+      await mergeGame(h);
+
+      expect(await statuses(h)).toMatchObject([{ item_id: 'MS-2', status: 'failing', source: 'play_gate' }]);
+      const bug = await h.artifacts.read(h.project, 'BUG-M1-1');
+      expect(bug.body).toContain('# The game does not meet what it must support');
+      expect(bug.body).toMatch(/\n- MS-2 Has no build step: .+ \(in full below\)\n/);
+      expect(bug.body).toContain('## In full');
+      expect(bug.body).toContain('no-bundler-please');
+      expect((await byTicket(h, 'M1-B-1')).dod).toEqual(['test -f index.html', 'echo no-bundler-please; test -f no-such-file']);
+      expect(await milestoneOf(h)).toMatchObject({ phase: 'build', verify_round: 1 });
+    });
+
+    it('a game that does not load still files the Bug that the game does not run', async () => {
+      const { h } = await playing(BOOM, { flow: listed([phone]) });
+      await mergeGame(h);
+
+      const bug = await h.artifacts.read(h.project, 'BUG-M1-1');
+      expect(bug.body).toContain('# The game does not run');
+      expect(bug.body).toContain('- exception: Phone browser, held upright: boom at game.js:3\n');
+      expect(await statuses(h)).toMatchObject([{ item_id: 'MS-1', status: 'failing', evidence: 'Phone browser, held upright: exception: boom at game.js:3; console: Uncaught TypeError: x is undefined' }]);
+      expect(await milestoneOf(h)).toMatchObject({ phase: 'build', verify_round: 1 });
+    });
+
+    it('with no play block, the command items still run, and no browser is needed', async () => {
+      const h = await harness();
+      await toBuild(h, { ...listed([cmd]), profile: checked('true', PROFILE) });
+      await mergeTicket(h, 'M1-T-1');
+      await h.conductor.tick();
+
+      expect(await statuses(h)).toMatchObject([{ item_id: 'MS-2', status: 'met', evidence: '`true` passed', source: 'play_gate' }]);
+      expect(await taskIds(h)).toContain('M1-QA-1');
+      expect(orderOf(await byTicket(h, 'M1-QA-1')).instructions).toContain('- MS-2 Has no build step: Met — `true` passed');
+    });
+
+    it('an item the stakeholder accepted going without in this milestone is neither played nor failed', async () => {
+      const { h, player } = await playing(playResult([FITS]), { flow: listed([phone]) });
+      const waiver = { item_id: 'MS-1', status: 'waived' as const, evidence: 'DEC-9@1', source: 'stakeholder' as const, must_support_version: 1 };
+      await h.store.recordMustSupport(h.project.id, { scope: 'milestone', n: 1 }, [waiver]);
+      await mergeGame(h);
+
+      expect(player.calls[0]!.opts).toEqual({ animated: undefined, touch: false, fitsScreen: false });
+      expect(await statuses(h)).toMatchObject([waiver]);
+      expect(await bugIds(h)).toEqual([]);
+      expect(await taskIds(h)).toContain('M1-QA-1');
+    });
+
+    it('a build still short with no rounds left goes on to QA, and the approval leads with what it does not meet', async () => {
+      const { h } = await playing(playResult([FITS]), { flow: listed([phone]) });
+      await h.store.patchMilestone(h.project.id, 1, { verify_cap: 0 });
+      await mergeGame(h);
+
+      expect(await bugIds(h)).toEqual([]);
+      await finish(h, 'M1-QA-1', PASS);
+      await h.conductor.tick();
+      await finish(h, 'M1-ENGREV-1', ENG_APPROVE);
+      await h.conductor.tick();
+      await finish(h, 'M1-REVIEW-1', REVIEW);
+      await h.conductor.tick();
+
+      const cp4 = await pending(h, 'cp4');
+      expect(cp4.why.split('\n').slice(0, 2)).toEqual(['This build does not meet: Plays in a phone browser held upright.', `Plays in a phone browser held upright: ${TOO_TALL}`]);
+      expect(cp4.why).toContain('Every acceptance criterion passed QA.');
+      expect(cp4.waivable).toEqual([{ id: 'MS-1', text: 'Plays in a phone browser held upright', why: TOO_TALL }]);
+      expect((await h.artifacts.read(h.project, 'MILESTONE-REVIEW-M1')).body).toContain(`- MS-1 Plays in a phone browser held upright: Failing — ${TOO_TALL}\n`);
+
+      await expect(h.store.answerInbox(cp4.id, { action: 'approve' })).rejects.toThrow('MS-1 does not meet the list: approve without it, or request changes');
+      expect((await h.store.getInbox(cp4.id))!.state).toBe('pending');
+
+      await h.store.answerInbox(cp4.id, { action: 'approve', waive: ['MS-1'] });
+      await h.conductor.tick();
+
+      expect(await statuses(h)).toMatchObject([{ item_id: 'MS-1', status: 'waived', evidence: `DEC-${cp4.id}@1#ms-1`, source: 'stakeholder' }]);
+      expect((await h.artifacts.read(h.project, `DEC-${cp4.id}`)).body).toContain(`## MS-1\n\nApproved without it.\n\n> ${TOO_TALL}\n`);
+      expect(await milestonePhase(h)).toBe('merged');
+    });
   });
 
   it('files a Bug when the game does not run', async () => {

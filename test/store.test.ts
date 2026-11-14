@@ -495,6 +495,67 @@ describe('Store for M2', () => {
     });
   });
 
+  describe('must-support statuses', () => {
+    const row = (item_id: string, status: 'met' | 'failing', evidence: string) => ({ item_id, status, evidence, source: 'play_gate' as const, must_support_version: 1 });
+
+    it('records must-support statuses, replacing a row with the same key', async () => {
+      await store.recordMustSupport(project.id, { scope: 'milestone', n: 1 }, [row('MS-1', 'failing', 'a'), row('MS-2', 'met', 'c')]);
+      await store.recordMustSupport(project.id, { scope: 'milestone', n: 1 }, [row('MS-1', 'met', 'b')]);
+
+      expect(await store.listMustSupport(project.id, { scope: 'milestone', n: 1 })).toMatchObject([
+        { item_id: 'MS-1', status: 'met', evidence: 'b', subject: '', scope: 'milestone', n: 1, source: 'play_gate', must_support_version: 1 },
+        { item_id: 'MS-2', status: 'met', evidence: 'c' },
+      ]);
+    });
+
+    it('lists one prototype or every prototype of a round', async () => {
+      await store.recordMustSupport(project.id, { scope: 'prototype', n: 1, subject: 'P-1' }, [row('MS-1', 'met', 'a')]);
+      await store.recordMustSupport(project.id, { scope: 'prototype', n: 1, subject: 'P-2' }, [row('MS-1', 'failing', 'b')]);
+
+      expect(await store.listMustSupport(project.id, { scope: 'prototype', n: 1, subject: 'P-1' })).toMatchObject([{ subject: 'P-1', status: 'met' }]);
+      expect(await store.listMustSupport(project.id, { scope: 'prototype', n: 1 })).toMatchObject([
+        { subject: 'P-1', status: 'met' },
+        { subject: 'P-2', status: 'failing' },
+      ]);
+    });
+
+    it('keeps a milestone, a round, the project and another project apart', async () => {
+      const other = await store.createProject({ name: 'q', repo_path: '/q', base_branch: 'main' });
+      await store.recordMustSupport(project.id, { scope: 'milestone', n: 1 }, [row('MS-1', 'failing', 'a')]);
+      await store.recordMustSupport(project.id, { scope: 'project', n: 0 }, [{ ...row('MS-1', 'met', 'DEC-3@1'), status: 'waived', source: 'stakeholder' }]);
+
+      expect(await store.listMustSupport(project.id, { scope: 'milestone', n: 2 })).toEqual([]);
+      expect(await store.listMustSupport(project.id, { scope: 'prototype', n: 1 })).toEqual([]);
+      expect(await store.listMustSupport(other.id, { scope: 'milestone', n: 1 })).toEqual([]);
+      expect(await store.listMustSupport(project.id, { scope: 'project', n: 0 })).toMatchObject([{ item_id: 'MS-1', status: 'waived', source: 'stakeholder' }]);
+    });
+
+    it('logs must_support.status', async () => {
+      await store.recordMustSupport(project.id, { scope: 'prototype', n: 2, subject: 'P-1' }, [row('MS-1', 'failing', 'a')]);
+
+      expect(seen).toEqual(['must_support.status']);
+      const [event] = await log.list({ projectId: project.id });
+      expect(event!.payload).toEqual({ scope: 'prototype', n: 2, subject: 'P-1', statuses: [{ item_id: 'MS-1', status: 'failing' }] });
+    });
+  });
+
+  describe('inbox waivers', () => {
+    const cp4 = (waivable?: { id: string; text: string; why: string }[]) =>
+      store.raiseInbox({ project_id: project.id, milestone: 1, type: 'approval', dedupe_key: 'cp4:1', ref: { kind: 'cp4', milestone: 1 }, title: 'Approve milestone 1', asked_by: 'pm', why: 'w', blocks: [], evidence: [], recommendation: '', options: [], ...(waivable ? { waivable } : {}) });
+
+    it("keeps an inbox item's waivable list", async () => {
+      const waivable = [{ id: 'MS-1', text: 'Plays on a phone', why: 'Failing: too tall' }];
+      const raised = await cp4(waivable);
+
+      expect(raised.waivable).toEqual(waivable);
+      expect((await store.getInbox(raised.id))!.waivable).toEqual(waivable);
+    });
+
+    it('gives an item raised with none an empty list', async () => {
+      expect((await cp4()).waivable).toEqual([]);
+    });
+  });
+
   describe('criteria constraints', () => {
     it.each(['passing', 'failing'])('refuses a %s criterion with no evidence', async (status) => {
       await expect(insertCriterion(status, null)).rejects.toThrow(/CHECK/i);

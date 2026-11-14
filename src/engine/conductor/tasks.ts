@@ -1,7 +1,9 @@
 import { formatPin, parsePin } from '../../artifacts/format.ts';
-import { ENG_REVIEW_ID, ENV_PROFILE, FUN_DEFINITION, isPolishTicket, PROTO_PLAN_ID, protoPlanId, techId } from '../apply/ids.ts';
+import { ENG_REVIEW_ID, ENV_PROFILE, FUN_DEFINITION, isPolishTicket, MUST_SUPPORT, PROTO_PLAN_ID, protoPlanId, techId } from '../apply/ids.ts';
+import { oneLine } from '../apply/text.ts';
 import { IllegalTransition } from '../fsm.ts';
 import type { InboxOption, InboxRef, InboxRow, NewInboxItem } from '../inbox.ts';
+import { gateStatuses, itemLine, STATUS_LABEL, type ItemStatus, type MsItem, type MustSupportData } from '../must-support.ts';
 import type { EngineDeps, Runner } from '../runner.ts';
 import type { ArtifactVersionRow, AttemptRow, ProjectRow, Store, TaskRow } from '../store.ts';
 import type { Purpose, TaskKind, WorkOrder } from '../workorder.ts';
@@ -125,7 +127,19 @@ export async function haltProject(deps: Pick<EngineDeps, 'store'>, runner: Runne
   await deps.store.atomically((s) => markHalted(s, project, reason));
 }
 
-const workOrder = (purpose: Purpose, instructions: string, inputs: string[], base: WorkOrder['base'], extra: Pick<WorkOrder, 'comment' | 'subject'> = {}): WorkOrder => ({ purpose, instructions, inputs, checks: [], base, ...extra });
+// A role that reads the list is told what to do when it can't meet an item. The schemas of these purposes take gaps.
+export const GAPS_LINE = "If an item on the must-support list can't be met, name it in gaps and say why. Never leave an item out silently.";
+const GAP_PURPOSES: Purpose[] = ['prototype_plan', 'environment_profile', 'milestone_spec', 'tech_design', 'ticket_scope', 'test_plan', 'qa_verify', 'eng_review'];
+const asksForGaps = (purpose: Purpose, inputs: string[]) => GAP_PURPOSES.includes(purpose) && inputs.some((pin) => parsePin(pin).id === MUST_SUPPORT);
+
+const workOrder = (purpose: Purpose, instructions: string, inputs: string[], base: WorkOrder['base'], extra: Pick<WorkOrder, 'comment' | 'subject'> = {}): WorkOrder => ({
+  purpose,
+  instructions: asksForGaps(purpose, inputs) ? `${instructions}\n\n${GAPS_LINE}` : instructions,
+  inputs,
+  checks: [],
+  base,
+  ...extra,
+});
 const withComment = (comment: string | undefined) => (comment === undefined ? {} : { comment });
 const INTEGRATION: WorkOrder['base'] = { kind: 'integration' };
 const BASE: WorkOrder['base'] = { kind: 'base' };
@@ -143,6 +157,28 @@ export function discoveryTask(project: ProjectRow, round: number, inputs: string
   };
 }
 
+// The list of what the game must run on comes before discovery, from the brief alone. A revision reads the stakeholder's comment.
+export function mustSupportTask(project: ProjectRow, k: number, inputs: string[], comment?: string): TaskSpec {
+  return {
+    project,
+    ticket_id: roundId('MUST-SUPPORT-PM', k),
+    title: 'Must support: what the game runs on and how it is built',
+    milestone: 0,
+    role_id: 'pm',
+    kind: 'authoring',
+    order: workOrder(
+      'must_support',
+      comment === undefined ? MUST_SUPPORT_INSTRUCTIONS : `${MUST_SUPPORT_INSTRUCTIONS}\n\nThe stakeholder asked for changes: ${comment}`,
+      inputs,
+      BASE,
+      withComment(comment),
+    ),
+  };
+}
+
+const MUST_SUPPORT_INSTRUCTIONS =
+  "List what this game must run on and how it is played (group runs_on), and what the brief says about how it must be built (group built_with). Quote the brief's own words in brief_quote for every item it states. If the brief says nothing about where the game runs, propose what a game like this needs: set proposed to true and give the reason. The stakeholder confirms every item. Check an item by play when a browser can show it: name the viewport (desktop, phone_portrait, phone_landscape or tablet), the input (keys, touch, mouse, or null for none) and whether it must fit the screen. Check it by command when a shell command can prove it, and by human when only the stakeholder can judge it, saying how. Keep the ids of the items you keep, and give a new item the next id above every id used before.";
+
 // A prototype round belongs to no milestone, as discovery doesn't. What the PM reads of the stakeholder's verdicts is in its inputs.
 export function protoPlanTask(project: ProjectRow, r: number, inputs: string[]): TaskSpec {
   return {
@@ -156,6 +192,12 @@ export function protoPlanTask(project: ProjectRow, r: number, inputs: string[]):
   };
 }
 
+// A profile's worker reads the list, so it is told to write a command for each item a command can prove.
+const CHECKS_LINE =
+  'For every must-support item checked by command, add a must_support_checks entry: a shell command that exits 0 only when the item holds (it runs in the sandbox, without network, at the head of each milestone), and the files it reads that tickets must not change (protected).';
+const PROFILE_INSTRUCTIONS = 'Write the Environment Profile: the toolchains, the build, test, lint and smoke commands, any setup command, and the network hosts the work needs. The smoke command must pass in this repository as it stands.';
+const readsList = (inputs: string[]) => inputs.some((pin) => parsePin(pin).id === MUST_SUPPORT);
+
 export function profileTask(project: ProjectRow, round: number, inputs: string[], comment?: string): TaskSpec {
   return {
     project,
@@ -165,7 +207,29 @@ export function profileTask(project: ProjectRow, round: number, inputs: string[]
     role_id: 'tech_lead',
     kind: 'authoring',
     depends_on: [roundId('DISCOVERY-PM', round)],
-    order: workOrder('environment_profile', 'Write the Environment Profile: the toolchains, the build, test, lint and smoke commands, any setup command, and the network hosts the work needs. The smoke command must pass in this repository as it stands.', inputs, BASE, withComment(comment)),
+    order: workOrder('environment_profile', readsList(inputs) ? `${PROFILE_INSTRUCTIONS}\n\n${CHECKS_LINE}` : PROFILE_INSTRUCTIONS, inputs, BASE, withComment(comment)),
+  };
+}
+
+export const CHECKS_TASK = 'MS-CHECKS-TL';
+
+// A profile approved before the list had these items has no command for them, so the Tech Lead adds the commands
+// before the next milestone starts. `missing` are the items with none yet.
+export function mustSupportChecksTask(project: ProjectRow, k: number, inputs: string[], missing: MsItem[]): TaskSpec {
+  const named = missing.map(({ id, text }) => `${id} (${oneLine(text).trim()})`).join(', ');
+  return {
+    project,
+    ticket_id: roundId(CHECKS_TASK, k),
+    title: 'Must support: check commands',
+    milestone: 0,
+    role_id: 'tech_lead',
+    kind: 'authoring',
+    order: workOrder(
+      'must_support_checks',
+      `Write must_support_checks for the Environment Profile: one entry for every item on the must-support list that is checked by command. Each entry is a shell command that exits 0 only when the item holds (it runs in the sandbox, without network, at the head of each milestone), and the files it reads that tickets must not change (protected). Keep a command the profile already has when it still proves its item. These items have no command yet: ${named}.`,
+      inputs,
+      BASE,
+    ),
   };
 }
 
@@ -222,7 +286,9 @@ export function testPlanTask(project: ProjectRow, n: number, inputs: string[]): 
   };
 }
 
-export function qaTask(project: ProjectRow, n: number, round: number, inputs: string[]): TaskSpec {
+// `found` is what the engine's own check of the build against the must-support list came to, where the list has items.
+export function qaTask(project: ProjectRow, n: number, round: number, inputs: string[], found?: string): TaskSpec {
+  const instructions = `Verify every automated acceptance criterion of milestone ${n} on the integration branch. Where a criterion refers to the Tech Design, check the build against it. Report a Bug for each criterion that fails.`;
   return {
     project,
     ticket_id: `M${n}-QA-${round}`,
@@ -230,7 +296,7 @@ export function qaTask(project: ProjectRow, n: number, round: number, inputs: st
     milestone: n,
     role_id: 'qa_engineer',
     kind: 'qa_verify',
-    order: workOrder('qa_verify', `Verify every automated acceptance criterion of milestone ${n} on the integration branch. Where a criterion refers to the Tech Design, check the build against it. Report a Bug for each criterion that fails.`, inputs, INTEGRATION),
+    order: workOrder('qa_verify', found === undefined ? instructions : `${instructions}\n\n${found}`, inputs, INTEGRATION),
   };
 }
 
@@ -330,12 +396,13 @@ export function ticketTask(project: ProjectRow, milestone: number, row: Artifact
   };
 }
 
-// What a revision reads: the newest version of each source of the document, then the document itself.
+// What a revision reads: the newest version of each source of the document, then the document itself. The list is the
+// one in force: its newest version may still be waiting for the stakeholder.
 export async function reviseInputs(deps: Pick<EngineDeps, 'artifacts'>, project: ProjectRow, doc: ArtifactVersionRow): Promise<string[]> {
   const sources = [...new Set(doc.derived_from.map((pin) => parsePin(pin).id))].filter((id) => id !== doc.artifact_id);
   const pins: string[] = [];
   for (const id of sources) {
-    const row = await deps.artifacts.latest(project.id, id);
+    const row = id === MUST_SUPPORT ? await approvedMustSupport(deps, project) : await deps.artifacts.latest(project.id, id);
     if (row) pins.push(pinOf(row));
   }
   return [...pins, pinOf(doc)];
@@ -360,10 +427,11 @@ export async function discoveryDocs(deps: Pick<EngineDeps, 'artifacts'>, project
   return (await deps.artifacts.latest(project.id, FUN_DEFINITION)) ? [...DISCOVERY_DOCS, FUN_DEFINITION] : DISCOVERY_DOCS;
 }
 
-// What a Spec reads of discovery: the Roadmap and the Human Requirements, and the fun the stakeholder approved where there is one.
+// What a Spec reads of discovery: the Roadmap and the Human Requirements, the fun the stakeholder approved where there
+// is one, and the must-support list.
 export async function specSources(deps: Pick<EngineDeps, 'artifacts'>, project: ProjectRow): Promise<string[]> {
   const ids = (await deps.artifacts.latest(project.id, FUN_DEFINITION)) ? ['ROADMAP', 'HUMAN-REQUIREMENTS', FUN_DEFINITION] : ['ROADMAP', 'HUMAN-REQUIREMENTS'];
-  return Promise.all(ids.map((id) => latestPin(deps, project, id)));
+  return withMustSupport(deps, project, await Promise.all(ids.map((id) => latestPin(deps, project, id))));
 }
 
 // What the prototype rounds found, oldest first: each round's plan, then the stakeholder's verdict on it. A verdict being
@@ -380,14 +448,80 @@ export async function funInputs(deps: Pick<EngineDeps, 'artifacts'>, project: Pr
   return found.sort((a, b) => a.round - b.round || Number(a.verdict) - Number(b.verdict)).map(({ pin }) => pin);
 }
 
+// The list work is checked against: the newest version the stakeholder approved. A newer one may be waiting for them,
+// and one they rejected stays proposed.
+export async function approvedMustSupport(deps: Pick<EngineDeps, 'artifacts'>, project: ProjectRow): Promise<ArtifactVersionRow | undefined> {
+  let row = await deps.artifacts.latest(project.id, MUST_SUPPORT);
+  while (row && !row.approved_by) row = row.version > 1 ? await deps.artifacts.version(project.id, MUST_SUPPORT, row.version - 1) : undefined;
+  return row;
+}
+
+export async function mustSupportItems(deps: Pick<EngineDeps, 'artifacts'>, project: ProjectRow): Promise<{ pin: string; version: number; items: MsItem[] } | undefined> {
+  const row = await approvedMustSupport(deps, project);
+  if (!row) return undefined;
+  const { items } = (await deps.artifacts.read(project, pinOf(row))).fields.data as MustSupportData;
+  return { pin: pinOf(row), version: row.version, items };
+}
+
+// Every plan and discovery reads the approved list. A project still waiting on its first has none.
+export async function mustSupportPins(deps: Pick<EngineDeps, 'artifacts'>, project: ProjectRow): Promise<string[]> {
+  const row = await approvedMustSupport(deps, project);
+  return row ? [pinOf(row)] : [];
+}
+
+// Every milestone document and ticket is written against the list in force, so each one pins it, last.
+export async function withMustSupport(deps: Pick<EngineDeps, 'artifacts'>, project: ProjectRow, inputs: string[]): Promise<string[]> {
+  const [pin] = await mustSupportPins(deps, project);
+  return pin === undefined ? inputs : [...inputs.filter((input) => parsePin(input).id !== MUST_SUPPORT), pin];
+}
+
+// What each item on the list in force has come to in a milestone: what the gate or the stakeholder last found, with
+// their waivers for good counted. A project with no approved list has nothing to hold a milestone to.
+export async function milestoneStatuses(deps: Pick<EngineDeps, 'artifacts' | 'store'>, project: ProjectRow, n: number): Promise<{ pin: string; items: MsItem[]; statuses: ItemStatus[] } | undefined> {
+  const list = await mustSupportItems(deps, project);
+  if (!list) return undefined;
+  const statuses = gateStatuses(list.items, await deps.store.listMustSupport(project.id, { scope: 'milestone', n }), await deps.store.listMustSupport(project.id, { scope: 'project', n: 0 }));
+  return { pin: list.pin, items: list.items, statuses };
+}
+
+// The same, one line an item. `forHuman` is what to say of an item only the stakeholder can judge and hasn't yet.
+export function statusLines({ items, statuses }: { items: MsItem[]; statuses: ItemStatus[] }, forHuman?: string): string[] {
+  return items.map((item, index) => {
+    const { status, evidence } = statuses[index]!;
+    const first = item.check === 'human' && status === 'not_measured' && forHuman !== undefined ? forHuman : oneLine(evidence.trim().split(/\r\n?|\n/)[0] ?? '');
+    return `${itemLine(item)}: ${STATUS_LABEL[status]}${first === '' ? '' : ` — ${first}`}`;
+  });
+}
+
+// The same, as the paragraph QA and the Eng Lead read in their work orders. A list with no items says nothing.
+export async function mustSupportFound(deps: Pick<EngineDeps, 'artifacts' | 'store'>, project: ProjectRow, n: number): Promise<string | undefined> {
+  const found = await milestoneStatuses(deps, project, n);
+  const lines = found ? statusLines(found) : [];
+  return lines.length === 0 ? undefined : ['What the game must support, as the engine last found it:', ...lines.map((line) => `- ${line}`)].join('\n');
+}
+
+// A ticket pins the list it was written against. Its work is checked against the list in force now, so that is the
+// one its worker reads.
+export async function withListInForce(deps: Pick<EngineDeps, 'artifacts'>, project: ProjectRow, inputs: string[]): Promise<string[]> {
+  const isList = (pin: string) => parsePin(pin).id === MUST_SUPPORT;
+  if (!inputs.some(isList)) return inputs;
+  const [current] = await mustSupportPins(deps, project);
+  return current === undefined ? inputs : [...new Set(inputs.map((pin) => (isList(pin) ? current : pin)))];
+}
+
+// What a prototype round's plan reads: the brief, the list, and what the rounds before it found.
+export async function protoPlanInputs(deps: Pick<EngineDeps, 'artifacts'>, project: ProjectRow): Promise<string[]> {
+  return [await latestPin(deps, project, 'BRIEF'), ...(await mustSupportPins(deps, project)), ...(await funInputs(deps, project))];
+}
+
 // The Tech Lead reworks its profile alongside the PM's new documents, which don't exist until the PM finishes: an unversioned pin reads the latest.
 // Every discovery round reads what the prototype rounds found, since the PM writes down the fun from the stakeholder's verdicts.
 export async function discoveryInputs(deps: Pick<EngineDeps, 'artifacts'>, project: ProjectRow): Promise<{ pm: string[]; profile: string[] }> {
-  const brief = await latestPin(deps, project, 'BRIEF');
+  const brief = [await latestPin(deps, project, 'BRIEF'), ...(await mustSupportPins(deps, project))];
   const prior = await Promise.all((await discoveryDocs(deps, project)).map((id) => deps.artifacts.latest(project.id, id)));
   const priorProfile = await deps.artifacts.latest(project.id, ENV_PROFILE);
   return {
-    pm: [brief, ...prior.flatMap((row) => (row ? [pinOf(row)] : [])), ...(await funInputs(deps, project))],
-    profile: [brief, ...DISCOVERY_DOCS, ...(priorProfile ? [pinOf(priorProfile)] : [])],
+    pm: [...brief, ...prior.flatMap((row) => (row ? [pinOf(row)] : [])), ...(await funInputs(deps, project))],
+    profile: [...brief, ...DISCOVERY_DOCS, ...(priorProfile ? [pinOf(priorProfile)] : [])],
   };
 }
