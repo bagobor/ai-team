@@ -62,6 +62,6 @@ async function discovery(deps: EngineDeps, project: ProjectRow): Promise<void> {
 export async function advanceProject(deps: EngineDeps, project: ProjectRow): Promise<void> {
   const ms = await advanceMustSupport(deps, project);
   if (project.phase === 'intake') await intake(deps, project, ms);
-  else if (project.phase === 'prototype') await advancePrototype(deps, project);
+  else if (project.phase === 'prototype') await advancePrototype(deps, project, ms);
   else if (project.phase === 'discovery') await discovery(deps, project);
 }

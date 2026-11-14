@@ -2,10 +2,12 @@ import { Ajv } from 'ajv';
 import { fileURLToPath } from 'node:url';
 import { renderArtifact, sectionsOf, sectionText } from '../src/artifacts/format.ts';
 import { protoPlanId, protoRoot, protoTicketId } from '../src/engine/apply/ids.ts';
+import { planProblems, prototypeTicket, renderPlan } from '../src/engine/apply/prototype.ts';
+import type { MsItem } from '../src/engine/must-support.ts';
 import { loadRole } from '../src/roles/role.ts';
 import { parseTicket } from '../src/tickets/ticket.ts';
 import { apply, evidenceOf, projectOf, publish } from './helpers/apply.ts';
-import { makeEngine, type TestEngine } from './helpers/engine.ts';
+import { makeEngine, seedMustSupport, type TestEngine } from './helpers/engine.ts';
 
 const SEED = fileURLToPath(new URL('../seed/knowledge', import.meta.url));
 
@@ -247,5 +249,90 @@ describe('prototype_plan', () => {
     expect(planned({ hypotheses: PLAN.hypotheses, stakeholder_note: 'x' })).toBe(false);
     expect(planned({ ...PLAN, prototypes: [{ ...PLAN.prototypes[0], controls: undefined }] })).toBe(false);
     expect(planned({ ...PLAN, hypotheses: [{ ...PLAN.hypotheses[0], look_for: undefined }] })).toBe(false);
+    expect(planned({ ...PLAN, prototypes: [{ ...PLAN.prototypes[0], must_support: [{ item: 'MS-1', how: 'Big touch buttons' }] }], gaps: [{ item: 'MS-2', why: 'No room' }] }), JSON.stringify(planned.errors)).toBe(true);
+    expect(planned({ ...PLAN, prototypes: [{ ...PLAN.prototypes[0], must_support: [{ item: 'phones', how: 'x' }] }] })).toBe(false);
+  });
+
+  describe('against the must-support list', () => {
+    const phone: MsItem = { id: 'MS-1', group: 'runs_on', text: 'Plays in a phone browser held upright', brief_quote: 'On my phone', check: 'play', viewport: 'phone_portrait', input: 'touch', fits_screen: true };
+    const cmd: MsItem = { id: 'MS-2', group: 'built_with', text: 'Has no build step', brief_quote: 'No build step', check: 'command' };
+    const sound: MsItem = { id: 'MS-3', group: 'runs_on', text: 'Sounds right on phone speakers', brief_quote: 'Good sound', check: 'human', how: 'Play with the sound on' };
+    const line = (item: string, how = 'big touch buttons') => ({ item, how });
+    const planWith = (lines: { item: string; how: string }[][], gaps?: { item: string; why: string }[]) => ({
+      ...PLAN,
+      prototypes: PLAN.prototypes.map((p, index) => ({ ...p, must_support: lines[index] ?? [] })),
+      ...(gaps ? { gaps } : {}),
+    });
+
+    it('refuses a plan with no must-support line for a runs_on item', () => {
+      expect(planProblems(PLAN, [phone, cmd])).toEqual([
+        'P-1 has no must_support line for MS-1: say how it meets it, or name it in gaps',
+        'P-2 has no must_support line for MS-1: say how it meets it, or name it in gaps',
+      ]);
+      expect(planProblems(planWith([[line('MS-1')], [line('MS-1')]]), [phone, cmd])).toEqual([]);
+    });
+
+    it('asks nothing of a plan when the list has no runs_on item', () => {
+      expect(planProblems(PLAN, [cmd])).toEqual([]);
+      expect(planProblems(PLAN, [])).toEqual([]);
+    });
+
+    it('lets a plan leave out an item it names in gaps', () => {
+      expect(planProblems(planWith([[], []], [{ item: 'MS-1', why: 'The map needs a wide screen' }]), [phone, cmd])).toEqual([]);
+    });
+
+    it('refuses an unknown or repeated item, and a line that says nothing', () => {
+      expect(planProblems(planWith([[line('MS-1'), line('MS-2')], [line('MS-1'), line('MS-1')]]), [phone, cmd])).toEqual(['P-1 names MS-2, which is not a runs_on item on the list', 'P-2 lists MS-1 twice']);
+      expect(planProblems(planWith([[line('MS-1', ' \n')], [line('MS-1')]]), [phone])).toEqual(["P-1's line for MS-1 says nothing"]);
+    });
+
+    it("renders each prototype's must-support lines", () => {
+      const body = renderPlan(1, planWith([[line('MS-1')], [line('MS-1', 'one thumb,\nlandscape too')]]), [phone, cmd]);
+
+      expect(sectionText(body, 'p-1')).toContain('- Controls: ArrowLeft, ArrowRight, Space\n- Must support:\n  - MS-1 Plays in a phone browser held upright: big touch buttons\n');
+      expect(sectionText(body, 'p-2')).toContain('  - MS-1 Plays in a phone browser held upright: one thumb, landscape too\n');
+      expect(renderPlan(1, PLAN, [])).not.toContain('Must support');
+    });
+
+    it('a prototype ticket carries the whole list and pins it', () => {
+      const proto = { ...PLAN.prototypes[0]!, must_support: [line('MS-1'), line('MS-3', 'a beep on every hit')] };
+      const ticket = prototypeTicket(1, 1, proto, 'PROTO-PLAN-1@1#p-1', { pin: 'MUST-SUPPORT@1', items: [phone, cmd, sound] });
+
+      expect(ticket.body).toContain(
+        [
+          '## Must support',
+          '',
+          'Every item below holds for this prototype. Before the ticket is done, the engine plays it in each browser the list names.',
+          '',
+          '- MS-1 Plays in a phone browser held upright — Checked by the engine: Phone browser, held upright, played by touch, fitting the screen: big touch buttons',
+          '- MS-2 Has no build step — Not checked on prototypes',
+          '- MS-3 Sounds right on phone speakers — The stakeholder checks this when they play it: a beep on every hit',
+          '',
+        ].join('\n'),
+      );
+      expect(ticket.fields!.inputs).toEqual(['PROTO-PLAN-1@1#p-1', 'MUST-SUPPORT@1']);
+      // Nothing revises a prototype ticket, so a change to the list must not leave it stale and unmerged.
+      expect(ticket.derivedFrom).toEqual(['PROTO-PLAN-1', 'PROTO-PLAN-1@1#p-1']);
+    });
+
+    it('a ticket written against no list, or an empty one, says nothing of it', () => {
+      expect(prototypeTicket(1, 1, PLAN.prototypes[0]!, 'PROTO-PLAN-1@1#p-1').body).not.toContain('Must support');
+      const listed = prototypeTicket(1, 1, PLAN.prototypes[0]!, 'PROTO-PLAN-1@1#p-1', { pin: 'MUST-SUPPORT@1', items: [] });
+      expect(listed.body).not.toContain('Must support');
+      expect(listed.fields!.inputs).toEqual(['PROTO-PLAN-1@1#p-1', 'MUST-SUPPORT@1']);
+    });
+
+    it('the applier holds a plan to the approved list, and its tickets carry it', async () => {
+      await brief();
+      await seedMustSupport(e, await projectOf(e), [phone, cmd]);
+
+      // Each call is a task of its own, so the refused plan is another round's.
+      expect(evidenceOf(await plan({}, 2))).toContain('P-1 has no must_support line for MS-1: say how it meets it, or name it in gaps');
+      await publish(e, await plan(planWith([[line('MS-1')], [line('MS-1')]])));
+
+      expect((await read('PROTO-PLAN-1')).body).toContain('  - MS-1 Plays in a phone browser held upright: big touch buttons');
+      expect((await read('PROTO-1-P-2')).body).toContain('- MS-2 Has no build step — Not checked on prototypes');
+      expect(parseTicket(renderArtifact(await read('PROTO-1-P-2'))).inputs).toEqual(['PROTO-PLAN-1@1#p-2', 'MUST-SUPPORT@1']);
+    });
   });
 });

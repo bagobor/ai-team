@@ -436,6 +436,15 @@ export async function mustSupportPins(deps: Pick<EngineDeps, 'artifacts'>, proje
   return row ? [pinOf(row)] : [];
 }
 
+// A ticket pins the list it was written against. Its work is checked against the list in force now, so that is the
+// one its worker reads.
+export async function withListInForce(deps: Pick<EngineDeps, 'artifacts'>, project: ProjectRow, inputs: string[]): Promise<string[]> {
+  const isList = (pin: string) => parsePin(pin).id === MUST_SUPPORT;
+  if (!inputs.some(isList)) return inputs;
+  const [current] = await mustSupportPins(deps, project);
+  return current === undefined ? inputs : [...new Set(inputs.map((pin) => (isList(pin) ? current : pin)))];
+}
+
 // What a prototype round's plan reads: the brief, the list, and what the rounds before it found.
 export async function protoPlanInputs(deps: Pick<EngineDeps, 'artifacts'>, project: ProjectRow): Promise<string[]> {
   return [await latestPin(deps, project, 'BRIEF'), ...(await mustSupportPins(deps, project)), ...(await funInputs(deps, project))];

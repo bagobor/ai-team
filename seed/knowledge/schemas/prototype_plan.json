@@ -80,6 +80,29 @@
             "items": {
               "type": "string"
             }
+          },
+          "must_support": {
+            "description": "One line for each runs_on item on the must-support list: how this prototype meets it. An item no prototype can meet goes in gaps instead.",
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "item",
+                "how"
+              ],
+              "properties": {
+                "item": {
+                  "type": "string",
+                  "pattern": "^MS-\\d+$",
+                  "description": "The item's id on the must-support list, such as MS-1."
+                },
+                "how": {
+                  "type": "string",
+                  "description": "How the prototype meets it, on one line."
+                }
+              }
+            }
           }
         }
       }

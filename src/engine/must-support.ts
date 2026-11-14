@@ -90,7 +90,8 @@ export const itemSource = (item: MsItem): string =>
 
 const PLAYED_BY: Record<MsInput, string> = { touch: 'touch', keys: 'the keyboard', mouse: 'the mouse' };
 
-function checkedBy(item: MsItem): string {
+// How an item is checked, as one sentence.
+export function checkedBy(item: MsItem): string {
   if (item.check === 'command') return 'Checked by a command the Tech Lead writes.';
   if (item.check === 'human') return `Checked by you: ${oneLine(item.how ?? '').trim()}`;
   const viewport = VIEWPORT_LABEL[item.viewport ?? 'desktop'];

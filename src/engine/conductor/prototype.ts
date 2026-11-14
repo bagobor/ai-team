@@ -2,14 +2,16 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Player } from '../../checks/play.ts';
 import { ensureIntegrationBranch } from '../../git/workspace.ts';
-import { PROTO_PLAN_ID, protoPlanId, protoRoot } from '../apply/ids.ts';
+import { MUST_SUPPORT, PROTO_PLAN_ID, protoPlanId, protoRoot } from '../apply/ids.ts';
 import { oneLine } from '../apply/text.ts';
 import { PLAY, type InboxCheck } from '../inbox.ts';
+import { itemLine, STATUS_LABEL, type MsItem, type MsStatus } from '../must-support.ts';
 import type { EngineDeps } from '../runner.ts';
-import type { ProjectRow, TaskRow } from '../store.ts';
+import type { MsStatusRow, ProjectRow, TaskRow } from '../store.ts';
 import { newTicketSpecs } from './milestone.ts';
+import type { MsState } from './must-support.ts';
 import { browserWhy, NO_BROWSER, problemLine, servePage, siteRoot } from './play-gate.ts';
-import { ensureTask, isClosed, latestPin, noteOf, protoPlanInputs, protoPlanTask } from './tasks.ts';
+import { ensureTask, isClosed, latestPin, mustSupportItems, noteOf, protoPlanInputs, protoPlanTask } from './tasks.ts';
 import { ensureTryWorktree } from './try.ts';
 
 // What the applier keeps of a plan for the engine (apply/prototype.ts).
@@ -98,6 +100,47 @@ async function smokeLines({ player }: EngineDeps, pages: Page[], served: boolean
   return found.length === 0 ? [] : ['The smoke play checks only that a page loads and runs. It found:', ...found];
 }
 
+const firstLine = (text: string): string => text.trim().split(/\r\n?|\n/)[0] ?? '';
+const FOUND_ORDER: MsStatus[] = ['failing', 'not_measured', 'met'];
+
+// What the engine found when it played each prototype against the list, for the stakeholder to read before they play.
+// `lead` goes first, since a prototype that doesn't run where the game must run is the first thing to know. `rows` are
+// the round's statuses and the project's: a row with no prototype named is the stakeholder's own waiver.
+export function mustSupportLines(r: number, items: MsItem[], rows: MsStatusRow[]): { lead: string[]; block: string[] } {
+  if (items.length === 0) return { lead: [], block: [] };
+  const text = (item: MsItem) => oneLine(item.text).trim();
+  const waived = rows.filter(({ status, subject }) => status === 'waived' && subject === '').map(({ item_id }) => item_id);
+  const played = items
+    .filter(({ check }) => check === 'play')
+    .map((item) => ({ item, found: waived.includes(item.id) ? [] : rows.filter(({ item_id, subject }) => item_id === item.id && subject !== '') }));
+  const on = (found: MsStatusRow[], status: MsStatus) => found.filter((row) => row.status === status);
+
+  const failing = played.filter(({ found }) => on(found, 'failing').length > 0);
+  const unmeasured = played.filter(({ found }) => on(found, 'failing').length === 0 && on(found, 'not_measured').length > 0);
+  const lead = [
+    ...(failing.length === 0 ? [] : [`Round ${r}'s prototypes don't meet: ${failing.map(({ item, found }) => `${text(item)} (${on(found, 'failing').map(({ subject }) => subject).join(', ')})`).join('; ')}.`]),
+    ...(unmeasured.length === 0 ? [] : [`The engine could not check: ${unmeasured.map(({ item }) => text(item)).join('; ')}.`]),
+  ];
+
+  const said = ({ item, found }: (typeof played)[number]): string => {
+    if (waived.includes(item.id)) return STATUS_LABEL.waived;
+    if (found.length === 0) return STATUS_LABEL.not_measured;
+    return FOUND_ORDER.flatMap((status) => {
+      const rowsOf = on(found, status);
+      if (status === 'met') return rowsOf.length === 0 ? [] : [`${STATUS_LABEL.met} on ${rowsOf.map(({ subject }) => subject).join(', ')}`];
+      return rowsOf.map(({ subject, evidence }) => `${STATUS_LABEL[status]} on ${subject}${firstLine(evidence) === '' ? '' : ` (${firstLine(evidence)})`}`);
+    }).join('; ');
+  };
+  const settled = (one: (typeof played)[number]) => waived.includes(one.item.id) || (one.found.length > 0 && one.found.every(({ status }) => status === 'met'));
+  const block = [
+    'What the game must support, as the engine found it:',
+    ...[...played.filter((one) => !settled(one)), ...played.filter(settled)].map((one) => `- ${itemLine(one.item)}: ${said(one)}`),
+    ...items.filter(({ check }) => check === 'command').map((item) => `- ${itemLine(item)}: Not checked on prototypes`),
+    ...items.filter(({ check }) => check === 'human').map((item) => `- ${itemLine(item)}: Not measured: check it yourself as you play`),
+  ];
+  return { lead, block };
+}
+
 export async function raiseFunEval(deps: EngineDeps, project: ProjectRow, r: number): Promise<void> {
   const { store, artifacts, tryServer } = deps;
   const pin = await latestPin(deps, project, protoPlanId(r));
@@ -110,6 +153,9 @@ export async function raiseFunEval(deps: EngineDeps, project: ProjectRow, r: num
   const smoke = await smokeLines(deps, pages, served !== undefined);
   const task = await store.getTaskByTicket(project.id, protoPlanId(r));
   if (!task) throw new Error(`Round ${r} has no ${protoPlanId(r)} task`);
+  const list = await mustSupportItems(deps, project);
+  const found = list ? [...(await store.listMustSupport(project.id, { scope: 'prototype', n: r })), ...(await store.listMustSupport(project.id, { scope: 'project', n: 0 }))] : [];
+  const { lead, block } = mustSupportLines(r, list?.items ?? [], found);
 
   const intro = pages.length === 0 ? `No prototype in round ${r} built a page.` : `Round ${r}'s prototypes are built. Only you can say whether they are fun: play each one and mark it.`;
   await store.raiseInbox({
@@ -119,9 +165,13 @@ export async function raiseFunEval(deps: EngineDeps, project: ProjectRow, r: num
     ref: { kind: 'fun_eval', round: r },
     title: `Prototype round ${r}: is it fun?`,
     asked_by: 'pm',
-    why: [intro, ...(smoke.length === 0 ? [] : ['', ...smoke])].join('\n'),
+    why: [...lead, intro, ...(smoke.length === 0 ? [] : ['', ...smoke]), ...(block.length === 0 ? [] : ['', ...block])].join('\n'),
     blocks: ['Discovery'],
-    evidence: [{ label: protoPlanId(r), value: pin, pin }, ...pages.map(({ key, link }) => ({ label: `${PLAY}${key}`, value: link }))],
+    evidence: [
+      { label: protoPlanId(r), value: pin, pin },
+      ...(list && block.length > 0 ? [{ label: MUST_SUPPORT, value: list.pin, pin: list.pin }] : []),
+      ...pages.map(({ key, link }) => ({ label: `${PLAY}${key}`, value: link })),
+    ],
     recommendation: await noteOf(store, task.id),
     options: [],
     checks: pages.map(({ check }) => check),
@@ -137,9 +187,17 @@ export async function serveFunAgain(deps: EngineDeps, project: ProjectRow): Prom
   await mountPrototypes(deps, project, await prototypesCheckout(deps, project));
 }
 
+// A round's tickets wait while the stakeholder decides on an item its plan can't meet, and while a change to the list
+// waits for them. Once they have answered, the round goes on with the plan it has.
+export async function roundHeld(deps: EngineDeps, project: ProjectRow, r: number, list: MsState): Promise<boolean> {
+  if (list.pending) return true;
+  const gaps = await deps.store.inboxByPrefix(project.id, `ms_gap:prototype:${r}:`);
+  return gaps.some(({ state, applied_at }) => state === 'pending' || (state === 'answered' && applied_at === null));
+}
+
 // The PM plans a round, Engineers build its prototypes into aiteam/m0, and the stakeholder plays them. Their tickets go
 // through review and merge with every other ticket (advanceReviews), which merges a prototype without a code review.
-export async function advancePrototype(deps: EngineDeps, project: ProjectRow): Promise<void> {
+export async function advancePrototype(deps: EngineDeps, project: ProjectRow, list: MsState): Promise<void> {
   const { store } = deps;
   const tasks = await store.listTasks(project.id);
   const r = latestRound(tasks);
@@ -149,6 +207,7 @@ export async function advancePrototype(deps: EngineDeps, project: ProjectRow): P
     return;
   }
   if (plan.state !== 'done') return;
+  if (await roundHeld(deps, project, r, list)) return;
 
   const prefix = `PROTO-${r}-P-`;
   const specs = (await newTicketSpecs(deps, project, 0, tasks)).filter(({ ticket_id }) => ticket_id.startsWith(prefix));

@@ -3,11 +3,13 @@ import { existsSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'no
 import { join } from 'node:path';
 import { parse as parseYaml } from 'yaml';
 import { applyDiscovery } from '../src/engine/apply/discovery.ts';
+import type { MsItem } from '../src/engine/must-support.ts';
 import type { AttemptRow, NewTask, ProjectRow, TaskRow } from '../src/engine/store.ts';
 import type { WorkOrder } from '../src/engine/workorder.ts';
 import type { TaskManifest } from '../src/manifest/build.ts';
 import { manifestDir, stateRepoDir, transcriptPath, worktreePath } from '../src/paths.ts';
-import { eventTypes, makeEngine, okStep, resultLine, runOnce, runToSettled, ticket, until, type TestEngine } from './helpers/engine.ts';
+import { eventTypes, makeEngine, okStep, resultLine, runOnce, runToSettled, seedMustSupport, ticket, until, type TestEngine } from './helpers/engine.ts';
+import { fakePlayer, playResult } from './helpers/play.ts';
 import { commitAll, revParse, run, tempDir } from './helpers/repo.ts';
 
 // One purpose stands in for all of them: what the runner does with an applier's answer doesn't depend on which it was.
@@ -740,6 +742,95 @@ describe('Runner', () => {
       expect((await task(e, t.id)).escalation_reason).toMatch(/^engine_error: /);
       expect(await e.artifacts.latest((await projectOf(e)).id, 'CHANGE-T-1-a1')).toBeUndefined();
       expect(await e.store.failedAttemptCount(t.id)).toBe(0);
+    });
+  });
+
+  describe('a prototype ticket', () => {
+    const phone: MsItem = { id: 'MS-1', group: 'runs_on', text: 'Plays in a phone browser held upright', brief_quote: 'On my phone', check: 'play', viewport: 'phone_portrait', input: 'touch', fits_screen: true };
+    const cmd: MsItem = { id: 'MS-2', group: 'built_with', text: 'Has no build step', brief_quote: 'No build step', check: 'command' };
+    const TOUCH = { kind: 'touch' as const, detail: 'Nothing on the page answered a tap, a drag or a hold' };
+    const ROOT = 'prototypes/r1/p1';
+
+    // What a round's plan leaves behind for its first prototype: the plan's data, the list, and the ticket.
+    async function prototype(opts: Pick<Parameters<typeof makeEngine>[0], 'player'>, items: MsItem[] = [phone, cmd]) {
+      const e = await engine({ steps: [okStep({ [`${ROOT}/index.html`]: '<!doctype html><title>Prototype</title>\n' })], ...opts });
+      const project = await projectOf(e);
+      await seedMustSupport(e, project, items);
+      await e.artifacts.commit(project, {
+        message: 'plan',
+        publish: [{ id: 'PROTO-PLAN-1', type: 'prototype_plan', status: 'approved', ownerRole: 'pm', derivedFrom: [], milestone: 0, body: '# Prototype round 1\n', fields: { data: { hypotheses: [], prototypes: [{ title: 'Rocks', hypotheses: [], controls: ['ArrowLeft'] }] } } }],
+      });
+      const t = await e.addTicket(ticket({ id: 'PROTO-1-P-1', milestone: 0, touches: [`${ROOT}/**`], definition_of_done: [`test -f ${ROOT}/index.html`], inputs: ['MUST-SUPPORT@1'] }));
+      return { e, project, t };
+    }
+    const statuses = (e: TestEngine, project: ProjectRow) => e.store.listMustSupport(project.id, { scope: 'prototype', n: 1, subject: 'P-1' });
+
+    it('a prototype that fails a played item fails its attempt', async () => {
+      const player = fakePlayer(playResult([TOUCH]));
+      const { e, project, t } = await prototype({ player });
+
+      await runOnce(e, t.id);
+
+      const [a] = await e.store.listAttempts(t.id);
+      expect(a).toMatchObject({ state: 'failed', failure_kind: 'check_failed' });
+      expect(a!.failure_evidence).toBe(
+        'The prototype does not meet what the game must support:\nMS-1 Plays in a phone browser held upright: Phone browser, held upright: Nothing on the page answered a tap, a drag or a hold',
+      );
+      expect((await task(e, t.id)).state).toBe('ready');
+      expect(player.calls).toHaveLength(1);
+      expect(player.calls[0]).toMatchObject({ body: '<!doctype html><title>Prototype</title>\n', keys: [], opts: { animated: true, touch: true, fitsScreen: true, viewport: { width: 390, height: 844 } } });
+      expect(await statuses(e, project)).toMatchObject([{ item_id: 'MS-1', status: 'failing', source: 'prototype_check', must_support_version: 1 }]);
+    });
+
+    it('a prototype that meets every played item goes to review', async () => {
+      const { e, project, t } = await prototype({ player: fakePlayer(playResult()) });
+
+      await runToSettled(e, t.id);
+
+      expect((await task(e, t.id)).state).toBe('review');
+      expect(await statuses(e, project)).toMatchObject([{ item_id: 'MS-1', status: 'met', evidence: 'Played in a Phone browser, held upright at 390×844' }]);
+    });
+
+    it('a prototype is not failed when there is no browser', async () => {
+      const { e, project, t } = await prototype({});
+
+      await runToSettled(e, t.id);
+
+      expect((await task(e, t.id)).state).toBe('review');
+      expect(await statuses(e, project)).toMatchObject([{ item_id: 'MS-1', status: 'not_measured', evidence: 'The engine was started without a browser to play the game in.', source: 'prototype_check' }]);
+    });
+
+    it('a prototype is not played for an item the stakeholder accepted going without this round', async () => {
+      const player = fakePlayer(playResult([TOUCH]));
+      const { e, project, t } = await prototype({ player });
+      await e.store.recordMustSupport(project.id, { scope: 'prototype', n: 1 }, [{ item_id: 'MS-1', status: 'waived', evidence: 'DEC-7@1', source: 'stakeholder', must_support_version: 1 }]);
+
+      await runToSettled(e, t.id);
+
+      expect((await task(e, t.id)).state).toBe('review');
+      expect(player.calls).toEqual([]);
+      expect(await statuses(e, project)).toEqual([]);
+    });
+
+    it('a prototype is played no more than before when the list has no play item', async () => {
+      const player = fakePlayer(playResult([TOUCH]));
+      const { e, t } = await prototype({ player }, [cmd]);
+
+      await runToSettled(e, t.id);
+
+      expect((await task(e, t.id)).state).toBe('review');
+      expect(player.calls).toEqual([]);
+    });
+
+    it('the Engineer reads the list in force now, not the one the ticket was written against', async () => {
+      const { e, project, t } = await prototype({});
+      await seedMustSupport(e, project, [{ ...cmd, id: 'MS-3', text: 'Loads in under two seconds' }]);
+
+      await runToSettled(e, t.id);
+
+      const inputs = taskText(e, 'PROTO-1-P-1', 1).split('## Inputs')[1]!;
+      expect(inputs).toContain('Loads in under two seconds');
+      expect(inputs).not.toContain('Plays in a phone browser held upright');
     });
   });
 

@@ -7,6 +7,7 @@ import { applyOutput } from '../src/engine/apply/index.ts';
 import { Conductor } from '../src/engine/conductor/index.ts';
 import { tryWorktree } from '../src/engine/conductor/try.ts';
 import type { CheckMark, InboxAnswer, InboxRow } from '../src/engine/inbox.ts';
+import type { MsItem } from '../src/engine/must-support.ts';
 import { Runner } from '../src/engine/runner.ts';
 import { Store, type ProjectRow, type TaskRow } from '../src/engine/store.ts';
 import { TryServer } from '../src/engine/try-server.ts';
@@ -95,9 +96,9 @@ async function pendingFun(h: Harness): Promise<InboxRow> {
   return found[0]!;
 }
 
-async function addBrief(h: Harness): Promise<void> {
+async function addBrief(h: Harness, items: MsItem[] = []): Promise<void> {
   await h.artifacts.commit(h.project, { message: 'brief', publish: [{ id: 'BRIEF', type: 'brief', status: 'approved', approvedBy: 'stakeholder', ownerRole: 'stakeholder', derivedFrom: [], body: '# Brief\n' }] });
-  await seedMustSupport(h, h.project);
+  await seedMustSupport(h, h.project, items);
 }
 
 async function advanceTo(h: Harness, taskId: number, states: TaskRow['state'][]): Promise<void> {
@@ -383,6 +384,96 @@ describe('the prototype phase', () => {
     expect(served.status).toBe(200);
     expect(await served.text()).toBe(PAGE);
     expect(await funEvals(restarted)).toHaveLength(1);
+  });
+
+  describe('against the must-support list', () => {
+    const phone: MsItem = { id: 'MS-1', group: 'runs_on', text: 'Plays in a phone browser held upright', brief_quote: 'On my phone', check: 'play', viewport: 'phone_portrait', input: 'touch', fits_screen: true };
+    const cmd: MsItem = { id: 'MS-2', group: 'built_with', text: 'Has no build step', brief_quote: 'No build step', check: 'command' };
+    const sound: MsItem = { id: 'MS-3', group: 'runs_on', text: 'Sounds right on phone speakers', brief_quote: 'Good sound', check: 'human', how: 'Play with the sound on' };
+    const tablet: MsItem = { id: 'MS-4', group: 'runs_on', text: 'Plays in a tablet browser', brief_quote: 'And on tablets', check: 'play', viewport: 'tablet', input: 'touch', fits_screen: false };
+    const meeting = (...ids: string[]) => ({ ...PLAN, prototypes: PLAN.prototypes.map((p) => ({ ...p, must_support: ids.map((item) => ({ item, how: 'Big touch buttons' })) })) });
+    const protoTasks = async (h: Harness) => (await taskIds(h)).filter((id) => id.startsWith('PROTO-1-P-'));
+    const gapOf = async (h: Harness) => (await h.store.inboxByPrefix(h.project.id, 'ms_gap:'))[0]!;
+
+    async function gapped(h: Harness): Promise<InboxRow> {
+      await addBrief(h, [phone, cmd]);
+      await h.conductor.tick();
+      await finish(h, 'PROTO-PLAN-1', { ...PLAN, gaps: [{ item: 'MS-1', why: 'Both prototypes need a keyboard' }] });
+      await h.conductor.tick();
+      await h.conductor.tick();
+      return gapOf(h);
+    }
+
+    it('a round waits while a gap for it is pending', async () => {
+      const h = await harness();
+      const gap = await gapped(h);
+
+      expect(gap).toMatchObject({ state: 'pending', dedupe_key: 'ms_gap:prototype:1:MS-1' });
+      expect(await protoTasks(h)).toEqual([]);
+
+      await answer(h, gap, { option: 'milestone' });
+      await h.conductor.tick();
+
+      expect(await protoTasks(h)).toEqual(['PROTO-1-P-1', 'PROTO-1-P-2']);
+    });
+
+    it('a round waits for a change to the list, then goes on with the plan it has', async () => {
+      const h = await harness();
+      await answer(h, await gapped(h), { option: 'change' });
+      await h.conductor.tick();
+      expect(await protoTasks(h)).toEqual([]);
+
+      await finish(h, 'MUST-SUPPORT-PM', { items: [cmd], stakeholder_note: 'Phones are out' });
+      await h.conductor.tick();
+      await h.conductor.tick();
+      expect(await protoTasks(h)).toEqual([]);
+
+      const confirm = (await h.store.inboxByPrefix(h.project.id, 'must_support:')).find(({ state }) => state === 'pending')!;
+      await answer(h, confirm, { action: 'approve' });
+      await h.conductor.tick();
+
+      expect(await protoTasks(h)).toEqual(['PROTO-1-P-1', 'PROTO-1-P-2']);
+      expect((await h.store.listTasks(h.project.id)).filter(({ ticket_id }) => ticket_id.startsWith('PROTO-PLAN-'))).toHaveLength(1);
+    });
+
+    it("the fun evaluation leads with what the prototypes don't meet", async () => {
+      const h = await harness();
+      await addBrief(h, [phone, cmd, sound, tablet]);
+      await h.conductor.tick();
+      await finish(h, 'PROTO-PLAN-1', meeting('MS-1', 'MS-3', 'MS-4'));
+      await h.conductor.tick();
+      for (const k of [1, 2]) await toReview(h, `PROTO-1-P-${k}`, page(1, k));
+      const found = (status: 'met' | 'failing' | 'not_measured', evidence: string, item_id = 'MS-1') => ({ item_id, status, evidence, source: 'prototype_check' as const, must_support_version: 1 });
+      await h.store.recordMustSupport(h.project.id, { scope: 'prototype', n: 1, subject: 'P-1' }, [found('failing', 'Phone browser, held upright: Nothing on the page answered a tap, a drag or a hold'), found('met', 'Played in a Tablet browser at 820×1180', 'MS-4')]);
+      await h.store.recordMustSupport(h.project.id, { scope: 'prototype', n: 1, subject: 'P-2' }, [found('met', 'Played in a Phone browser, held upright at 390×844'), found('not_measured', 'Chrome at /x exited before DevTools opened\nMore', 'MS-4')]);
+      await h.conductor.tick();
+      await h.conductor.tick();
+
+      const item = await pendingFun(h);
+      const lines = item.why.split('\n');
+      expect(lines.slice(0, 3)).toEqual([
+        "Round 1's prototypes don't meet: Plays in a phone browser held upright (P-1).",
+        'The engine could not check: Plays in a tablet browser.',
+        "Round 1's prototypes are built. Only you can say whether they are fun: play each one and mark it.",
+      ]);
+      expect(lines.slice(lines.indexOf('What the game must support, as the engine found it:'))).toEqual([
+        'What the game must support, as the engine found it:',
+        '- MS-1 Plays in a phone browser held upright: Failing on P-1 (Phone browser, held upright: Nothing on the page answered a tap, a drag or a hold); Met on P-2',
+        '- MS-4 Plays in a tablet browser: Not measured on P-2 (Chrome at /x exited before DevTools opened); Met on P-1',
+        '- MS-2 Has no build step: Not checked on prototypes',
+        '- MS-3 Sounds right on phone speakers: Not measured: check it yourself as you play',
+      ]);
+      // A human item is shown, not marked: the checks are the stakeholder's verdict on each prototype.
+      expect(item.checks.map(({ ac }) => ac)).toEqual(['P-1', 'P-2']);
+    });
+
+    it('says nothing of the list when it has no items', async () => {
+      const h = await harness();
+      const item = await toFunEval(h);
+
+      expect(item.why).not.toContain('must support');
+      expect(item.why.split('\n')[0]).toBe("Round 1's prototypes are built. Only you can say whether they are fun: play each one and mark it.");
+    });
   });
 });
 

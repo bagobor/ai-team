@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { stringify } from 'yaml';
 import { ClaudeCodeAdapter } from '../../src/adapters/claude-code.ts';
 import { ArtifactStore } from '../../src/artifacts/store.ts';
+import type { Player } from '../../src/checks/play.ts';
 import { DEFAULT_CONFIG, type Config } from '../../src/config.ts';
 import { openDb } from '../../src/db/open.ts';
 import { Conductor } from '../../src/engine/conductor/index.ts';
@@ -40,6 +41,8 @@ export async function makeEngine(opts: {
   config?: Partial<Config>;
   env?: Record<string, string>;
   now?: () => Date;
+  // The browser the runner plays a prototype in. A test that sets one on the engine it gets back reaches only the conductor.
+  player?: Player;
 }): Promise<TestEngine> {
   const root = tempDir('aiteam-home-');
   const paths = resolvePaths({ AITEAM_HOME: join(root, 'home') });
@@ -67,7 +70,7 @@ export async function makeEngine(opts: {
   const repo = await makeRepo();
   await addProject({ store, paths }, { name: 'p', repoPath: repo.path, create: false });
 
-  const deps: EngineDeps = { db, store, log, paths, config, adapters: { [adapter.id]: adapter }, artifacts: new ArtifactStore(store, paths), ...(opts.now ? { now: opts.now } : {}) };
+  const deps: EngineDeps = { db, store, log, paths, config, adapters: { [adapter.id]: adapter }, artifacts: new ArtifactStore(store, paths), ...(opts.now ? { now: opts.now } : {}), ...(opts.player ? { player: opts.player } : {}) };
   const runner = new Runner(deps);
   const spawnLines = () => (existsSync(spawnLog) ? readFileSync(spawnLog, 'utf8').trim().split('\n').filter(Boolean) : []);
 
