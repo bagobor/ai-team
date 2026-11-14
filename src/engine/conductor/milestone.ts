@@ -4,7 +4,7 @@ import { runSandboxed } from '../../checks/run-checks.ts';
 import { advanceBaseBranch, snapshotState, syncBaseIntoIntegration } from '../../git/merge.ts';
 import { ensureIntegrationBranch } from '../../git/workspace.ts';
 import { stateRepoDir, worktreePath } from '../../paths.ts';
-import type { ProfileData } from '../apply/discovery.ts';
+import { approvedProfile, missingChecks, type ProfileData } from '../apply/discovery.ts';
 import { milestoneCoverage, type EngFinding, type EngReviewData } from '../apply/eng-review.ts';
 import { engReviewId, ENV_PROFILE, isPolishTicket, reviewId, scopeId, specId, techId, testPlanId } from '../apply/ids.ts';
 import { structureOf } from '../apply/tech-structure.ts';
@@ -15,7 +15,7 @@ import type { MilestoneRow, ProjectRow, Store, TaskRow } from '../store.ts';
 import { withHeadWorktree } from './head-worktree.ts';
 import { advanceMustSupport } from './must-support.ts';
 import { playBug, problemLine, runPlayGate } from './play-gate.ts';
-import { designMoving, engReviewTask, ensureTask, isClosed, latestPin, milestoneReviewTask, noteOf, pinOf, qaTask, raiseHold, RETRY_OR_HALT, roundId, roundOf, scopeTask, specSources, specTask, techTask, testPlanTask, ticketTask, openHold, type TaskSpec, type TicketFields } from './tasks.ts';
+import { CHECKS_TASK, designMoving, engReviewTask, ensureTask, isClosed, latestPin, milestoneReviewTask, mustSupportChecksTask, mustSupportItems, noteOf, pinOf, qaTask, raiseHold, RETRY_OR_HALT, roundId, roundOf, scopeTask, specSources, specTask, techTask, testPlanTask, ticketTask, openHold, type TaskSpec, type TicketFields } from './tasks.ts';
 import { offerTry, removeTryWorktree, serveTryAgain } from './try.ts';
 
 type HoldKind = 'smoke' | 'base_conflict' | 'base_refused' | 'play';
@@ -69,10 +69,27 @@ const holdQaCap = (s: Store, project: ProjectRow, n: number, title: string, why:
     ],
   });
 
+// The milestone's gate runs a command for every item checked by command, so the Tech Lead writes any the profile lacks
+// before the milestone starts: the profile was approved before the list had the item, or the project is from before the list.
+async function checksPending(deps: EngineDeps, project: ProjectRow, tasks: TaskRow[]): Promise<boolean> {
+  const round = roundOf(tasks, CHECKS_TASK);
+  const current = byId(tasks, roundId(CHECKS_TASK, round));
+  if (current && current.state !== 'done') return true;
+  const list = await mustSupportItems(deps, project);
+  const profile = await approvedProfile({ deps, project });
+  if (!list || !profile) return false;
+  const missing = missingChecks(profile, list.items);
+  if (missing.length === 0) return false;
+  const inputs = [await latestPin(deps, project, ENV_PROFILE), list.pin];
+  await ensureTask(deps.store, mustSupportChecksTask(project, round + 1, inputs, list.items.filter(({ id }) => missing.includes(id))));
+  return true;
+}
+
 // No milestone starts on a list the stakeholder hasn't approved, nor while a change to it waits for them.
-async function setPending(deps: EngineDeps, project: ProjectRow, { n }: MilestoneRow): Promise<void> {
+async function setPending(deps: EngineDeps, project: ProjectRow, { n }: MilestoneRow, tasks: TaskRow[]): Promise<void> {
   const ms = await advanceMustSupport(deps, project);
   if (!ms.approved || ms.pending) return;
+  if (await checksPending(deps, project, tasks)) return;
   const inputs = await specSources(deps, project);
   await deps.store.atomically(async (s) => {
     await ensureTask(s, specTask(project, n, 1, inputs));
@@ -441,7 +458,7 @@ export async function advanceMilestone(deps: EngineDeps, runner: Runner, project
   const own = tasks.filter(({ milestone }) => milestone === m.n);
   switch (m.phase) {
     case 'pending':
-      return setPending(deps, project, m);
+      return setPending(deps, project, m, tasks);
     case 'spec':
       return afterSpec(deps, project, m, own);
     case 'design':

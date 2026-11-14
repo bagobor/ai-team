@@ -40,6 +40,8 @@ const PROFILE = {
   network_allow: [],
   setup: null,
   play: null,
+  // The list's one item is checked by command, so the profile says which.
+  must_support_checks: [{ item: 'MS-1', command: 'node --version', protected: [] }],
   stakeholder_note: 'Node is all this needs',
 };
 

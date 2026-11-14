@@ -1,8 +1,13 @@
 import { isAbsolute } from 'node:path';
+import picomatch from 'picomatch';
 import { parsePin, sectionsOf } from '../../artifacts/format.ts';
 import type { NewVersion } from '../../artifacts/store.ts';
 import { keyProblem } from '../../checks/play.ts';
 import { runSandboxed } from '../../checks/run-checks.ts';
+import { gitOk } from '../../git/git.ts';
+import { mustSupportItems } from '../conductor/tasks.ts';
+import type { MsItem } from '../must-support.ts';
+import { protectedProblems } from '../protected.ts';
 import { ENV_PROFILE, FUN_DEFINITION } from './ids.ts';
 import type { Applier, ApplyCtx } from './index.ts';
 import { withRaised } from './raised.ts';
@@ -23,17 +28,69 @@ type DiscoveryOutput = {
 // `animated` is false for a page with no animation loop; a profile that leaves it out is played as a game.
 export type PlayBlock = { root: string; entry: string; keys: string[]; animated?: boolean };
 
+// The command that proves a must-support item, and the files it reads, which no ticket may change.
+export type MsCheckCommand = { item: string; command: string; protected: string[] };
+
 // What a published Environment Profile holds as data, for everything that builds or plays the product.
-// A profile published before the play gate has no play at all, which its readers take as null.
+// A profile published before the play gate has no play at all, which its readers take as null. One from before the
+// must-support list, or for a list with nothing checked by command, has no checks.
 export type ProfileData = {
   commands: { build: string; test: string; lint: string; smoke: string };
   toolchains: string[];
   network_allow: string[];
   setup: string | null;
   play: PlayBlock | null;
+  must_support_checks?: MsCheckCommand[];
 };
 
 type ProfileOutput = ProfileData & { body: string };
+
+const commandItems = (items: MsItem[]) => items.filter(({ check }) => check === 'command');
+
+// The ids of the items checked by command that the profile has no command for.
+export function missingChecks(profile: ProfileData, items: MsItem[]): string[] {
+  const checked = (profile.must_support_checks ?? []).map(({ item }) => item);
+  return commandItems(items).map(({ id }) => id).filter((id) => !checked.includes(id));
+}
+
+// `tracked` is every file on the base branch: a protected glob that matches none of them protects nothing the command reads.
+export function checkCommandProblems(checks: MsCheckCommand[] | undefined, items: MsItem[], tracked: string[], base: string): string[] {
+  const wanted = commandItems(items);
+  const given = checks ?? [];
+  const problems = wanted.filter(({ id }) => !given.some(({ item }) => item === id)).map(({ id, text }) => `must_support_checks has no command for ${id} (${oneLine(text).trim()})`);
+  const seen = new Set<string>();
+  for (const { item, command, protected: globs } of given) {
+    if (!wanted.some(({ id }) => id === item)) problems.push(`must_support_checks names ${item}, which is not checked by command`);
+    else if (seen.has(item)) problems.push(`must_support_checks names ${item} twice`);
+    else if (command.trim() === '') problems.push(`${item}'s command is empty`);
+    seen.add(item);
+    const refused = protectedProblems(globs);
+    problems.push(...refused);
+    if (refused.length > 0) continue;
+    for (const glob of globs) {
+      const matches = picomatch(glob, { dot: true });
+      if (!tracked.some((path) => matches(path))) problems.push(`${glob} matches no file on ${base}: protect only files the command reads`);
+    }
+  }
+  return problems;
+}
+
+// The files on the base branch are read only when a check protects any.
+export async function commandCheckProblems({ project }: Pick<ApplyCtx, 'project'>, checks: MsCheckCommand[] | undefined, items: MsItem[]): Promise<string[]> {
+  const protects = (checks ?? []).some(({ protected: globs }) => Array.isArray(globs) && globs.length > 0);
+  const tracked = protects ? (await gitOk(project.repo_path, ['ls-tree', '-r', '-z', '--name-only', project.base_branch])).split('\0').filter((path) => path !== '') : [];
+  return checkCommandProblems(checks, items, tracked, project.base_branch);
+}
+
+const CHECKS_HEADING = '## Must-support checks';
+
+// The engine writes the checks as the profile's last section, so a later set replaces the one before it.
+export function profileBody(body: string, checks: MsCheckCommand[] = []): string {
+  const at = body.lastIndexOf(`\n${CHECKS_HEADING}\n`);
+  if (checks.length === 0) return at === -1 ? body : `${body.slice(0, at).trimEnd()}\n`;
+  const lines = checks.map(({ item, command, protected: globs }) => `- ${item}: \`${oneLine(command).trim()}\`${globs.length > 0 ? ` (protects ${globs.join(', ')})` : ''}`);
+  return `${(at === -1 ? body : body.slice(0, at)).trimEnd()}\n\n${CHECKS_HEADING}\n\n${lines.join('\n')}\n`;
+}
 
 // The profile the engine builds and plays by: one the stakeholder approved, or that went stale because something it read moved on.
 // A proposed one has not been agreed, and nothing is built from it.
@@ -186,19 +243,22 @@ function playProblems(play: PlayBlock | null | undefined): string[] {
 }
 
 export const applyEnvironmentProfile: Applier = async (ctx) => {
-  const { body, commands, toolchains, network_allow, setup, play } = ctx.output as ProfileOutput;
+  const { body, commands, toolchains, network_allow, setup, play, must_support_checks: checks } = ctx.output as ProfileOutput;
 
   const bad = network_allow.filter((entry) => !isBareDomain(entry));
   if (bad.length > 0) return { ok: false, evidence: `network_allow takes bare domains, not ${bad.map((entry) => JSON.stringify(entry)).join(', ')}` };
   if (commands.smoke.trim() === '') return { ok: false, evidence: 'The smoke command is blank' };
   const unplayable = playProblems(play);
   if (unplayable.length > 0) return { ok: false, evidence: unplayable.join('\n') };
+  const unchecked = await commandCheckProblems(ctx, checks, (await mustSupportItems(ctx.deps, ctx.project))?.items ?? []);
+  if (unchecked.length > 0) return { ok: false, evidence: unchecked.join('\n') };
 
   const smoke = await runSandboxed({ ...sandboxEnv(ctx), commands: [commands.smoke] });
   if (!smoke.ok) return { ok: false, evidence: smoke.evidence };
 
+  const data: ProfileData = { commands, toolchains, network_allow, setup, play, ...(checks && checks.length > 0 ? { must_support_checks: checks } : {}) };
   return withRaised(ctx, {
     message: 'discovery: environment profile',
-    publish: [{ id: ENV_PROFILE, type: 'environment_profile', status: 'proposed', ownerRole: 'tech_lead', derivedFrom: ctx.order.inputs.filter((pin) => parsePin(pin).id !== ENV_PROFILE), body, fields: { data: { commands, toolchains, network_allow, setup, play } satisfies ProfileData } }],
+    publish: [{ id: ENV_PROFILE, type: 'environment_profile', status: 'proposed', ownerRole: 'tech_lead', derivedFrom: ctx.order.inputs.filter((pin) => parsePin(pin).id !== ENV_PROFILE), body: profileBody(body, checks), fields: { data } }],
   });
 };

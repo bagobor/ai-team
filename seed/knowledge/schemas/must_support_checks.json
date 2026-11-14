@@ -1,0 +1,87 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Must-support checks",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "must_support_checks",
+    "stakeholder_note"
+  ],
+  "properties": {
+    "must_support_checks": {
+      "type": "array",
+      "description": "One entry for every must-support item that is checked by command.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "item",
+          "command",
+          "protected"
+        ],
+        "properties": {
+          "item": {
+            "type": "string",
+            "pattern": "^MS-\\d+$",
+            "description": "The item's id on the must-support list, such as MS-2."
+          },
+          "command": {
+            "type": "string",
+            "description": "A shell command that exits 0 only when the item holds. It runs in the sandbox, without network, at the head of each milestone."
+          },
+          "protected": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Globs of the files the command reads that tickets must not change, such as scripts/check-no-build.sh. Each must match a file in the repository. Empty when it reads none."
+          }
+        }
+      }
+    },
+    "stakeholder_note": {
+      "type": "string"
+    },
+    "change_requests": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "target_artifact",
+          "proposed_text",
+          "rationale",
+          "evidence"
+        ],
+        "properties": {
+          "target_artifact": {
+            "type": "string",
+            "description": "The document id alone, such as SPEC-M1 or TEST-PLAN-M1, with no @version or #section."
+          },
+          "target_section": {
+            "type": "string",
+            "description": "The slug of the heading whose text you would replace, such as risks. Name this or target_ac, not both."
+          },
+          "target_ac": {
+            "type": "string",
+            "description": "A criterion id, such as AC-3. On a Spec, proposed_text is that criterion's new text, which the stakeholder decides. On a Test Plan, proposed_text is that criterion's new commands, one exact shell command per line."
+          },
+          "proposed_text": {
+            "type": "string",
+            "description": "The whole replacement for that section, criterion text or list of commands."
+          },
+          "proposed_verification": {
+            "type": "string",
+            "description": "Only with target_ac on a Spec: the one shell command its Verified by line should name instead, when that command is what is wrong. proposed_text still holds the criterion's text, word for word if only the command is wrong. On a Test Plan the commands are proposed_text, so leave this out."
+          },
+          "rationale": {
+            "type": "string"
+          },
+          "evidence": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

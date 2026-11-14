@@ -1,5 +1,6 @@
 import { formatPin, parsePin } from '../../artifacts/format.ts';
 import { ENG_REVIEW_ID, ENV_PROFILE, FUN_DEFINITION, isPolishTicket, MUST_SUPPORT, PROTO_PLAN_ID, protoPlanId, techId } from '../apply/ids.ts';
+import { oneLine } from '../apply/text.ts';
 import { IllegalTransition } from '../fsm.ts';
 import type { InboxOption, InboxRef, InboxRow, NewInboxItem } from '../inbox.ts';
 import type { MsItem, MustSupportData } from '../must-support.ts';
@@ -191,6 +192,12 @@ export function protoPlanTask(project: ProjectRow, r: number, inputs: string[]):
   };
 }
 
+// A profile's worker reads the list, so it is told to write a command for each item a command can prove.
+const CHECKS_LINE =
+  'For every must-support item checked by command, add a must_support_checks entry: a shell command that exits 0 only when the item holds (it runs in the sandbox, without network, at the head of each milestone), and the files it reads that tickets must not change (protected).';
+const PROFILE_INSTRUCTIONS = 'Write the Environment Profile: the toolchains, the build, test, lint and smoke commands, any setup command, and the network hosts the work needs. The smoke command must pass in this repository as it stands.';
+const readsList = (inputs: string[]) => inputs.some((pin) => parsePin(pin).id === MUST_SUPPORT);
+
 export function profileTask(project: ProjectRow, round: number, inputs: string[], comment?: string): TaskSpec {
   return {
     project,
@@ -200,7 +207,29 @@ export function profileTask(project: ProjectRow, round: number, inputs: string[]
     role_id: 'tech_lead',
     kind: 'authoring',
     depends_on: [roundId('DISCOVERY-PM', round)],
-    order: workOrder('environment_profile', 'Write the Environment Profile: the toolchains, the build, test, lint and smoke commands, any setup command, and the network hosts the work needs. The smoke command must pass in this repository as it stands.', inputs, BASE, withComment(comment)),
+    order: workOrder('environment_profile', readsList(inputs) ? `${PROFILE_INSTRUCTIONS}\n\n${CHECKS_LINE}` : PROFILE_INSTRUCTIONS, inputs, BASE, withComment(comment)),
+  };
+}
+
+export const CHECKS_TASK = 'MS-CHECKS-TL';
+
+// A profile approved before the list had these items has no command for them, so the Tech Lead adds the commands
+// before the next milestone starts. `missing` are the items with none yet.
+export function mustSupportChecksTask(project: ProjectRow, k: number, inputs: string[], missing: MsItem[]): TaskSpec {
+  const named = missing.map(({ id, text }) => `${id} (${oneLine(text).trim()})`).join(', ');
+  return {
+    project,
+    ticket_id: roundId(CHECKS_TASK, k),
+    title: 'Must support: check commands',
+    milestone: 0,
+    role_id: 'tech_lead',
+    kind: 'authoring',
+    order: workOrder(
+      'must_support_checks',
+      `Write must_support_checks for the Environment Profile: one entry for every item on the must-support list that is checked by command. Each entry is a shell command that exits 0 only when the item holds (it runs in the sandbox, without network, at the head of each milestone), and the files it reads that tickets must not change (protected). Keep a command the profile already has when it still proves its item. These items have no command yet: ${named}.`,
+      inputs,
+      BASE,
+    ),
   };
 }
 

@@ -18,5 +18,6 @@ output_schema: schemas/tech_design.json
 output_schemas:
   environment_profile: schemas/environment_profile.json
   tech_design: schemas/tech_design.json
+  must_support_checks: schemas/must_support_checks.json
   revise_design: schemas/revise_design.json
   cr_recommendation: schemas/cr_recommendation.json

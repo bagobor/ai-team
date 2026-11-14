@@ -25,7 +25,7 @@ import { structureOf } from './apply/tech-structure.ts';
 import { checkPrototype } from './conductor/must-support-play.ts';
 import { withListInForce } from './conductor/tasks.ts';
 import { IllegalTransition } from './fsm.ts';
-import { isHarnessTicket, protectedPaths, type ProtectedPath } from './protected.ts';
+import { checkProtectedPaths, isHarnessTicket, protectedPaths, type ProtectedPath } from './protected.ts';
 import { reviewInputs } from './review-inputs.ts';
 import { roleInputs, writeReference, type Reference, type Views } from './role-inputs.ts';
 import type { AttemptPatch, AttemptRow, ProjectRow, Store, TaskRow } from './store.ts';
@@ -410,9 +410,10 @@ export class Runner {
     };
   }
 
-  // Every ticket but QA's harness tickets, bug tickets included, since they are the engineers' to write.
+  // Every ticket but QA's harness tickets, bug tickets included, since they are the engineers' to write. What the
+  // must-support checks read is held from the harness tickets too: nobody's ticket rewrites what judges every milestone.
   private async protectedFrom(project: ProjectRow, task: TaskRow): Promise<ProtectedPath[]> {
-    return isHarnessTicket(task.ticket_id) ? [] : protectedPaths(this.deps, project, task.milestone);
+    return isHarnessTicket(task.ticket_id) ? checkProtectedPaths(this.deps, project) : protectedPaths(this.deps, project, task.milestone);
   }
 
   // What a ticket's changes are held to. QA's harness tickets are tests themselves, a prototype (milestone 0) has no design,

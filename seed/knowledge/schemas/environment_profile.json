@@ -93,6 +93,37 @@
     "stakeholder_note": {
       "type": "string"
     },
+    "must_support_checks": {
+      "type": "array",
+      "description": "One entry for every must-support item that is checked by command. Leave it out when the list has none.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "item",
+          "command",
+          "protected"
+        ],
+        "properties": {
+          "item": {
+            "type": "string",
+            "pattern": "^MS-\\d+$",
+            "description": "The item's id on the must-support list, such as MS-2."
+          },
+          "command": {
+            "type": "string",
+            "description": "A shell command that exits 0 only when the item holds. It runs in the sandbox, without network, at the head of each milestone."
+          },
+          "protected": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Globs of the files the command reads that tickets must not change, such as scripts/check-no-build.sh. Each must match a file in the repository. Empty when it reads none."
+          }
+        }
+      }
+    },
     "gaps": {
       "type": "array",
       "description": "Items on the must-support list that this work can't meet. Leave it out when every item can be met.",
