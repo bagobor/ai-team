@@ -6,6 +6,8 @@ export type InboxRef =
   | { kind: 'smoke' | 'base_conflict' | 'base_refused' | 'qa_cap' | 'play'; milestone: number }
   | { kind: 'fun_eval'; round: number }
   | { kind: 'must_support'; version: number }
+  // `raised_in` is the task that said the item can't be met, and `why` is its reason, which a revision of the list reads.
+  | { kind: 'ms_gap'; item: string; scope: 'milestone' | 'prototype'; n: number; raised_in: string; why: string }
   | { kind: 'engine_error' };
 
 export type InboxType = 'approval' | 'question';

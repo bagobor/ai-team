@@ -99,6 +99,7 @@ const FORMAT: Record<EventType, (p: Payload) => RowParts> = {
   'conductor.error': (p) => ({ kind: 'error', text: text(p.message), tone: 'bad' }),
   'play.result': playRow,
   'must_support.status': mustSupportRow,
+  'must_support.gap_dropped': (p) => ({ kind: 'engine', text: `Must-support gap dropped: ${text(p.reason)}`, tone: 'bad' }),
 };
 
 export const EVENT_TYPES = Object.keys(FORMAT) as EventType[];

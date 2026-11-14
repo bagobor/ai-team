@@ -128,6 +128,15 @@ describe('Change Requests', () => {
       await expect(fileChangeRequest(e, p, onSection({ target_artifact: id }))).rejects.toThrow(ChangeRequestError);
     });
 
+    it.each(['approved', 'proposed'] as const)('refuses a request against a %s MUST-SUPPORT, and points at gaps', async (status) => {
+      await document({ id: 'MUST-SUPPORT', type: 'must_support', ownerRole: 'pm', status });
+
+      const filed = fileChangeRequest(e, p, onSection({ target_artifact: 'MUST-SUPPORT', target_section: 'ms-1' }));
+
+      await expect(filed).rejects.toThrow(ChangeRequestError);
+      await expect(filed).rejects.toThrow("MUST-SUPPORT is the must-support list, which changes only through the stakeholder: name the item in gaps and say why it can't be met");
+    });
+
     it('refuses a request naming a section that does not exist', async () => {
       await document();
 

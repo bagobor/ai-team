@@ -30,7 +30,8 @@ export type EventType =
   | 'change_request.dropped'
   | 'conductor.error'
   | 'play.result'
-  | 'must_support.status';
+  | 'must_support.status'
+  | 'must_support.gap_dropped';
 
 export type EventRow = {
   seq: number;

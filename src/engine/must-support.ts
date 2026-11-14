@@ -84,6 +84,10 @@ export function nextUsed(prior: MsPrior, items: MsItem[]): string[] {
 
 export const itemLine = (item: MsItem): string => `${item.id} ${oneLine(item.text).trim()}`;
 
+// Where an item came from, as the stakeholder reads it: their own words, or the PM's suggestion and its reason.
+export const itemSource = (item: MsItem): string =>
+  item.proposed ? `Not in your brief: suggested because ${oneLine(item.reason ?? '').trim()}` : `From your brief: “${oneLine(item.brief_quote).trim()}”`;
+
 const PLAYED_BY: Record<MsInput, string> = { touch: 'touch', keys: 'the keyboard', mouse: 'the mouse' };
 
 function checkedBy(item: MsItem): string {
@@ -96,8 +100,7 @@ function checkedBy(item: MsItem): string {
 }
 
 function renderItem(item: MsItem): string[] {
-  const source = item.proposed ? `Not in your brief: suggested because ${oneLine(item.reason ?? '').trim()}` : `From your brief: “${oneLine(item.brief_quote).trim()}”`;
-  return [`### ${item.id}`, '', item.text.trim(), '', source, '', checkedBy(item), ''];
+  return [`### ${item.id}`, '', item.text.trim(), '', itemSource(item), '', checkedBy(item), ''];
 }
 
 const GROUPS: [MsItem['group'], string][] = [

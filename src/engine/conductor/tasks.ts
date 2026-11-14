@@ -2,6 +2,7 @@ import { formatPin, parsePin } from '../../artifacts/format.ts';
 import { ENG_REVIEW_ID, ENV_PROFILE, FUN_DEFINITION, isPolishTicket, MUST_SUPPORT, PROTO_PLAN_ID, protoPlanId, techId } from '../apply/ids.ts';
 import { IllegalTransition } from '../fsm.ts';
 import type { InboxOption, InboxRef, InboxRow, NewInboxItem } from '../inbox.ts';
+import type { MsItem, MustSupportData } from '../must-support.ts';
 import type { EngineDeps, Runner } from '../runner.ts';
 import type { ArtifactVersionRow, AttemptRow, ProjectRow, Store, TaskRow } from '../store.ts';
 import type { Purpose, TaskKind, WorkOrder } from '../workorder.ts';
@@ -125,7 +126,19 @@ export async function haltProject(deps: Pick<EngineDeps, 'store'>, runner: Runne
   await deps.store.atomically((s) => markHalted(s, project, reason));
 }
 
-const workOrder = (purpose: Purpose, instructions: string, inputs: string[], base: WorkOrder['base'], extra: Pick<WorkOrder, 'comment' | 'subject'> = {}): WorkOrder => ({ purpose, instructions, inputs, checks: [], base, ...extra });
+// A role that reads the list is told what to do when it can't meet an item. The schemas of these purposes take gaps.
+export const GAPS_LINE = "If an item on the must-support list can't be met, name it in gaps and say why. Never leave an item out silently.";
+const GAP_PURPOSES: Purpose[] = ['prototype_plan', 'environment_profile', 'milestone_spec', 'tech_design', 'ticket_scope', 'test_plan', 'qa_verify', 'eng_review'];
+const asksForGaps = (purpose: Purpose, inputs: string[]) => GAP_PURPOSES.includes(purpose) && inputs.some((pin) => parsePin(pin).id === MUST_SUPPORT);
+
+const workOrder = (purpose: Purpose, instructions: string, inputs: string[], base: WorkOrder['base'], extra: Pick<WorkOrder, 'comment' | 'subject'> = {}): WorkOrder => ({
+  purpose,
+  instructions: asksForGaps(purpose, inputs) ? `${instructions}\n\n${GAPS_LINE}` : instructions,
+  inputs,
+  checks: [],
+  base,
+  ...extra,
+});
 const withComment = (comment: string | undefined) => (comment === undefined ? {} : { comment });
 const INTEGRATION: WorkOrder['base'] = { kind: 'integration' };
 const BASE: WorkOrder['base'] = { kind: 'base' };
@@ -408,6 +421,13 @@ export async function approvedMustSupport(deps: Pick<EngineDeps, 'artifacts'>, p
   let row = await deps.artifacts.latest(project.id, MUST_SUPPORT);
   while (row && !row.approved_by) row = row.version > 1 ? await deps.artifacts.version(project.id, MUST_SUPPORT, row.version - 1) : undefined;
   return row;
+}
+
+export async function mustSupportItems(deps: Pick<EngineDeps, 'artifacts'>, project: ProjectRow): Promise<{ pin: string; version: number; items: MsItem[] } | undefined> {
+  const row = await approvedMustSupport(deps, project);
+  if (!row) return undefined;
+  const { items } = (await deps.artifacts.read(project, pinOf(row))).fields.data as MustSupportData;
+  return { pin: pinOf(row), version: row.version, items };
 }
 
 // Every plan and discovery reads the approved list. A project still waiting on its first has none.

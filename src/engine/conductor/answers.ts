@@ -9,7 +9,7 @@ import type { CheckMark, InboxAnswer, InboxRow } from '../inbox.ts';
 import type { EngineDeps, Runner } from '../runner.ts';
 import type { ProjectRow, Store } from '../store.ts';
 import { applyRequest } from './change-requests.ts';
-import { answerMustSupport } from './must-support.ts';
+import { answerGap, answerMustSupport } from './must-support.ts';
 import { removeTryWorktree } from './try.ts';
 import { discoveryDocs, discoveryInputs, discoveryTask, ensureTask, isClosed, isTerminal, latestPin, markHalted, profileTask, protoPlanInputs, protoPlanTask, replanInputs, replanTask, roundOf, specSources, specTask, stopProjectWork } from './tasks.ts';
 
@@ -19,10 +19,12 @@ export type Effect = { status?: StatusChange[]; publish?: NewVersion[]; message?
 
 const LABELS: Record<string, string> = { approve: 'Approve', request_changes: 'Request changes', reject: 'Reject' };
 
-// A written answer to a Question takes the first option, and its words go in the Decision Record.
+// A written answer to a Question takes the first option, and its words go in the Decision Record. A gap's first option
+// would accept going without the item, which words alone never say: they ask the PM to change the requirement.
 function choiceOf(item: InboxRow, answer: InboxAnswer): string {
   if ('action' in answer) return answer.action;
   if ('option' in answer) return answer.option;
+  if (item.ref.kind === 'ms_gap') return 'change';
   return item.options[0]?.id ?? 'retry';
 }
 
@@ -194,6 +196,8 @@ async function effectOf(deps: EngineDeps, runner: Runner, project: ProjectRow, i
       return answerFunEval(deps, runner, project, item, ref.round, choice);
     case 'must_support':
       return answerMustSupport(deps, runner, project, item, ref.version, choice, words);
+    case 'ms_gap':
+      return answerGap(deps, project, item, ref, choice, words);
     case 'qa_cap':
       if (choice === 'halt') return halt(deps, runner, project, item);
       return {

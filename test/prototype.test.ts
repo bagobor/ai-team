@@ -27,8 +27,9 @@ const PLAN = {
   stakeholder_note: 'Please play both',
 };
 const PAGE = '<!doctype html><title>Prototype</title><canvas></canvas>\n';
+// A plan reads the must-support list, so it is told what to do about an item it can't meet.
 const instructions = (r: number) =>
-  `Plan prototype round ${r}. Suggest candidate fun elements from general knowledge as hypotheses, and the smallest playable prototype for each. Only the stakeholder judges fun: read their notes in the Decision Records and build on what they found fun.`;
+  `Plan prototype round ${r}. Suggest candidate fun elements from general knowledge as hypotheses, and the smallest playable prototype for each. Only the stakeholder judges fun: read their notes in the Decision Records and build on what they found fun.\n\nIf an item on the must-support list can't be met, name it in gaps and say why. Never leave an item out silently.`;
 const FUN_CHECK = 'When a milestone changes an element of FUN-DEFINITION, its Spec carries a human check that names the F-n element, so the stakeholder confirms at CP4 that the fun still holds.';
 const DISCOVERY = {
   roadmap: { body: '# Roadmap\n', milestones: [{ n: 1, title: 'First', goal: 'Start' }] },

@@ -84,6 +84,30 @@
     "summary": {
       "type": "string"
     },
+    "gaps": {
+      "type": "array",
+      "description": "Items on the must-support list that this work can't meet. Leave it out when every item can be met.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "item",
+          "why"
+        ],
+        "properties": {
+          "item": {
+            "type": "string",
+            "pattern": "^MS-\\d+$",
+            "description": "The item's id on the must-support list, such as MS-1."
+          },
+          "why": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Why it can't be met here, in words the stakeholder can decide on."
+          }
+        }
+      }
+    },
     "change_requests": {
       "type": "array",
       "items": {
