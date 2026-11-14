@@ -14,7 +14,8 @@ import {
   type ProjectPhase,
   type TaskState,
 } from './fsm.ts';
-import { AlreadyAnswered, assertValidAnswer, InvalidAnswer, type InboxAnswer, type InboxCheck, type InboxEvidence, type InboxOption, type InboxRef, type InboxRow, type InboxState, type InboxType, type NewInboxItem } from './inbox.ts';
+import { AlreadyAnswered, assertValidAnswer, InvalidAnswer, type InboxAnswer, type InboxCheck, type InboxEvidence, type InboxOption, type InboxRef, type InboxRow, type InboxState, type InboxType, type InboxWaivable, type NewInboxItem } from './inbox.ts';
+import type { ItemStatus, MsStatus } from './must-support.ts';
 import type { WorkOrder } from './workorder.ts';
 
 export type ProjectRow = Omit<Selectable<ProjectsTable>, 'phase'> & { phase: ProjectPhase };
@@ -65,6 +66,12 @@ export type NewAttempt = Pick<AttemptRow, 'task_id' | 'adapter' | 'model' | 'wor
 export type AttemptPatch = Partial<Omit<AttemptRow, 'id' | 'task_id' | 'k' | 'state'>>;
 
 export type VendorPause = Selectable<VendorPausesTable>;
+
+// Where a must-support item was checked: a milestone, a prototype round (`subject` names one prototype of it), or the
+// whole project at n 0, where a waiver for good is kept.
+export type MsScope = { scope: 'milestone' | 'prototype' | 'project'; n: number; subject?: string };
+export type MsRecord = ItemStatus & { source: 'play_gate' | 'prototype_check' | 'stakeholder'; must_support_version: number };
+export type MsStatusRow = MsRecord & { scope: MsScope['scope']; n: number; subject: string; recorded_at: string };
 
 const LIVE_ATTEMPT_STATES: AttemptState[] = ['starting', 'running'];
 // Interrupted and cancelled attempts say nothing about the work, so they don't use up retries.
@@ -123,6 +130,7 @@ function toInboxRow(row: Selectable<InboxItemsTable>): InboxRow {
     evidence: JSON.parse(row.evidence) as InboxEvidence[],
     options: JSON.parse(row.options) as InboxOption[],
     checks: JSON.parse(row.checks) as InboxCheck[],
+    waivable: JSON.parse(row.waivable) as InboxWaivable[],
     answer: row.answer === null ? null : (JSON.parse(row.answer) as InboxAnswer),
   };
 }
@@ -375,6 +383,38 @@ export class Store {
     if (milestone !== undefined) query = query.where('milestone', '=', milestone);
     const rows = await query.orderBy('milestone').orderBy(sql`CAST(SUBSTR(ac_id, 4) AS INTEGER)`).execute();
     return rows.map(toCriterionRow);
+  }
+
+  // An item has one status at each place it is checked, so a later check there replaces the earlier one.
+  recordMustSupport(projectId: number, at: MsScope, rows: MsRecord[]): Promise<void> {
+    const { scope, n, subject = '' } = at;
+    return this.inTrx(async (db, emit) => {
+      if (rows.length === 0) return;
+      const recorded_at = new Date().toISOString();
+      for (const { item_id, status, evidence, source, must_support_version } of rows) {
+        const found = { status, evidence, source, must_support_version, recorded_at };
+        await db
+          .insertInto('must_support_status')
+          .values({ project_id: projectId, scope, n, subject, item_id, ...found })
+          .onConflict((conflict) => conflict.columns(['project_id', 'scope', 'n', 'subject', 'item_id']).doUpdateSet(found))
+          .execute();
+      }
+      const statuses = rows.map(({ item_id, status }) => ({ item_id, status }));
+      emit(await this.log.insert(db, { projectId, type: 'must_support.status', payload: { scope, n, subject, statuses } }));
+    });
+  }
+
+  // With no subject, every subject at that place: each prototype of a round.
+  async listMustSupport(projectId: number, at: MsScope): Promise<MsStatusRow[]> {
+    let query = this.db
+      .selectFrom('must_support_status')
+      .select(['scope', 'n', 'subject', 'item_id', 'status', 'evidence', 'source', 'must_support_version', 'recorded_at'])
+      .where('project_id', '=', projectId)
+      .where('scope', '=', at.scope)
+      .where('n', '=', at.n);
+    if (at.subject !== undefined) query = query.where('subject', '=', at.subject);
+    const rows = await query.orderBy('subject').orderBy(sql`CAST(SUBSTR(item_id, 4) AS INTEGER)`).execute();
+    return rows.map((row) => ({ ...row, scope: row.scope as MsScope['scope'], status: row.status as MsStatus, source: row.source as MsRecord['source'] }));
   }
 
   // Only QA moves a criterion, or the stakeholder through this milestone's CP4, and either only by pointing at its evidence (§7.5).
@@ -634,6 +674,7 @@ export class Store {
           evidence: JSON.stringify(item.evidence),
           options: JSON.stringify(item.options),
           checks: JSON.stringify(item.checks ?? []),
+          waivable: JSON.stringify(item.waivable ?? []),
           created_at: new Date().toISOString(),
         })
         .onConflict((conflict) => conflict.columns(['project_id', 'dedupe_key']).doNothing())

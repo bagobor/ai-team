@@ -29,7 +29,8 @@ export type EventType =
   | 'merge.conflict'
   | 'change_request.dropped'
   | 'conductor.error'
-  | 'play.result';
+  | 'play.result'
+  | 'must_support.status';
 
 export type EventRow = {
   seq: number;

@@ -21,6 +21,8 @@ export type InboxOption = { id: string; label: string };
 // A criterion only the stakeholder can judge, listed on the approval so their answer can say whether it holds.
 export type InboxCheck = { ac: string; text: string; how: string };
 export type CheckMark = { ac: string; status: 'passing' | 'failing'; note: string };
+// A must-support item the build doesn't meet, which the stakeholder may approve the milestone without.
+export type InboxWaivable = { id: string; text: string; why: string };
 
 export type NewInboxItem = {
   project_id: number;
@@ -36,14 +38,16 @@ export type NewInboxItem = {
   recommendation: string;
   options: InboxOption[];
   checks?: InboxCheck[];
+  waivable?: InboxWaivable[];
 };
 
 export type InboxAnswer = { action: 'approve' | 'reject'; checks?: CheckMark[] } | { action: 'request_changes'; comment: string; checks?: CheckMark[] } | { option: string } | { text: string };
 
-export type InboxRow = Omit<NewInboxItem, 'milestone' | 'checks'> & {
+export type InboxRow = Omit<NewInboxItem, 'milestone' | 'checks' | 'waivable'> & {
   id: number;
   milestone: number | null;
   checks: InboxCheck[];
+  waivable: InboxWaivable[];
   state: InboxState;
   answer: InboxAnswer | null;
   answered_at: string | null;

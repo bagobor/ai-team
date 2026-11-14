@@ -204,4 +204,26 @@ export const migrations: Record<string, Migration> = {
       await sql`ALTER TABLE milestones ADD COLUMN eng_cap INTEGER NOT NULL DEFAULT 2`.execute(db);
     },
   },
+  '005_must_support': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      // One status per must-support item at each place it is checked: a milestone, a prototype of a round (the subject),
+      // or the whole project, where a waiver for good is kept.
+      await sql`
+        CREATE TABLE must_support_status (
+          project_id INTEGER NOT NULL REFERENCES projects(id),
+          scope TEXT NOT NULL CHECK (scope IN ('milestone', 'prototype', 'project')),
+          n INTEGER NOT NULL,
+          subject TEXT NOT NULL DEFAULT '',
+          item_id TEXT NOT NULL,
+          status TEXT NOT NULL CHECK (status IN ('met', 'failing', 'not_measured', 'waived')),
+          evidence TEXT NOT NULL DEFAULT '',
+          source TEXT NOT NULL,
+          must_support_version INTEGER NOT NULL,
+          recorded_at TEXT NOT NULL,
+          PRIMARY KEY (project_id, scope, n, subject, item_id)
+        )`.execute(db);
+      // An item raised before this offers nothing to approve without, which is what an empty list says.
+      await sql`ALTER TABLE inbox_items ADD COLUMN waivable TEXT NOT NULL DEFAULT '[]'`.execute(db);
+    },
+  },
 };

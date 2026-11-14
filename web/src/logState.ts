@@ -55,6 +55,14 @@ function playRow(p: Payload): RowParts {
   return { kind: 'test', bold, text: said ? `${text(p.outcome)}: ${said}` : text(p.outcome), tone: p.outcome === 'passed' ? 'good' : 'bad' };
 }
 
+// A check of a build against the must-support list: where it was checked, and what each item came to there.
+function mustSupportRow(p: Payload): RowParts {
+  const where = p.scope === 'project' ? 'the whole project' : p.scope === 'prototype' ? `round ${String(p.n)}${p.subject ? ` ${text(p.subject)}` : ''}` : `milestone ${String(p.n)}`;
+  const statuses = Array.isArray(p.statuses) ? p.statuses.map((found: { item_id?: unknown; status?: unknown } | null) => `${text(found?.item_id)} ${text(found?.status).replace('_', ' ')}`) : [];
+  const failing = statuses.some((found) => found.endsWith(' failing'));
+  return { kind: 'engine', text: `Must support, ${where}: ${statuses.join(', ')}`, ...(failing ? { tone: 'bad' as const } : {}) };
+}
+
 const change = (subject: string, p: Payload, detail: unknown): string => {
   const why = text(detail);
   return `${subject}: ${text(p.from)} → ${text(p.to)}${why ? ` (${why})` : ''}`;
@@ -90,6 +98,7 @@ const FORMAT: Record<EventType, (p: Payload) => RowParts> = {
   'change_request.dropped': (p) => ({ kind: 'engine', text: `Change Request dropped: ${text(p.reason)}`, tone: 'bad' }),
   'conductor.error': (p) => ({ kind: 'error', text: text(p.message), tone: 'bad' }),
   'play.result': playRow,
+  'must_support.status': mustSupportRow,
 };
 
 export const EVENT_TYPES = Object.keys(FORMAT) as EventType[];
