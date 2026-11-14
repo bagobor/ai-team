@@ -730,6 +730,76 @@ describe('flow', () => {
       expect(await reviseInputs(h, h.project, scope)).toContain('MUST-SUPPORT@1');
       expect(await reviseInputs(h, h.project, scope)).not.toContain('MUST-SUPPORT@2');
     });
+
+    it('a human item is a check at the milestone approval, and marking it there records it', async () => {
+      const h = await harness();
+      const cp4 = await toCp4(h, { ...HUMAN_FLOW, list: [sound], spec: { ...SPEC, criteria: [CRITERIA[0], HUMAN], must_support: [{ item: 'MS-1', change: 'Adds the first sounds' }] } });
+
+      expect(cp4.checks).toEqual([
+        { ac: 'AC-2', text: HUMAN.text, how: HUMAN.verification.how },
+        { ac: 'MS-1', text: 'Sounds right on phone speakers', how: 'Play with the sound on' },
+      ]);
+      expect(cp4.why).toMatch(/Check the 2 items below/);
+      expect(cp4.waivable).toEqual([]);
+      expect(cp4.evidence).toContainEqual({ label: 'MUST-SUPPORT', value: 'MUST-SUPPORT@1', pin: 'MUST-SUPPORT@1' });
+      await expect(h.store.answerInbox(cp4.id, { action: 'approve', checks: [{ ac: 'AC-2', status: 'passing', note: '' }] })).rejects.toThrow(/MS-1 is not marked/);
+
+      await h.store.answerInbox(cp4.id, { action: 'approve', checks: [{ ac: 'AC-2', status: 'passing', note: '' }, { ac: 'MS-1', status: 'passing', note: 'Clear enough' }] });
+      await h.conductor.tick();
+
+      expect(await h.store.listMustSupport(h.project.id, { scope: 'milestone', n: 1 })).toMatchObject([{ item_id: 'MS-1', status: 'met', evidence: `DEC-${cp4.id}@1#ms-1`, source: 'stakeholder', must_support_version: 1 }]);
+      expect((await h.store.listCriteria(h.project.id, 1)).map(({ ac_id, status }) => [ac_id, status])).toEqual([['AC-1', 'passing'], ['AC-2', 'passing']]);
+      expect(await milestonePhase(h)).toBe('merged');
+    });
+
+    it('a human item approved without is recorded as waived, with no mark needed', async () => {
+      const h = await harness();
+      const cp4 = await toCp4(h, LISTED);
+
+      await h.store.answerInbox(cp4.id, { action: 'approve', waive: ['MS-1'] });
+      await h.conductor.tick();
+
+      expect(await h.store.listMustSupport(h.project.id, { scope: 'milestone', n: 1 })).toMatchObject([{ item_id: 'MS-1', status: 'waived', evidence: `DEC-${cp4.id}@1#ms-1`, source: 'stakeholder' }]);
+      expect((await h.artifacts.read(h.project, `DEC-${cp4.id}`)).body).toContain('## MS-1\n\nApproved without it.\n');
+      expect(await milestonePhase(h)).toBe('merged');
+    });
+
+    it('the merge guard refuses an item that is neither met nor waived', async () => {
+      const h = await harness();
+      await toCp4(h, LISTED);
+      await h.store.setMilestonePhase(h.project.id, 1, 'merging');
+      await h.conductor.tick();
+
+      expect((await pending(h, 'engine_error')).why).toBe("Milestone 1 can't merge: MS-1 not met or waived");
+      expect(await milestonePhase(h)).toBe('merging');
+    });
+
+    it("a removed item's rows do not hold up the merge", async () => {
+      const h = await harness();
+      const cp4 = await toCp4(h);
+      await h.store.recordMustSupport(h.project.id, { scope: 'milestone', n: 1 }, [{ item_id: 'MS-9', status: 'failing', evidence: 'Too tall', source: 'play_gate', must_support_version: 1 }]);
+
+      await h.store.answerInbox(cp4.id, { action: 'approve' });
+      await h.conductor.tick();
+
+      expect(await milestonePhase(h)).toBe('merged');
+    });
+
+    it('the Milestone Review says a human item is the stakeholder\'s to check', async () => {
+      const h = await harness();
+      await toCp4(h, LISTED);
+
+      const { body } = await h.artifacts.read(h.project, 'MILESTONE-REVIEW-M1');
+      expect(body).toContain("## Must support\n\nThe engine's last check of milestone 1 against MUST-SUPPORT@1:\n\n- MS-1 Sounds right on phone speakers: Not measured — you check it at approval\n");
+      expect(body.indexOf('## Must support')).toBeLessThan(body.indexOf('## Review'));
+    });
+
+    it('a Milestone Review of a project with no items has no such section', async () => {
+      const h = await harness();
+      await toCp4(h);
+
+      expect((await h.artifacts.read(h.project, 'MILESTONE-REVIEW-M1')).body).not.toContain('Must support');
+    });
   });
 
   it('tells the stakeholder at milestone approval that the automated criteria passed QA', async () => {
@@ -1565,11 +1635,11 @@ describe('the play gate', () => {
     { kind: 'console', detail: 'Uncaught TypeError: x is undefined' },
   ]);
 
-  async function playing(results: PlayResult | PlayResult[], opts: { unavailable?: string; profile?: unknown } = {}) {
+  async function playing(results: PlayResult | PlayResult[], opts: { unavailable?: string; profile?: unknown; flow?: Flow } = {}) {
     const h = await harness();
     const player = fakePlayer(results, opts);
     h.player = player;
-    await toBuild(h, { profile: opts.profile ?? PLAY_PROFILE });
+    await toBuild(h, { profile: opts.profile ?? PLAY_PROFILE, ...opts.flow });
     return { h, player };
   }
 
@@ -1590,7 +1660,7 @@ describe('the play gate', () => {
     expect(player.calls).toHaveLength(1);
     expect(player.calls[0]!.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/index\.html$/);
     expect(player.calls[0]!.body).toBe(PAGE);
-    expect(smoke).toHaveBeenCalledWith(player.calls[0]!.url, ['Space'], { animated: undefined });
+    expect(smoke).toHaveBeenCalledWith(player.calls[0]!.url, ['Space'], { animated: undefined, touch: false, fitsScreen: false });
     expect(await taskIds(h)).toContain('M1-QA-1');
     expect(await milestonePhase(h)).toBe('verify');
   });
@@ -1600,7 +1670,128 @@ describe('the play gate', () => {
     const smoke = vi.spyOn(player, 'smoke');
     await mergeGame(h);
 
-    expect(smoke).toHaveBeenCalledWith(player.calls[0]!.url, ['Space'], { animated: false });
+    expect(smoke).toHaveBeenCalledWith(player.calls[0]!.url, ['Space'], { animated: false, touch: false, fitsScreen: false });
+  });
+
+  describe('against the must-support list', () => {
+    const phone: MsItem = { id: 'MS-1', group: 'runs_on', text: 'Plays in a phone browser held upright', brief_quote: 'On my phone', check: 'play', viewport: 'phone_portrait', input: 'touch', fits_screen: true };
+    const cmd: MsItem = { id: 'MS-2', group: 'built_with', text: 'Has no build step', brief_quote: 'No build step', check: 'command' };
+    const FITS = { kind: 'fits' as const, detail: 'The page is 2000px tall on a 844px-tall screen after load, so part of it is off screen' };
+    const TOO_TALL = `Phone browser, held upright: ${FITS.detail}`;
+    const listed = (list: MsItem[]): Flow => ({ list, spec: { ...SPEC, must_support: list.map(({ id }) => ({ item: id, change: 'Built in this milestone' })) } });
+    const checked = (command: string, profile: object = PLAY_PROFILE) => ({ ...profile, must_support_checks: [{ item: 'MS-2', command, protected: [] }] });
+    const statuses = (h: Harness) => h.store.listMustSupport(h.project.id, { scope: 'milestone', n: 1 });
+
+    it('a phone item that does not fit files a must-support Bug and spends a round', async () => {
+      const { h, player } = await playing(playResult([FITS]), { flow: listed([phone]) });
+      await mergeGame(h);
+
+      expect(player.calls).toHaveLength(1);
+      expect(player.calls[0]).toMatchObject({ keys: [], opts: { viewport: { width: 390, height: 844, mobile: true, touch: true }, touch: true, fitsScreen: true } });
+      expect(await statuses(h)).toMatchObject([{ item_id: 'MS-1', status: 'failing', evidence: TOO_TALL, source: 'play_gate', must_support_version: 1 }]);
+
+      const head = await revParse(h.repoPath, 'refs/heads/aiteam/m1');
+      const bug = await h.artifacts.read(h.project, 'BUG-M1-1');
+      expect(bug.body).toBe(
+        [
+          '# The game does not meet what it must support',
+          '',
+          `The engine built milestone 1 at ${head.slice(0, 7)} and checked it against MUST-SUPPORT@1 before QA round 1. These items failed:`,
+          '',
+          `- MS-1 Plays in a phone browser held upright: ${TOO_TALL}`,
+          '',
+          'Fix the build so that each of them holds.',
+          '',
+        ].join('\n'),
+      );
+      expect(bug.fields.data).toMatchObject({ items: ['MS-1'], headSha: head });
+      expect(await h.artifacts.latest(h.project.id, 'BUG-M1-1')).toMatchObject({ status: 'approved', approved_by: 'engine', derived_from: ['SPEC-M1@1', 'MUST-SUPPORT@1', 'ENV-PROFILE@1'] });
+      expect(await byTicket(h, 'M1-B-1')).toMatchObject({ kind: 'ticket', role_id: 'engineer', state: 'queued', title: 'The game does not meet what it must support', ac_refs: [], dod: ['test -f index.html'], touches: ['**'] });
+      expect(await milestoneOf(h)).toMatchObject({ phase: 'build', verify_round: 1 });
+      expect(await taskIds(h)).not.toContain('M1-QA-1');
+
+      // The round's Bug is open, so the gate doesn't play again.
+      await h.conductor.tick();
+      expect(player.calls).toHaveLength(1);
+    });
+
+    it('a failing command item files the same Bug, with its command for the fix to pass', async () => {
+      const { h } = await playing(playResult(), { flow: listed([cmd]), profile: checked('echo no-bundler-please; test -f no-such-file') });
+      await mergeGame(h);
+
+      expect(await statuses(h)).toMatchObject([{ item_id: 'MS-2', status: 'failing', source: 'play_gate' }]);
+      const bug = await h.artifacts.read(h.project, 'BUG-M1-1');
+      expect(bug.body).toContain('# The game does not meet what it must support');
+      expect(bug.body).toMatch(/\n- MS-2 Has no build step: .+ \(in full below\)\n/);
+      expect(bug.body).toContain('## In full');
+      expect(bug.body).toContain('no-bundler-please');
+      expect((await byTicket(h, 'M1-B-1')).dod).toEqual(['test -f index.html', 'echo no-bundler-please; test -f no-such-file']);
+      expect(await milestoneOf(h)).toMatchObject({ phase: 'build', verify_round: 1 });
+    });
+
+    it('a game that does not load still files the Bug that the game does not run', async () => {
+      const { h } = await playing(BOOM, { flow: listed([phone]) });
+      await mergeGame(h);
+
+      const bug = await h.artifacts.read(h.project, 'BUG-M1-1');
+      expect(bug.body).toContain('# The game does not run');
+      expect(bug.body).toContain('- exception: Phone browser, held upright: boom at game.js:3\n');
+      expect(await statuses(h)).toMatchObject([{ item_id: 'MS-1', status: 'failing', evidence: 'Phone browser, held upright: exception: boom at game.js:3; console: Uncaught TypeError: x is undefined' }]);
+      expect(await milestoneOf(h)).toMatchObject({ phase: 'build', verify_round: 1 });
+    });
+
+    it('with no play block, the command items still run, and no browser is needed', async () => {
+      const h = await harness();
+      await toBuild(h, { ...listed([cmd]), profile: checked('true', PROFILE) });
+      await mergeTicket(h, 'M1-T-1');
+      await h.conductor.tick();
+
+      expect(await statuses(h)).toMatchObject([{ item_id: 'MS-2', status: 'met', evidence: '`true` passed', source: 'play_gate' }]);
+      expect(await taskIds(h)).toContain('M1-QA-1');
+      expect(orderOf(await byTicket(h, 'M1-QA-1')).instructions).toContain('- MS-2 Has no build step: Met — `true` passed');
+    });
+
+    it('an item the stakeholder accepted going without in this milestone is neither played nor failed', async () => {
+      const { h, player } = await playing(playResult([FITS]), { flow: listed([phone]) });
+      const waiver = { item_id: 'MS-1', status: 'waived' as const, evidence: 'DEC-9@1', source: 'stakeholder' as const, must_support_version: 1 };
+      await h.store.recordMustSupport(h.project.id, { scope: 'milestone', n: 1 }, [waiver]);
+      await mergeGame(h);
+
+      expect(player.calls[0]!.opts).toEqual({ animated: undefined, touch: false, fitsScreen: false });
+      expect(await statuses(h)).toMatchObject([waiver]);
+      expect(await bugIds(h)).toEqual([]);
+      expect(await taskIds(h)).toContain('M1-QA-1');
+    });
+
+    it('a build still short with no rounds left goes on to QA, and the approval leads with what it does not meet', async () => {
+      const { h } = await playing(playResult([FITS]), { flow: listed([phone]) });
+      await h.store.patchMilestone(h.project.id, 1, { verify_cap: 0 });
+      await mergeGame(h);
+
+      expect(await bugIds(h)).toEqual([]);
+      await finish(h, 'M1-QA-1', PASS);
+      await h.conductor.tick();
+      await finish(h, 'M1-ENGREV-1', ENG_APPROVE);
+      await h.conductor.tick();
+      await finish(h, 'M1-REVIEW-1', REVIEW);
+      await h.conductor.tick();
+
+      const cp4 = await pending(h, 'cp4');
+      expect(cp4.why.split('\n').slice(0, 2)).toEqual(['This build does not meet: Plays in a phone browser held upright.', `Plays in a phone browser held upright: ${TOO_TALL}`]);
+      expect(cp4.why).toContain('Every acceptance criterion passed QA.');
+      expect(cp4.waivable).toEqual([{ id: 'MS-1', text: 'Plays in a phone browser held upright', why: TOO_TALL }]);
+      expect((await h.artifacts.read(h.project, 'MILESTONE-REVIEW-M1')).body).toContain(`- MS-1 Plays in a phone browser held upright: Failing — ${TOO_TALL}\n`);
+
+      await expect(h.store.answerInbox(cp4.id, { action: 'approve' })).rejects.toThrow('MS-1 does not meet the list: approve without it, or request changes');
+      expect((await h.store.getInbox(cp4.id))!.state).toBe('pending');
+
+      await h.store.answerInbox(cp4.id, { action: 'approve', waive: ['MS-1'] });
+      await h.conductor.tick();
+
+      expect(await statuses(h)).toMatchObject([{ item_id: 'MS-1', status: 'waived', evidence: `DEC-${cp4.id}@1#ms-1`, source: 'stakeholder' }]);
+      expect((await h.artifacts.read(h.project, `DEC-${cp4.id}`)).body).toContain(`## MS-1\n\nApproved without it.\n\n> ${TOO_TALL}\n`);
+      expect(await milestonePhase(h)).toBe('merged');
+    });
   });
 
   it('files a Bug when the game does not run', async () => {

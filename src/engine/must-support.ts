@@ -1,4 +1,5 @@
 import { oneLine } from './apply/text.ts';
+import type { InboxCheck, InboxWaivable } from './inbox.ts';
 
 // What the stakeholder's brief says the game must run on, how it's played and how it's built, as a list they confirm.
 // Every prototype and milestone is built and checked against it. Items aren't acceptance criteria: they don't go in the
@@ -164,4 +165,26 @@ export function specSection(lines: { item: string; change: string }[], items: Ms
   if (items.length === 0) return { problems, section: '' };
   const rows = items.map((item) => `- ${itemLine(item)}: ${gapped.includes(item.id) ? NOT_MET_HERE : oneLine(said.get(item.id) ?? '').trim()}`);
   return { problems, section: `## Must support\n\n${rows.join('\n')}\n` };
+}
+
+const firstLine = (text: string): string => oneLine(text.trim().split(/\r\n?|\n/)[0] ?? '');
+
+// What a milestone's approval says about the list. `statuses` come from gateStatuses, so each item has one.
+// - An item the engine checks and found failing, or could not measure, is one the stakeholder may approve without.
+// - `lead` opens the approval when the build fails any, so they read that before anything else.
+// - An item only they can judge is a check for them to mark, each time the milestone comes up for approval.
+export function cp4MustSupport(items: MsItem[], statuses: ItemStatus[]): { lead: string[]; waivable: InboxWaivable[]; checks: InboxCheck[] } {
+  const text = (item: MsItem) => oneLine(item.text).trim();
+  const found = (item: MsItem) => statuses.find(({ item_id }) => item_id === item.id) ?? { item_id: item.id, status: 'not_measured' as const, evidence: '' };
+  const engine = items.filter(({ check }) => check !== 'human').map((item) => ({ item, status: found(item).status, said: firstLine(found(item).evidence) }));
+  const failing = engine.filter(({ status }) => status === 'failing');
+  return {
+    lead: failing.length === 0 ? [] : [`This build does not meet: ${failing.map(({ item }) => text(item)).join('; ')}.`, ...failing.map(({ item, said }) => (said === '' ? text(item) : `${text(item)}: ${said}`))],
+    waivable: engine.flatMap(({ item, status, said }) => {
+      if (status === 'failing') return [{ id: item.id, text: text(item), why: said === '' ? 'The engine found it failing' : said }];
+      if (status === 'not_measured') return [{ id: item.id, text: text(item), why: `Not measured: ${said === '' ? 'the engine could not check it' : said}` }];
+      return [];
+    }),
+    checks: items.filter((item) => item.check === 'human' && found(item).status !== 'waived').map((item) => ({ ac: item.id, text: text(item), how: oneLine(item.how ?? '').trim() })),
+  };
 }

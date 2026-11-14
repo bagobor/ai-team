@@ -1,4 +1,4 @@
-import { gateStatuses, mustSupportProblems, playRuns, renderMustSupport, specSection, type MsItem } from '../src/engine/must-support.ts';
+import { cp4MustSupport, gateStatuses, mustSupportProblems, playRuns, renderMustSupport, specSection, type ItemStatus, type MsItem } from '../src/engine/must-support.ts';
 
 const phone: MsItem = {
   id: 'MS-1',
@@ -117,5 +117,46 @@ describe('specSection', () => {
 
   it('writes no section for a list with no items', () => {
     expect(specSection([], [], [])).toEqual({ problems: [], section: '' });
+  });
+});
+
+describe('cp4MustSupport', () => {
+  const found = (item_id: string, status: ItemStatus['status'], evidence = ''): ItemStatus => ({ item_id, status, evidence });
+
+  it('leads with what the build does not meet, and offers each one to approve without', () => {
+    const { lead, waivable } = cp4MustSupport([phone, cmd], [found('MS-1', 'failing', 'Phone browser, held upright: The page is 2000px tall\nmore'), found('MS-2', 'failing', '`test ! -f package.json` exited 1')]);
+
+    expect(lead).toEqual([
+      'This build does not meet: Plays in a phone browser held upright, by touch; Plain JavaScript, no build step.',
+      'Plays in a phone browser held upright, by touch: Phone browser, held upright: The page is 2000px tall',
+      'Plain JavaScript, no build step: `test ! -f package.json` exited 1',
+    ]);
+    expect(waivable).toEqual([
+      { id: 'MS-1', text: 'Plays in a phone browser held upright, by touch', why: 'Phone browser, held upright: The page is 2000px tall' },
+      { id: 'MS-2', text: 'Plain JavaScript, no build step', why: '`test ! -f package.json` exited 1' },
+    ]);
+  });
+
+  it('offers a play or command item the engine could not measure, without leading with it', () => {
+    const { lead, waivable } = cp4MustSupport([phone, cmd], [found('MS-1', 'not_measured', 'Chrome was not found'), found('MS-2', 'not_measured')]);
+
+    expect(lead).toEqual([]);
+    expect(waivable).toEqual([
+      { id: 'MS-1', text: 'Plays in a phone browser held upright, by touch', why: 'Not measured: Chrome was not found' },
+      { id: 'MS-2', text: 'Plain JavaScript, no build step', why: 'Not measured: the engine could not check it' },
+    ]);
+  });
+
+  it('makes each human item a check for the stakeholder, each time, unless they waived it', () => {
+    const check = { ac: 'MS-3', text: 'Touch feels good on a real phone', how: 'Play it on your phone' };
+
+    expect(cp4MustSupport([you], [found('MS-3', 'not_measured')])).toEqual({ lead: [], waivable: [], checks: [check] });
+    expect(cp4MustSupport([you], [found('MS-3', 'met', 'DEC-4@1#ms-3')]).checks).toEqual([check]);
+    expect(cp4MustSupport([you], [found('MS-3', 'waived', 'DEC-2@1')]).checks).toEqual([]);
+  });
+
+  it('asks nothing when every item the engine checks is met or waived', () => {
+    expect(cp4MustSupport([phone, cmd], [found('MS-1', 'met', 'Played'), found('MS-2', 'waived', 'DEC-2@1')])).toEqual({ lead: [], waivable: [], checks: [] });
+    expect(cp4MustSupport([], [])).toEqual({ lead: [], waivable: [], checks: [] });
   });
 });

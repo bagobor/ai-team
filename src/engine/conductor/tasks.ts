@@ -3,7 +3,7 @@ import { ENG_REVIEW_ID, ENV_PROFILE, FUN_DEFINITION, isPolishTicket, MUST_SUPPOR
 import { oneLine } from '../apply/text.ts';
 import { IllegalTransition } from '../fsm.ts';
 import type { InboxOption, InboxRef, InboxRow, NewInboxItem } from '../inbox.ts';
-import { gateStatuses, itemLine, STATUS_LABEL, type MsItem, type MustSupportData } from '../must-support.ts';
+import { gateStatuses, itemLine, STATUS_LABEL, type ItemStatus, type MsItem, type MustSupportData } from '../must-support.ts';
 import type { EngineDeps, Runner } from '../runner.ts';
 import type { ArtifactVersionRow, AttemptRow, ProjectRow, Store, TaskRow } from '../store.ts';
 import type { Purpose, TaskKind, WorkOrder } from '../workorder.ts';
@@ -475,21 +475,28 @@ export async function withMustSupport(deps: Pick<EngineDeps, 'artifacts'>, proje
   return pin === undefined ? inputs : [...inputs.filter((input) => parsePin(input).id !== MUST_SUPPORT), pin];
 }
 
-// What each item on the list came to in a milestone, as the engine's last check of it found: one line an item.
-export async function statusLines(deps: Pick<EngineDeps, 'artifacts' | 'store'>, project: ProjectRow, n: number): Promise<string[]> {
+// What each item on the list in force has come to in a milestone: what the gate or the stakeholder last found, with
+// their waivers for good counted. A project with no approved list has nothing to hold a milestone to.
+export async function milestoneStatuses(deps: Pick<EngineDeps, 'artifacts' | 'store'>, project: ProjectRow, n: number): Promise<{ pin: string; items: MsItem[]; statuses: ItemStatus[] } | undefined> {
   const list = await mustSupportItems(deps, project);
-  if (!list) return [];
-  const found = gateStatuses(list.items, await deps.store.listMustSupport(project.id, { scope: 'milestone', n }), await deps.store.listMustSupport(project.id, { scope: 'project', n: 0 }));
-  return list.items.map((item, index) => {
-    const { status, evidence } = found[index]!;
-    const first = oneLine(evidence.trim().split(/\r\n?|\n/)[0] ?? '');
+  if (!list) return undefined;
+  const statuses = gateStatuses(list.items, await deps.store.listMustSupport(project.id, { scope: 'milestone', n }), await deps.store.listMustSupport(project.id, { scope: 'project', n: 0 }));
+  return { pin: list.pin, items: list.items, statuses };
+}
+
+// The same, one line an item. `forHuman` is what to say of an item only the stakeholder can judge and hasn't yet.
+export function statusLines({ items, statuses }: { items: MsItem[]; statuses: ItemStatus[] }, forHuman?: string): string[] {
+  return items.map((item, index) => {
+    const { status, evidence } = statuses[index]!;
+    const first = item.check === 'human' && status === 'not_measured' && forHuman !== undefined ? forHuman : oneLine(evidence.trim().split(/\r\n?|\n/)[0] ?? '');
     return `${itemLine(item)}: ${STATUS_LABEL[status]}${first === '' ? '' : ` — ${first}`}`;
   });
 }
 
 // The same, as the paragraph QA and the Eng Lead read in their work orders. A list with no items says nothing.
 export async function mustSupportFound(deps: Pick<EngineDeps, 'artifacts' | 'store'>, project: ProjectRow, n: number): Promise<string | undefined> {
-  const lines = await statusLines(deps, project, n);
+  const found = await milestoneStatuses(deps, project, n);
+  const lines = found ? statusLines(found) : [];
   return lines.length === 0 ? undefined : ['What the game must support, as the engine last found it:', ...lines.map((line) => `- ${line}`)].join('\n');
 }
 

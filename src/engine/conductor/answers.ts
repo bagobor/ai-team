@@ -11,7 +11,7 @@ import type { ProjectRow, Store } from '../store.ts';
 import { applyRequest } from './change-requests.ts';
 import { answerGap, answerMustSupport } from './must-support.ts';
 import { removeTryWorktree } from './try.ts';
-import { discoveryDocs, discoveryInputs, discoveryTask, ensureTask, isClosed, isTerminal, latestPin, markHalted, profileTask, protoPlanInputs, protoPlanTask, replanInputs, replanTask, roundOf, specSources, specTask, stopProjectWork } from './tasks.ts';
+import { approvedMustSupport, discoveryDocs, discoveryInputs, discoveryTask, ensureTask, isClosed, isTerminal, latestPin, markHalted, profileTask, protoPlanInputs, protoPlanTask, replanInputs, replanTask, roundOf, specSources, specTask, stopProjectWork } from './tasks.ts';
 
 // What an answer does once the work outside SQLite is finished. It never holds a key named then: Effect comes out of async functions, and a promise would take it for a thenable.
 // What it publishes and its message go in the same commit as the Decision Record.
@@ -35,6 +35,9 @@ function wordsOf(answer: InboxAnswer): string | undefined {
 
 // Only an approval of a milestone or of a prototype round carries marks, and the inbox has already checked each one against that item's checks.
 const marksOf = (answer: InboxAnswer): CheckMark[] => ('checks' in answer ? (answer.checks ?? []) : []);
+// Only a milestone's approval names must-support items to go without, and the inbox has checked each against what it offered.
+const waiveOf = (answer: InboxAnswer): string[] => ('waive' in answer ? (answer.waive ?? []) : []);
+const MS_ID = /^MS-[1-9]\d*$/;
 
 const approved = (id: string): StatusChange => ({ id, status: 'approved', approvedBy: 'stakeholder' });
 
@@ -90,19 +93,24 @@ async function answerCp2(deps: EngineDeps, runner: Runner, project: ProjectRow, 
   };
 }
 
-// A mark is the stakeholder's own word on a check, so the criterion points at the Decision Record section that holds it.
-const recordMarks = (project: ProjectRow, item: InboxRow, n: number, marks: CheckMark[]) => async (s: Store): Promise<void> => {
+// A mark is the stakeholder's own word on a check, so what it settles points at the Decision Record section that holds it:
+// a criterion's status, or a must-support item's. An item they approve without is waived for this milestone, whatever its mark.
+const recordMarks = (project: ProjectRow, item: InboxRow, n: number, marks: CheckMark[], waive: string[], listVersion: number) => async (s: Store): Promise<void> => {
+  const evidence = (id: string) => `DEC-${item.id}@1#${id.toLowerCase()}`;
   for (const { ac, status } of marks) {
-    await s.recordVerification(project.id, n, ac, { status, evidenceRef: `DEC-${item.id}@1#${ac.toLowerCase()}`, verifiedBy: { kind: 'stakeholder', inboxId: item.id } });
+    if (!MS_ID.test(ac)) await s.recordVerification(project.id, n, ac, { status, evidenceRef: evidence(ac), verifiedBy: { kind: 'stakeholder', inboxId: item.id } });
   }
+  const judged = marks.filter(({ ac }) => MS_ID.test(ac) && !waive.includes(ac)).map(({ ac, status }) => ({ item_id: ac, status: status === 'passing' ? ('met' as const) : ('failing' as const) }));
+  const found = [...judged, ...waive.map((id) => ({ item_id: id, status: 'waived' as const }))];
+  await s.recordMustSupport(project.id, { scope: 'milestone', n }, found.map((row) => ({ ...row, evidence: evidence(row.item_id), source: 'stakeholder', must_support_version: listVersion })));
 };
 
-async function answerCp4(deps: EngineDeps, runner: Runner, project: ProjectRow, item: InboxRow, n: number, choice: string, words: string | undefined, marks: CheckMark[]): Promise<Effect> {
+async function answerCp4(deps: EngineDeps, runner: Runner, project: ProjectRow, item: InboxRow, n: number, choice: string, words: string | undefined, marks: CheckMark[], waive: string[]): Promise<Effect> {
   if (choice === 'reject') {
     await removeTryWorktree(deps, project, n);
     return halt(deps, runner, project, item);
   }
-  const record = recordMarks(project, item, n, marks);
+  const record = recordMarks(project, item, n, marks, choice === 'approve' ? waive : [], (await approvedMustSupport(deps, project))?.version ?? 0);
   if (choice === 'request_changes') {
     const k = (await deps.store.listTasks(project.id)).filter(({ ticket_id }) => ticket_id.startsWith(`M${n}-REPLAN-`)).length + 1;
     // The Eng Lead replans the tickets; a change to the design itself goes through a Change Request.
@@ -185,7 +193,7 @@ async function effectOf(deps: EngineDeps, runner: Runner, project: ProjectRow, i
     case 'cp2':
       return answerCp2(deps, runner, project, item, ref.milestone, choice, words);
     case 'cp4':
-      return answerCp4(deps, runner, project, item, ref.milestone, choice, words, marksOf(answer));
+      return answerCp4(deps, runner, project, item, ref.milestone, choice, words, marksOf(answer), waiveOf(answer));
     case 'cr':
       if (choice === 'approve') await applyRequest(deps, project, ref.cr, item);
       else await rejectChangeRequest(deps, project, ref.cr, words ?? 'The stakeholder rejected it');
@@ -220,8 +228,21 @@ function decisionRecord(item: InboxRow, answer: InboxAnswer): NewVersion {
   const words = wordsOf(answer);
   // A reject isn't held to its marks, so none of them is a verdict worth recording.
   const marks = choice === 'reject' ? [] : marksOf(answer);
+  const waive = choice === 'approve' ? waiveOf(answer) : [];
   // A mark on a prototype is the stakeholder's word on whether it was fun, and reads as that.
   const verdicts = item.ref.kind === 'fun_eval' ? { passing: 'Fun.', failing: 'Not fun.' } : { passing: 'Passing.', failing: 'Failing.' };
+  // One section per check marked or item approved without, named for it, so that the #ac-n or #ms-n anchor in its evidence resolves.
+  const section = (id: string): string[] => {
+    const mark = marks.find(({ ac }) => ac === id);
+    const why = item.waivable.find((offered) => offered.id === id)?.why;
+    return [
+      `## ${id}`,
+      '',
+      ...(mark ? [verdicts[mark.status], '', ...(mark.note.trim() === '' ? [] : [quoted(mark.note), ''])] : []),
+      ...(waive.includes(id) ? ['Approved without it.', '', ...(why === undefined ? [] : [quoted(why), ''])] : []),
+    ];
+  };
+  const settled = [...marks.map(({ ac }) => ac), ...waive.filter((id) => !marks.some(({ ac }) => ac === id))];
   return {
     id: `DEC-${item.id}`,
     type: 'decision_record',
@@ -231,14 +252,13 @@ function decisionRecord(item: InboxRow, answer: InboxAnswer): NewVersion {
     derivedFrom: item.evidence.flatMap(({ pin }) => (pin ? [pin] : [])),
     ...(item.milestone === null ? {} : { milestone: item.milestone }),
     fields: { data: { ref: item.ref, answer } },
-    // One section per mark, named for its criterion, so that the #ac-n anchor in the criterion's evidence resolves.
     body: [
       `# ${oneLine(item.title)}`,
       '',
       `Decision: ${label}`,
       '',
       ...(words === undefined ? [] : [quoted(words), '']),
-      ...marks.flatMap(({ ac, status, note }) => [`## ${ac}`, '', verdicts[status], '', ...(note.trim() === '' ? [] : [quoted(note), ''])]),
+      ...settled.flatMap(section),
     ].join('\n'),
   };
 }

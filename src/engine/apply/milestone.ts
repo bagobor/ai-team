@@ -1,6 +1,6 @@
 import { AC_ID, AC_SLUG, type Criterion, isHumanCheck, MAX_HUMAN_CHECKS, verificationLabel } from '../../artifacts/acs.ts';
 import { parsePin, sectionsOf } from '../../artifacts/format.ts';
-import { mustSupportItems } from '../conductor/tasks.ts';
+import { milestoneStatuses, mustSupportItems, statusLines } from '../conductor/tasks.ts';
 import { specSection } from '../must-support.ts';
 import type { Gap } from './gaps.ts';
 import { reviewId, specId } from './ids.ts';
@@ -98,7 +98,7 @@ export const applyMilestoneSpec: Applier = async (ctx) => {
 const cell = (text: string) => oneLine(text).replaceAll('|', '\\|');
 
 const bulletSection = (title: string, items: string[]) => (items.length > 0 ? [`## ${title}`, '', ...items.map((item) => `- ${oneLine(item)}`), ''] : []);
-const ENGINE_REVIEW_SECTIONS = new Set(['acceptance-criteria', 'known-issues', 'deviations', 'cost-and-time']);
+const ENGINE_REVIEW_SECTIONS = new Set(['acceptance-criteria', 'known-issues', 'deviations', 'cost-and-time', 'must-support']);
 
 export const applyMilestoneReview: Applier = async (ctx) => {
   const { body, known_issues, deviations } = ctx.output as ReviewOutput;
@@ -119,6 +119,9 @@ export const applyMilestoneReview: Applier = async (ctx) => {
     if (total?.usdEst != null) usd = (usd ?? 0) + total.usdEst;
     seconds += total?.seconds ?? 0;
   }
+  // What the engine's own check of the build against the must-support list came to, for the stakeholder who approves it.
+  const found = await milestoneStatuses(ctx.deps, ctx.project, milestone);
+  const supported = found ? statusLines(found, 'you check it at approval') : [];
 
   // The engine's sections come first, so nothing in the model's body (an unclosed fence, a table of its own) can swallow or pre-empt them.
   const composed = [
@@ -135,6 +138,7 @@ export const applyMilestoneReview: Applier = async (ctx) => {
     `Cost (estimate): ${usd === null ? 'unknown' : `$${usd.toFixed(2)}`}`,
     `Worker time (estimate): ${Math.round(seconds / 60)} min`,
     '',
+    ...(found && supported.length > 0 ? ['## Must support', '', `The engine's last check of milestone ${milestone} against ${found.pin}:`, '', ...supported.map((line) => `- ${line}`), ''] : []),
     '## Review',
     '',
     body.trimEnd(),

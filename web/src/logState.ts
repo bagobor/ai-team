@@ -44,13 +44,15 @@ function checkRow(p: Payload): RowParts {
   return { kind: 'test', bold: text(run.command), text: `${checkOutcome(run)}${took}`, tone: run.exitCode === 0 ? 'good' : 'bad' };
 }
 
-// The play gate's outcome, with what went wrong when the game didn't run or couldn't be played. A build's or a
-// setup's output runs to many lines, all of them in the Bug or the hold, so a row takes the first.
+// The play gate's outcome, with what went wrong when the game didn't run, couldn't be played, or runs and fails items
+// of the must-support list. A build's or a setup's output runs to many lines, all of them in the Bug or the hold, so a
+// row takes the first.
 const firstLine = (value: unknown): string => text(value).trim().split(/\r?\n/)[0]!;
 
 function playRow(p: Payload): RowParts {
   const problems = Array.isArray(p.problems) ? p.problems.map((problem: { kind?: unknown; detail?: unknown } | null) => `${text(problem?.kind)}: ${firstLine(problem?.detail)}`) : [];
-  const said = p.outcome === 'unavailable' ? firstLine(p.why) : problems.join('; ');
+  const failing = Array.isArray(p.statuses) ? p.statuses.filter((found: { status?: unknown } | null) => found?.status === 'failing').map((found: { item_id?: unknown } | null) => text(found?.item_id)) : [];
+  const said = p.outcome === 'unavailable' ? firstLine(p.why) : p.outcome === 'short' ? `${failing.join(', ')} failing` : problems.join('; ');
   const bold = typeof p.milestone === 'number' ? `play M${p.milestone}` : 'play';
   return { kind: 'test', bold, text: said ? `${text(p.outcome)}: ${said}` : text(p.outcome), tone: p.outcome === 'passed' ? 'good' : 'bad' };
 }
