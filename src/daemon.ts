@@ -2,6 +2,7 @@ import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { fileURLToPath } from 'node:url';
 import { serve } from '@hono/node-server';
+import { findClaudeBinary } from './adapters/claude-binary.ts';
 import { claudeAdapterFor } from './adapters/claude-code.ts';
 import { ArtifactStore } from './artifacts/store.ts';
 import { chromePlayer } from './checks/play.ts';
@@ -92,6 +93,8 @@ export async function startDaemon(opts: { paths: Paths; config: Config; webDist?
     const { kept } = await syncSeed(paths);
     const stale = keptWarning(paths, kept);
     if (stale) console.warn(stale);
+    const claude = findClaudeBinary(config.claude.binary);
+    if (claude.replaces !== undefined) console.warn(`${claude.replaces}, the path set as claude.binary in config.yaml, is gone. The engine runs ${claude.binary} in its place.`);
     await recover(deps);
     await pruneQuietly();
     scheduler.start();

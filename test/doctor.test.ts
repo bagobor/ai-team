@@ -1,5 +1,5 @@
-import { mkdirSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { mkdirSync, symlinkSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DEFAULT_CONFIG, type Config } from '../src/config.ts';
 import { resolvePaths, type Paths } from '../src/paths.ts';
@@ -62,12 +62,27 @@ describe('runDoctor', () => {
 
   it('flags a missing claude binary and names it', async () => {
     const missing = join(tempDir(), 'no-such-claude');
+    vi.stubEnv('PATH', tempDir());
 
     const binary = await check('claude binary', config({}, missing));
 
     expect(binary.ok).toBe(false);
     expect(binary.detail).toContain(missing);
     expect(binary.detail).toContain('claude.binary');
+  });
+
+  it('passes with the version beside a configured path whose own version is gone, and names both', async () => {
+    const beside = join(tempDir(), 'app', '2.1.325', 'bbb', 'claude');
+    const configured = join(dirname(dirname(dirname(beside))), '2.1.309', 'aaa', 'claude');
+    mkdirSync(dirname(beside), { recursive: true });
+    symlinkSync(FAKE_CLAUDE, beside);
+
+    const checks = await runDoctor(paths, config({}, configured));
+
+    expect(checks.filter((c) => !c.ok)).toEqual([]);
+    const { detail } = await check('claude binary', config({}, configured));
+    expect(detail).toContain(beside);
+    expect(detail).toContain(configured);
   });
 
   it('flags a logged-out agent home with the login command', async () => {

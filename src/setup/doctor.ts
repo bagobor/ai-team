@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process';
+import { findClaudeBinary } from '../adapters/claude-binary.ts';
 import { claudeAdapterFor } from '../adapters/claude-code.ts';
 import type { Config } from '../config.ts';
 import type { Paths } from '../paths.ts';
@@ -28,11 +29,11 @@ async function checkGit(): Promise<DoctorCheck> {
 }
 
 async function checkClaudeBinary(config: Config): Promise<DoctorCheck> {
-  const { binary } = config.claude;
+  const { binary, replaces } = findClaudeBinary(config.claude.binary);
   const found = await versionOf(binary);
-  return found.ok
-    ? { name: 'claude binary', ok: true, detail: `${binary}: ${found.version}` }
-    : { name: 'claude binary', ok: false, detail: `Could not run ${binary}, the path set as claude.binary in config.yaml: ${found.reason}` };
+  if (!found.ok) return { name: 'claude binary', ok: false, detail: `Could not run ${binary}, the path set as claude.binary in config.yaml: ${found.reason}` };
+  const instead = replaces === undefined ? '' : `, found in place of ${replaces}, the path set as claude.binary in config.yaml, which is gone`;
+  return { name: 'claude binary', ok: true, detail: `${binary}: ${found.version}${instead}` };
 }
 
 async function checkLogin(paths: Paths, config: Config): Promise<DoctorCheck> {
