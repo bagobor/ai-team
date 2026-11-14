@@ -29,6 +29,8 @@ export function inboxLabel({ id, ref }: { id: number; ref: InboxRef }): string {
   if (ref.kind === 'cp2' || ref.kind === 'cp4') return `${ref.kind.toUpperCase()}-M${ref.milestone}`;
   if (ref.kind === 'cr') return ref.cr;
   if (ref.kind === 'fun_eval') return `FUN-R${ref.round}`;
+  if (ref.kind === 'must_support') return 'What it must run on';
+  if (ref.kind === 'ms_gap') return `Can't meet ${ref.item}`;
   return `Q-${id}`;
 }
 
@@ -88,8 +90,23 @@ export function canApprove(checks: InboxCheck[], marks: Marks): boolean {
 }
 
 // A fun evaluation asks for a verdict on each prototype, and not fun is a verdict: approving it says the fun is defined, not that every prototype was fun.
-export function canApproveItem(ref: InboxRef, checks: InboxCheck[], marks: Marks): boolean {
-  return ref.kind === 'fun_eval' ? checks.every(({ ac }) => marks[ac]?.status !== undefined) : canApprove(checks, marks);
+// A milestone is approved only once each must-support item the build doesn't meet is ticked to go without, and a check
+// the stakeholder approves without needs no verdict.
+export function canApproveItem(ref: InboxRef, checks: InboxCheck[], marks: Marks, waivable: InboxItem['waivable'] = [], waive: string[] = []): boolean {
+  if (waivable.some(({ id }) => !waive.includes(id))) return false;
+  const held = checks.filter(({ ac }) => !waive.includes(ac));
+  return ref.kind === 'fun_eval' ? held.every(({ ac }) => marks[ac]?.status !== undefined) : canApprove(held, marks);
+}
+
+export const waiveLabel = (text: string): string => `Approve without: ${text}`;
+
+const MS_ID = /^MS-[1-9]\d*$/;
+
+// What a milestone's approval can go without: each must-support item the build doesn't meet or the engine couldn't
+// measure, and each one that is the stakeholder's own to judge.
+export function waivers({ ref, waivable, checks }: Pick<InboxItem, 'ref' | 'waivable' | 'checks'>): InboxItem['waivable'] {
+  if (ref.kind !== 'cp4') return [];
+  return [...waivable, ...checks.filter(({ ac }) => MS_ID.test(ac)).map(({ ac, text, how }) => ({ id: ac, text, why: `Yours to judge: ${how}` }))];
 }
 
 // Only the words change: a fun evaluation still sends passing and failing, which the server takes as fun and not fun.

@@ -24,6 +24,8 @@ import {
   pinParts,
   rejectConfirm,
   requestChangesLabel,
+  waiveLabel,
+  waivers,
   type InboxItem,
 } from '../web/src/lib/inbox.ts';
 import { duration, foldedQuote, ledgerTotals, purposeLabel, roleChip, runLabel, thenOf, when } from '../web/src/lib/ledger.ts';
@@ -81,6 +83,11 @@ describe('inboxLabel', () => {
   it('labels a fun evaluation FUN-R2', () => {
     expect(inboxLabel({ id: 9, ref: { kind: 'fun_eval', round: 2 } })).toBe('FUN-R2');
   });
+
+  it('labels the must-support items', () => {
+    expect(inboxLabel({ id: 7, ref: { kind: 'must_support', version: 1 } })).toBe('What it must run on');
+    expect(inboxLabel({ id: 8, ref: { kind: 'ms_gap', item: 'MS-1', scope: 'milestone', n: 2, raised_in: 'M2-SPEC', why: 'Too wide' } })).toBe("Can't meet MS-1");
+  });
 });
 
 describe('the checks the stakeholder marks', () => {
@@ -105,6 +112,37 @@ describe('the checks the stakeholder marks', () => {
     expect(canApproveItem(CP4, checks, { 'AC-2': passing, 'AC-3': { status: 'failing', note: 'quiet' } })).toBe(false);
     expect(canApproveItem(CP4, checks, { 'AC-2': passing, 'AC-3': passing })).toBe(true);
     expect(canApproveItem(CP4, [], {})).toBe(true);
+  });
+
+  describe('approving without a must-support item', () => {
+    const CP4: InboxRef = { kind: 'cp4', milestone: 1 };
+    const waivable = [{ id: 'MS-1', text: 'Plays on a phone', why: 'too tall' }];
+    const sound = { ac: 'MS-4', text: 'Sounds right', how: 'Listen' };
+
+    it('approve needs every failing item waived', () => {
+      expect(canApproveItem(CP4, [], {}, waivable, [])).toBe(false);
+      expect(canApproveItem(CP4, [], {}, waivable, ['MS-1'])).toBe(true);
+      expect(canApproveItem(CP4, checks, { 'AC-2': passing, 'AC-3': passing }, waivable, [])).toBe(false);
+    });
+
+    it('a waived MS check needs no mark, and every other check still does', () => {
+      expect(canApproveItem(CP4, [sound], {}, [], ['MS-4'])).toBe(true);
+      expect(canApproveItem(CP4, [sound], { 'MS-4': { status: 'failing', note: 'Tinny' } }, [], ['MS-4'])).toBe(true);
+      expect(canApproveItem(CP4, [sound], {}, [], [])).toBe(false);
+      expect(canApproveItem(CP4, [...checks, sound], { 'AC-2': passing }, [], ['MS-4'])).toBe(false);
+    });
+
+    it('labels a waiver', () => {
+      expect(waiveLabel('Plays on a phone')).toBe('Approve without: Plays on a phone');
+    });
+
+    it('offers a waiver for each failing item, and for each check on the list', () => {
+      expect(waivers({ ref: CP4, waivable, checks: [...checks, sound] })).toEqual([
+        { id: 'MS-1', text: 'Plays on a phone', why: 'too tall' },
+        { id: 'MS-4', text: 'Sounds right', why: 'Yours to judge: Listen' },
+      ]);
+      expect(waivers({ ref: { kind: 'cp2', milestone: 1 }, waivable: [], checks: [sound] })).toEqual([]);
+    });
   });
 
   const FUN: InboxRef = { kind: 'fun_eval', round: 1 };
