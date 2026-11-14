@@ -54,7 +54,12 @@ describe('the whole M2 flow', () => {
   };
   const stateOf = async (ticketId: string) => (await e.store.getTaskByTicket((await e.store.getProject('p'))!.id, ticketId))?.state;
   const criteria = async () => e.store.listCriteria((await e.store.getProject('p'))!.id, 1);
-  const postBrief = async () => expect((await post('/api/projects/p/brief', { markdown: M2_BRIEF })).status).toBe(201);
+  // The stakeholder confirms the PM's list before anything else starts.
+  const postBrief = async () => {
+    expect((await post('/api/projects/p/brief', { markdown: M2_BRIEF })).status).toBe(201);
+    await e.drive(() => pending('must_support'));
+    await answer('must_support', { action: 'approve' });
+  };
 
   const toCp4 = async () => {
     await postBrief();

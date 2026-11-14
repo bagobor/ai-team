@@ -1,5 +1,5 @@
 import { formatPin, parsePin } from '../../artifacts/format.ts';
-import { ENG_REVIEW_ID, ENV_PROFILE, FUN_DEFINITION, isPolishTicket, PROTO_PLAN_ID, protoPlanId, techId } from '../apply/ids.ts';
+import { ENG_REVIEW_ID, ENV_PROFILE, FUN_DEFINITION, isPolishTicket, MUST_SUPPORT, PROTO_PLAN_ID, protoPlanId, techId } from '../apply/ids.ts';
 import { IllegalTransition } from '../fsm.ts';
 import type { InboxOption, InboxRef, InboxRow, NewInboxItem } from '../inbox.ts';
 import type { EngineDeps, Runner } from '../runner.ts';
@@ -402,14 +402,33 @@ export async function funInputs(deps: Pick<EngineDeps, 'artifacts'>, project: Pr
   return found.sort((a, b) => a.round - b.round || Number(a.verdict) - Number(b.verdict)).map(({ pin }) => pin);
 }
 
+// The list work is checked against: the newest version the stakeholder approved. A newer one may be waiting for them,
+// and one they rejected stays proposed.
+export async function approvedMustSupport(deps: Pick<EngineDeps, 'artifacts'>, project: ProjectRow): Promise<ArtifactVersionRow | undefined> {
+  let row = await deps.artifacts.latest(project.id, MUST_SUPPORT);
+  while (row && !row.approved_by) row = row.version > 1 ? await deps.artifacts.version(project.id, MUST_SUPPORT, row.version - 1) : undefined;
+  return row;
+}
+
+// Every plan and discovery reads the approved list. A project still waiting on its first has none.
+export async function mustSupportPins(deps: Pick<EngineDeps, 'artifacts'>, project: ProjectRow): Promise<string[]> {
+  const row = await approvedMustSupport(deps, project);
+  return row ? [pinOf(row)] : [];
+}
+
+// What a prototype round's plan reads: the brief, the list, and what the rounds before it found.
+export async function protoPlanInputs(deps: Pick<EngineDeps, 'artifacts'>, project: ProjectRow): Promise<string[]> {
+  return [await latestPin(deps, project, 'BRIEF'), ...(await mustSupportPins(deps, project)), ...(await funInputs(deps, project))];
+}
+
 // The Tech Lead reworks its profile alongside the PM's new documents, which don't exist until the PM finishes: an unversioned pin reads the latest.
 // Every discovery round reads what the prototype rounds found, since the PM writes down the fun from the stakeholder's verdicts.
 export async function discoveryInputs(deps: Pick<EngineDeps, 'artifacts'>, project: ProjectRow): Promise<{ pm: string[]; profile: string[] }> {
-  const brief = await latestPin(deps, project, 'BRIEF');
+  const brief = [await latestPin(deps, project, 'BRIEF'), ...(await mustSupportPins(deps, project))];
   const prior = await Promise.all((await discoveryDocs(deps, project)).map((id) => deps.artifacts.latest(project.id, id)));
   const priorProfile = await deps.artifacts.latest(project.id, ENV_PROFILE);
   return {
-    pm: [brief, ...prior.flatMap((row) => (row ? [pinOf(row)] : [])), ...(await funInputs(deps, project))],
-    profile: [brief, ...DISCOVERY_DOCS, ...(priorProfile ? [pinOf(priorProfile)] : [])],
+    pm: [...brief, ...prior.flatMap((row) => (row ? [pinOf(row)] : [])), ...(await funInputs(deps, project))],
+    profile: [...brief, ...DISCOVERY_DOCS, ...(priorProfile ? [pinOf(priorProfile)] : [])],
   };
 }

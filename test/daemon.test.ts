@@ -19,7 +19,7 @@ import { Store, type TaskRow } from '../src/engine/store.ts';
 import { EventLog } from '../src/events.ts';
 import { resolvePaths, type Paths } from '../src/paths.ts';
 import { keptWarning, runSetup } from '../src/setup/setup.ts';
-import { freePort, okStep, resultLine, ticket, until } from './helpers/engine.ts';
+import { freePort, okStep, resultLine, seedMustSupport, ticket, until } from './helpers/engine.ts';
 import { makeRepo, tempDir } from './helpers/repo.ts';
 
 const CLI = fileURLToPath(new URL('../src/cli.ts', import.meta.url));
@@ -286,7 +286,9 @@ describe('the daemon', () => {
           ]),
         );
         const project = (await store.getProject('p'))!;
-        await new ArtifactStore(store, paths).commit(project, { message: 'brief', publish: [{ id: 'BRIEF', type: 'brief', status: 'approved', ownerRole: 'stakeholder', approvedBy: 'stakeholder', derivedFrom: [], body: '# A small thing\n' }] });
+        const artifacts = new ArtifactStore(store, paths);
+        await artifacts.commit(project, { message: 'brief', publish: [{ id: 'BRIEF', type: 'brief', status: 'approved', ownerRole: 'stakeholder', approvedBy: 'stakeholder', derivedFrom: [], body: '# A small thing\n' }] });
+        await seedMustSupport({ artifacts }, project);
 
         const daemon = await startDaemon({ paths, config: { ...config(), claude: { ...config().claude, extraEnv: { FAKE_SCRIPT: script, FAKE_SPAWN_LOG: spawnLog } } } });
         const item = await until(async () => (await store.listInbox({ state: 'pending' })).find(({ ref }) => ref.kind === 'cp1'), 30_000);

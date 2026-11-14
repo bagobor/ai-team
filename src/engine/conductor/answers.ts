@@ -9,11 +9,13 @@ import type { CheckMark, InboxAnswer, InboxRow } from '../inbox.ts';
 import type { EngineDeps, Runner } from '../runner.ts';
 import type { ProjectRow, Store } from '../store.ts';
 import { applyRequest } from './change-requests.ts';
+import { answerMustSupport } from './must-support.ts';
 import { removeTryWorktree } from './try.ts';
-import { discoveryDocs, discoveryInputs, discoveryTask, ensureTask, funInputs, isClosed, isTerminal, latestPin, markHalted, profileTask, protoPlanTask, replanInputs, replanTask, roundOf, specSources, specTask, stopProjectWork } from './tasks.ts';
+import { discoveryDocs, discoveryInputs, discoveryTask, ensureTask, isClosed, isTerminal, latestPin, markHalted, profileTask, protoPlanInputs, protoPlanTask, replanInputs, replanTask, roundOf, specSources, specTask, stopProjectWork } from './tasks.ts';
 
 // What an answer does once the work outside SQLite is finished. It never holds a key named then: Effect comes out of async functions, and a promise would take it for a thenable.
-type Effect = { status?: StatusChange[]; after?: (s: Store) => Promise<void> };
+// What it publishes and its message go in the same commit as the Decision Record.
+export type Effect = { status?: StatusChange[]; publish?: NewVersion[]; message?: string; after?: (s: Store) => Promise<void> };
 
 const LABELS: Record<string, string> = { approve: 'Approve', request_changes: 'Request changes', reject: 'Reject' };
 
@@ -34,7 +36,7 @@ const marksOf = (answer: InboxAnswer): CheckMark[] => ('checks' in answer ? (ans
 
 const approved = (id: string): StatusChange => ({ id, status: 'approved', approvedBy: 'stakeholder' });
 
-async function halt(deps: EngineDeps, runner: Runner, project: ProjectRow, item: InboxRow): Promise<Effect> {
+export async function halt(deps: EngineDeps, runner: Runner, project: ProjectRow, item: InboxRow): Promise<Effect> {
   await stopProjectWork(deps, runner, project);
   return { after: (s) => markHalted(s, project, `The stakeholder halted the project at: ${oneLine(item.title)}`) };
 }
@@ -138,7 +140,7 @@ async function answerFunEval(deps: EngineDeps, runner: Runner, project: ProjectR
   }
   const record = `DEC-${item.id}@1`;
   if (choice === 'request_changes') {
-    const inputs = [await latestPin(deps, project, 'BRIEF'), ...(await funInputs(deps, project)), record];
+    const inputs = [...(await protoPlanInputs(deps, project)), record];
     return {
       after: async (s) => {
         await ensureTask(s, protoPlanTask(project, r + 1, inputs));
@@ -190,6 +192,8 @@ async function effectOf(deps: EngineDeps, runner: Runner, project: ProjectRow, i
       return answerEscalation(deps, runner, project, item, ref.taskId, choice);
     case 'fun_eval':
       return answerFunEval(deps, runner, project, item, ref.round, choice);
+    case 'must_support':
+      return answerMustSupport(deps, runner, project, item, ref.version, choice, words);
     case 'qa_cap':
       if (choice === 'halt') return halt(deps, runner, project, item);
       return {
@@ -244,7 +248,11 @@ async function applyAnswer(deps: EngineDeps, runner: Runner, projectId: number, 
   const effect = isTerminal(project) ? {} : await effectOf(deps, runner, project, item, answer);
   await deps.artifacts.commit(
     project,
-    { message: `decision: ${oneLine(item.title)}`, publish: [decisionRecord(item, answer)], ...(effect.status ? { status: effect.status } : {}) },
+    {
+      message: [`decision: ${oneLine(item.title)}`, ...(effect.message ? [effect.message] : [])].join('\n\n'),
+      publish: [decisionRecord(item, answer), ...(effect.publish ?? [])],
+      ...(effect.status ? { status: effect.status } : {}),
+    },
     async (s) => {
       await effect.after?.(s);
       await s.markInboxApplied(item.id);

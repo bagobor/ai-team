@@ -11,10 +11,11 @@ import { DEFAULT_CONFIG, type Config } from '../../src/config.ts';
 import { openDb } from '../../src/db/open.ts';
 import { Conductor } from '../../src/engine/conductor/index.ts';
 import { addProject, addTicket } from '../../src/engine/intake.ts';
+import { renderMustSupport, type MsItem } from '../../src/engine/must-support.ts';
 import { recover } from '../../src/engine/recovery.ts';
 import { Runner, type EngineDeps } from '../../src/engine/runner.ts';
 import { Scheduler } from '../../src/engine/scheduler.ts';
-import { Store, type TaskRow } from '../../src/engine/store.ts';
+import { Store, type ProjectRow, type TaskRow } from '../../src/engine/store.ts';
 import { EventLog } from '../../src/events.ts';
 import { resolvePaths, workerDenyRead } from '../../src/paths.ts';
 import { runSetup } from '../../src/setup/setup.ts';
@@ -247,4 +248,14 @@ export function ticket(overrides: Record<string, unknown> & { body?: string } = 
 
 export async function eventTypes(e: EngineDeps, taskId: number): Promise<string[]> {
   return (await e.log.list({ taskId })).map((event) => event.type);
+}
+
+// An approved list, as the stakeholder would leave it. With no items, every later check behaves as it did before the list.
+export async function seedMustSupport(e: Pick<EngineDeps, 'artifacts'>, project: ProjectRow, items: MsItem[] = []): Promise<string> {
+  const brief = await e.artifacts.latest(project.id, 'BRIEF');
+  const [row] = await e.artifacts.commit(project, {
+    message: 'must support',
+    publish: [{ id: 'MUST-SUPPORT', type: 'must_support', status: 'approved', approvedBy: 'stakeholder', ownerRole: 'pm', derivedFrom: brief ? [`BRIEF@${brief.version}`] : [], body: renderMustSupport(items), fields: { data: { items, used: items.map(({ id }) => id) } } }],
+  });
+  return `MUST-SUPPORT@${row!.version}`;
 }

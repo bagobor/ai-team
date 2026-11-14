@@ -23,7 +23,7 @@ import { mergeIntoBranch } from '../src/git/merge.ts';
 import { addAttemptWorktree, ensureIntegrationBranch, snapshotAttempt } from '../src/git/workspace.ts';
 import { isWithin, worktreePath } from '../src/paths.ts';
 import { CRITERIA, projectOf } from './helpers/apply.ts';
-import { eventTypes, makeEngine, ticket, type TestEngine } from './helpers/engine.ts';
+import { eventTypes, makeEngine, seedMustSupport, ticket, type TestEngine } from './helpers/engine.ts';
 import { fakePlayer, playResult } from './helpers/play.ts';
 import { commitAll, makeRepo, porcelain, revParse, run, tempDir } from './helpers/repo.ts';
 
@@ -213,6 +213,7 @@ const hasCommit = (h: Harness, sha: string, ref: string) => {
 
 async function addBrief(h: Harness): Promise<void> {
   await h.artifacts.commit(h.project, { message: 'brief', publish: [{ id: 'BRIEF', type: 'brief', status: 'approved', approvedBy: 'stakeholder', ownerRole: 'stakeholder', derivedFrom: [], body: '# Brief\n' }] });
+  await seedMustSupport(h, h.project);
 }
 
 type Flow = { discovery?: unknown; profile?: unknown; spec?: unknown; design?: unknown; plan?: unknown; scope?: unknown; qa?: unknown };
@@ -312,7 +313,7 @@ describe('flow', () => {
 
     const pm = await byTicket(h, 'DISCOVERY-PM');
     const tl = await byTicket(h, 'DISCOVERY-TL');
-    expect([pm.role_id, pm.purpose, orderOf(pm).inputs, orderOf(pm).base]).toEqual(['pm', 'discovery', ['BRIEF@1'], { kind: 'base' }]);
+    expect([pm.role_id, pm.purpose, orderOf(pm).inputs, orderOf(pm).base]).toEqual(['pm', 'discovery', ['BRIEF@1', 'MUST-SUPPORT@1'], { kind: 'base' }]);
     expect([tl.role_id, tl.purpose, tl.depends_on]).toEqual(['tech_lead', 'environment_profile', ['DISCOVERY-PM']]);
     expect(await phaseOf(h)).toBe('discovery');
   });
@@ -1235,6 +1236,7 @@ describe('flow', () => {
     const other = await addProject(h, { name: 'other', repoPath: path, create: false });
     await addBrief(h);
     await h.artifacts.commit(other, { message: 'brief', publish: [{ id: 'BRIEF', type: 'brief', status: 'approved', approvedBy: 'stakeholder', ownerRole: 'stakeholder', derivedFrom: [], body: '# Brief\n' }] });
+    await seedMustSupport(h, other);
 
     const latest = h.artifacts.latest.bind(h.artifacts);
     const spy = vi.spyOn(h.artifacts, 'latest').mockImplementation(async (projectId, id) => {

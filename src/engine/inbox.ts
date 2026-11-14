@@ -5,6 +5,7 @@ export type InboxRef =
   | { kind: 'escalation'; taskId: number }
   | { kind: 'smoke' | 'base_conflict' | 'base_refused' | 'qa_cap' | 'play'; milestone: number }
   | { kind: 'fun_eval'; round: number }
+  | { kind: 'must_support'; version: number }
   | { kind: 'engine_error' };
 
 export type InboxType = 'approval' | 'question';

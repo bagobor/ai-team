@@ -13,6 +13,7 @@ import { TRY_IT } from '../inbox.ts';
 import type { EngineDeps, Runner } from '../runner.ts';
 import type { MilestoneRow, ProjectRow, Store, TaskRow } from '../store.ts';
 import { withHeadWorktree } from './head-worktree.ts';
+import { advanceMustSupport } from './must-support.ts';
 import { playBug, problemLine, runPlayGate } from './play-gate.ts';
 import { designMoving, engReviewTask, ensureTask, isClosed, latestPin, milestoneReviewTask, noteOf, pinOf, qaTask, raiseHold, RETRY_OR_HALT, roundId, roundOf, scopeTask, specSources, specTask, techTask, testPlanTask, ticketTask, openHold, type TaskSpec, type TicketFields } from './tasks.ts';
 import { offerTry, removeTryWorktree, serveTryAgain } from './try.ts';
@@ -68,7 +69,10 @@ const holdQaCap = (s: Store, project: ProjectRow, n: number, title: string, why:
     ],
   });
 
+// No milestone starts on a list the stakeholder hasn't approved, nor while a change to it waits for them.
 async function setPending(deps: EngineDeps, project: ProjectRow, { n }: MilestoneRow): Promise<void> {
+  const ms = await advanceMustSupport(deps, project);
+  if (!ms.approved || ms.pending) return;
   const inputs = await specSources(deps, project);
   await deps.store.atomically(async (s) => {
     await ensureTask(s, specTask(project, n, 1, inputs));

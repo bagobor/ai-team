@@ -6,7 +6,7 @@ import { IllegalTransition, type MilestonePhase } from '../src/engine/fsm.ts';
 import type { NewInboxItem } from '../src/engine/inbox.ts';
 import { createApp, serveWeb } from '../src/server/app.ts';
 import { lockSpec, projectOf, ticketTask } from './helpers/apply.ts';
-import { makeEngine, ticket, until, type TestEngine } from './helpers/engine.ts';
+import { makeEngine, seedMustSupport, ticket, until, type TestEngine } from './helpers/engine.ts';
 import { commitAll, makeRepo, revParse, tempDir } from './helpers/repo.ts';
 
 const PORT = 4780;
@@ -412,6 +412,7 @@ describe('the API', () => {
       const doc = await e.artifacts.read(await projectOf(e), 'BRIEF');
       expect(doc.body).toBe('# Brief\n\nA small tool.\n');
 
+      await seedMustSupport(e, await projectOf(e));
       await new Conductor(e, e.runner).tick();
 
       expect((await projectOf(e)).phase).toBe('discovery');

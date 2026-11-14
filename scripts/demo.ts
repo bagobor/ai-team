@@ -139,7 +139,7 @@ async function approveUpToCp4(): Promise<void> {
     const res = await fetch(`http://127.0.0.1:${PORT}/api/inbox?project=tempconv`);
     const { items } = (await res.json()) as { items: { id: number; ref: { kind: string } }[] };
     if (items.some(({ ref }) => ref.kind === 'cp4')) return;
-    for (const { id, ref } of items) if (ref.kind === 'cp1' || ref.kind === 'cp2') await post(`/api/inbox/${id}/answer`, { action: 'approve' });
+    for (const { id, ref } of items) if (ref.kind === 'must_support' || ref.kind === 'cp1' || ref.kind === 'cp2') await post(`/api/inbox/${id}/answer`, { action: 'approve' });
     await new Promise((resolve) => setTimeout(resolve, INBOX_POLL_MS));
   }
 }

@@ -9,7 +9,7 @@ import type { EngineDeps } from '../runner.ts';
 import type { ProjectRow, TaskRow } from '../store.ts';
 import { newTicketSpecs } from './milestone.ts';
 import { browserWhy, NO_BROWSER, problemLine, servePage, siteRoot } from './play-gate.ts';
-import { ensureTask, funInputs, isClosed, latestPin, noteOf, protoPlanTask } from './tasks.ts';
+import { ensureTask, isClosed, latestPin, noteOf, protoPlanInputs, protoPlanTask } from './tasks.ts';
 import { ensureTryWorktree } from './try.ts';
 
 // What the applier keeps of a plan for the engine (apply/prototype.ts).
@@ -145,8 +145,7 @@ export async function advancePrototype(deps: EngineDeps, project: ProjectRow): P
   const r = latestRound(tasks);
   const plan = tasks.find(({ ticket_id }) => ticket_id === protoPlanId(r));
   if (!plan) {
-    const inputs = [await latestPin(deps, project, 'BRIEF'), ...(await funInputs(deps, project))];
-    await ensureTask(store, protoPlanTask(project, r, inputs));
+    await ensureTask(store, protoPlanTask(project, r, await protoPlanInputs(deps, project)));
     return;
   }
   if (plan.state !== 'done') return;

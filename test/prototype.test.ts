@@ -15,7 +15,7 @@ import { EventLog } from '../src/events.ts';
 import { addAttemptWorktree, ensureIntegrationBranch, snapshotAttempt } from '../src/git/workspace.ts';
 import { worktreePath } from '../src/paths.ts';
 import { CRITERIA, projectOf } from './helpers/apply.ts';
-import { makeEngine, type TestEngine } from './helpers/engine.ts';
+import { makeEngine, seedMustSupport, type TestEngine } from './helpers/engine.ts';
 import { fakePlayer, playResult } from './helpers/play.ts';
 import { revParse, run } from './helpers/repo.ts';
 
@@ -96,6 +96,7 @@ async function pendingFun(h: Harness): Promise<InboxRow> {
 
 async function addBrief(h: Harness): Promise<void> {
   await h.artifacts.commit(h.project, { message: 'brief', publish: [{ id: 'BRIEF', type: 'brief', status: 'approved', approvedBy: 'stakeholder', ownerRole: 'stakeholder', derivedFrom: [], body: '# Brief\n' }] });
+  await seedMustSupport(h, h.project);
 }
 
 async function advanceTo(h: Harness, taskId: number, states: TaskRow['state'][]): Promise<void> {
@@ -180,7 +181,7 @@ describe('the prototype phase', () => {
     expect(await taskIds(h)).toEqual(['PROTO-PLAN-1']);
     const plan = await byTicket(h, 'PROTO-PLAN-1');
     expect(plan).toMatchObject({ milestone: 0, role_id: 'pm', kind: 'authoring', purpose: 'prototype_plan' });
-    expect(orderOf(plan)).toEqual({ purpose: 'prototype_plan', instructions: instructions(1), inputs: ['BRIEF@1'], checks: [], base: { kind: 'base' } });
+    expect(orderOf(plan)).toEqual({ purpose: 'prototype_plan', instructions: instructions(1), inputs: ['BRIEF@1', 'MUST-SUPPORT@1'], checks: [], base: { kind: 'base' } });
 
     // Until the PM's plan is in, the round waits.
     await h.conductor.tick();
@@ -330,7 +331,7 @@ describe('the prototype phase', () => {
     expect(await phaseOf(h)).toBe('prototype');
     const next = await byTicket(h, 'PROTO-PLAN-2');
     expect(next).toMatchObject({ milestone: 0, role_id: 'pm', purpose: 'prototype_plan', state: 'queued' });
-    expect(orderOf(next)).toMatchObject({ instructions: instructions(2), inputs: ['BRIEF@1', 'PROTO-PLAN-1@1', `DEC-${item.id}@1`] });
+    expect(orderOf(next)).toMatchObject({ instructions: instructions(2), inputs: ['BRIEF@1', 'MUST-SUPPORT@1', 'PROTO-PLAN-1@1', `DEC-${item.id}@1`] });
 
     const record = await h.artifacts.read(h.project, `DEC-${item.id}@1`);
     expect(record.fields.data).toEqual({ ref: { kind: 'fun_eval', round: 1 }, answer: { action: 'request_changes', comment: 'More rocks, and faster', checks: [fun('P-1', 'Dodging felt great'), notFun('P-2')] } });
@@ -349,7 +350,7 @@ describe('the prototype phase', () => {
     await answer(h, second, { action: 'approve', checks: [notFun('P-1'), notFun('P-2')] });
 
     expect(await phaseOf(h)).toBe('discovery');
-    expect(orderOf(await byTicket(h, 'DISCOVERY-PM')).inputs).toEqual(['BRIEF@1', 'PROTO-PLAN-1@1', `DEC-${first.id}@1`, 'PROTO-PLAN-2@1', `DEC-${second.id}@1`]);
+    expect(orderOf(await byTicket(h, 'DISCOVERY-PM')).inputs).toEqual(['BRIEF@1', 'MUST-SUPPORT@1', 'PROTO-PLAN-1@1', `DEC-${first.id}@1`, 'PROTO-PLAN-2@1', `DEC-${second.id}@1`]);
     expect(await byTicket(h, 'DISCOVERY-TL')).toBeDefined();
     expect(h.tryServer.mounted('p', 0)).toBe(false);
     expect(await status(linkOf(h, 2, 1))).toBe(404);
@@ -458,7 +459,7 @@ describe('the fun definition', () => {
     await h.conductor.tick();
 
     const redo = await byTicket(h, 'DISCOVERY-PM-r2');
-    expect(orderOf(redo).inputs).toEqual(['BRIEF@1', 'ROADMAP@1', 'TEAM-PROPOSAL@1', 'HUMAN-REQUIREMENTS@1', 'FUN-DEFINITION@1', 'PROTO-PLAN-1@1', `DEC-${dec}@1`]);
+    expect(orderOf(redo).inputs).toEqual(['BRIEF@1', 'MUST-SUPPORT@1', 'ROADMAP@1', 'TEAM-PROPOSAL@1', 'HUMAN-REQUIREMENTS@1', 'FUN-DEFINITION@1', 'PROTO-PLAN-1@1', `DEC-${dec}@1`]);
 
     // The revision is held to the same rule: the definition is not optional, and a mark that is not fun is not evidence.
     await expect(finish(h, 'DISCOVERY-PM-r2', DISCOVERY)).rejects.toThrow(/needs a fun_definition/);

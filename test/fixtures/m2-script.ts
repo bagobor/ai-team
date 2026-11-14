@@ -20,6 +20,11 @@ const CRITERIA = [
   { id: 'AC-2', text: 'f2c converts Fahrenheit to Celsius', verification: { method: 'automated', how: F2C_COMMAND } },
 ];
 
+const MUST_SUPPORT = {
+  items: [{ id: 'MS-1', group: 'built_with', text: 'Runs as a Node command line tool', brief_quote: 'A small Node command line tool', check: 'command' }],
+  stakeholder_note: 'One thing to confirm: it runs as a Node command line tool',
+};
+
 const DISCOVERY = {
   roadmap: { body: '# Roadmap\n\nOne milestone is enough.\n', milestones: [{ n: 1, title: 'Convert temperatures', goal: 'A tool that converts both ways' }] },
   team_proposal: { body: '# Team\n\nOne engineer.\n' },
@@ -103,6 +108,7 @@ const TICKETS = ['M1-T-1', 'M1-T-2', 'M1-Q-1', 'M1-B-1'];
 
 export function m2Script(opts: { failFirstQa?: boolean; humanCheck?: boolean } = {}): { byTask: Record<string, Record<string, unknown>> } {
   const byTask: Record<string, Record<string, unknown>> = {
+    'MUST-SUPPORT-PM': resultStep(MUST_SUPPORT),
     'DISCOVERY-PM': resultStep(DISCOVERY),
     'DISCOVERY-TL': resultStep(PROFILE),
     'M1-SPEC': resultStep(spec(opts.humanCheck === true)),

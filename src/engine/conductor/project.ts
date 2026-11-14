@@ -1,16 +1,18 @@
 import { ENV_PROFILE } from '../apply/ids.ts';
 import type { EngineDeps } from '../runner.ts';
 import type { ProjectRow } from '../store.ts';
+import { advanceMustSupport, type MsState } from './must-support.ts';
 import { advancePrototype } from './prototype.ts';
-import { discoveryDocs, discoveryInputs, discoveryTask, ensureTask, noteOf, pinOf, profileTask, protoPlanTask, roundId, roundOf } from './tasks.ts';
+import { discoveryDocs, discoveryInputs, discoveryTask, ensureTask, noteOf, pinOf, profileTask, protoPlanInputs, protoPlanTask, roundId, roundOf } from './tasks.ts';
 
-async function intake(deps: EngineDeps, project: ProjectRow): Promise<void> {
-  const brief = await deps.artifacts.latest(project.id, 'BRIEF');
-  if (!brief) return;
+// Nothing starts until the stakeholder has approved what the game must run on.
+async function intake(deps: EngineDeps, project: ProjectRow, { approved, pending }: MsState): Promise<void> {
+  if (!approved || pending) return;
   // A prototyping project finds its fun before discovery, so discovery can write it down.
   if (project.prototyping === 1) {
+    const inputs = await protoPlanInputs(deps, project);
     await deps.store.atomically(async (s) => {
-      await ensureTask(s, protoPlanTask(project, 1, [pinOf(brief)]));
+      await ensureTask(s, protoPlanTask(project, 1, inputs));
       await s.setProjectPhase(project.id, 'prototype');
     });
     return;
@@ -58,7 +60,8 @@ async function discovery(deps: EngineDeps, project: ProjectRow): Promise<void> {
 }
 
 export async function advanceProject(deps: EngineDeps, project: ProjectRow): Promise<void> {
-  if (project.phase === 'intake') await intake(deps, project);
+  const ms = await advanceMustSupport(deps, project);
+  if (project.phase === 'intake') await intake(deps, project, ms);
   else if (project.phase === 'prototype') await advancePrototype(deps, project);
   else if (project.phase === 'discovery') await discovery(deps, project);
 }
