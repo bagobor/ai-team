@@ -513,9 +513,9 @@ describe('the fun definition', () => {
 
     expect((await h.artifacts.latest(h.project.id, 'FUN-DEFINITION'))!.status).toBe('approved');
     const spec = orderOf(await byTicket(h, 'M1-SPEC'));
-    expect(spec.inputs).toEqual(['ROADMAP@1', 'HUMAN-REQUIREMENTS@1', 'FUN-DEFINITION@1']);
+    expect(spec.inputs).toEqual(['ROADMAP@1', 'HUMAN-REQUIREMENTS@1', 'FUN-DEFINITION@1', 'MUST-SUPPORT@1']);
     expect(spec.instructions).toMatch(/^Write the Spec for milestone 1 .*\n\n/);
-    expect(spec.instructions.endsWith(`\n\n${FUN_CHECK}`)).toBe(true);
+    expect(spec.instructions.endsWith(`\n\n${FUN_CHECK}\n\nIf an item on the must-support list can't be met, name it in gaps and say why. Never leave an item out silently.`)).toBe(true);
 
     // A Spec the stakeholder sends back is written under the same rule, from the same sources.
     await finish(h, 'M1-SPEC', SPEC);
@@ -524,7 +524,7 @@ describe('the fun definition', () => {
     await h.store.answerInbox(cp2.id, { action: 'request_changes', comment: 'Less scope' });
     await h.conductor.tick();
     const redo = orderOf(await byTicket(h, 'M1-SPEC-r2'));
-    expect(redo.inputs).toEqual(['ROADMAP@1', 'HUMAN-REQUIREMENTS@1', 'FUN-DEFINITION@1', 'SPEC-M1@1']);
+    expect(redo.inputs).toEqual(['ROADMAP@1', 'HUMAN-REQUIREMENTS@1', 'FUN-DEFINITION@1', 'MUST-SUPPORT@1', 'SPEC-M1@1']);
     expect(redo.instructions).toContain(FUN_CHECK);
   });
 
@@ -539,7 +539,7 @@ describe('the fun definition', () => {
     await h.conductor.tick();
 
     const spec = orderOf(await byTicket(h, 'M1-SPEC'));
-    expect(spec.inputs).toEqual(['ROADMAP@1', 'HUMAN-REQUIREMENTS@1']);
+    expect(spec.inputs).toEqual(['ROADMAP@1', 'HUMAN-REQUIREMENTS@1', 'MUST-SUPPORT@1']);
     expect(spec.instructions).not.toContain('FUN-DEFINITION');
   });
 

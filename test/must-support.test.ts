@@ -1,4 +1,4 @@
-import { gateStatuses, mustSupportProblems, playRuns, renderMustSupport, type MsItem } from '../src/engine/must-support.ts';
+import { gateStatuses, mustSupportProblems, playRuns, renderMustSupport, specSection, type MsItem } from '../src/engine/must-support.ts';
 
 const phone: MsItem = {
   id: 'MS-1',
@@ -83,5 +83,39 @@ describe('gateStatuses', () => {
     const forGood = [{ item_id: 'MS-1', status: 'waived' as const, evidence: 'DEC-12@1' }];
     expect(gateStatuses([phone], [{ item_id: 'MS-1', status: 'failing', evidence: 'f' }], forGood)[0]!.status).toBe('waived');
     expect(gateStatuses([phone], [{ item_id: 'MS-1', status: 'met', evidence: 'm' }], forGood)[0]!.status).toBe('met');
+  });
+});
+
+describe('specSection', () => {
+  const line = (item: string, change = 'Adds the touch controls') => ({ item, change });
+
+  it('asks for one line for every item', () => {
+    expect(specSection([line('MS-1')], [phone, cmd], []).problems).toEqual(['The spec has no must_support line for MS-2 (Plain JavaScript, no build step): say what this milestone does for it, or name it in gaps']);
+    expect(specSection([line('MS-1'), line('MS-2')], [phone, cmd], []).problems).toEqual([]);
+  });
+
+  it('refuses an item the list does not have, a second line and a line that says nothing', () => {
+    expect(specSection([line('MS-1'), line('MS-9'), line('MS-1'), line('MS-2', ' \n')], [phone, cmd], []).problems).toEqual([
+      'The spec names MS-9, which is not on the must-support list',
+      'The spec lists MS-1 twice',
+      "The spec's line for MS-2 says nothing",
+    ]);
+  });
+
+  it('renders one line per item, in the list\'s order', () => {
+    const { section } = specSection([line('MS-2', 'Nothing new:\nstill one page'), line('MS-1')], [phone, cmd], []);
+
+    expect(section).toBe('## Must support\n\n- MS-1 Plays in a phone browser held upright, by touch: Adds the touch controls\n- MS-2 Plain JavaScript, no build step: Nothing new: still one page\n');
+  });
+
+  it('a gapped item needs no line and reads as not met in this milestone', () => {
+    const { problems, section } = specSection([line('MS-2')], [phone, cmd], ['MS-1']);
+
+    expect(problems).toEqual([]);
+    expect(section).toContain('- MS-1 Plays in a phone browser held upright, by touch: Not met in this milestone (raised with the stakeholder)\n');
+  });
+
+  it('writes no section for a list with no items', () => {
+    expect(specSection([], [], [])).toEqual({ problems: [], section: '' });
   });
 });

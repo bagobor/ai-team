@@ -52,7 +52,12 @@ const HUMAN_CHECK = {
   verification: { method: 'human', how: 'Run node tempconv.mjs c2f 100 and read the line it prints; it should say 212 with a unit, in plain words' },
 };
 
-const spec = (humanCheck: boolean) => ({ body: '# Convert temperatures\n\n## Scope\n\nCelsius and Fahrenheit, one file.\n', criteria: humanCheck ? [...CRITERIA, HUMAN_CHECK] : CRITERIA, stakeholder_note: 'A small first milestone' });
+const spec = (humanCheck: boolean) => ({
+  body: '# Convert temperatures\n\n## Scope\n\nCelsius and Fahrenheit, one file.\n',
+  criteria: humanCheck ? [...CRITERIA, HUMAN_CHECK] : CRITERIA,
+  must_support: [{ item: 'MS-1', change: 'The whole tool is one Node file run from the command line' }],
+  stakeholder_note: 'A small first milestone',
+});
 
 // Both parts live in the one file the tickets write. Neither ticket adds a test: the Test Plan's harness and commands check them.
 const NO_TESTS = 'The tickets add no tests; the Test Plan checks each direction by running the command.';

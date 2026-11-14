@@ -11,7 +11,8 @@ import { makeEngine, seedMustSupport, type TestEngine } from './helpers/engine.t
 const phone: MsItem = { id: 'MS-1', group: 'runs_on', text: 'Plays in a phone browser held upright', brief_quote: 'It should work on my phone', check: 'play', viewport: 'phone_portrait', input: 'touch', fits_screen: true };
 const cmd: MsItem = { id: 'MS-2', group: 'built_with', text: 'Has no build step', brief_quote: '', check: 'command', proposed: true, reason: 'a page that opens as it is can be played anywhere' };
 
-const SPEC = { body: '# Milestone two\n', criteria: CRITERIA, stakeholder_note: 'Note' };
+// The Spec says what the milestone does for each item; one it also names in gaps reads as not met there.
+const SPEC = { body: '# Milestone two\n', criteria: CRITERIA, must_support: ['MS-1', 'MS-2'].map((item) => ({ item, change: 'Nothing new' })), stakeholder_note: 'Note' };
 const PLAN = {
   hypotheses: [{ id: 'H-1', element: 'Dodging', rationale: 'Near misses feel good', look_for: 'Leaning in' }],
   prototypes: [{ key: 'P-1', title: 'Rocks', hypotheses: ['H-1'], build: 'One ship and falling rocks.', controls: ['ArrowLeft'] }],
@@ -159,7 +160,9 @@ describe('must-support gaps', () => {
   });
 
   it('a gap with no confirmed list to raise it against is sent back', async () => {
-    expect(evidenceOf(await spec([GAP]))).toContain('- There is no confirmed must-support list yet, so there is nothing to raise a gap against');
+    const listless = await apply(e, 'milestone_spec', { ...SPEC, must_support: [], gaps: [GAP] }, { milestone: 2, ticketId: 'M2-SPEC', role: 'pm' });
+
+    expect(evidenceOf(listless)).toContain('- There is no confirmed must-support list yet, so there is nothing to raise a gap against');
   });
 
   it('gives a gap the scope of the task that raised it', () => {

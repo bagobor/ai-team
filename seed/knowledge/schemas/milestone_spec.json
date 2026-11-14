@@ -55,6 +55,29 @@
     "stakeholder_note": {
       "type": "string"
     },
+    "must_support": {
+      "type": "array",
+      "description": "One line for every item on the must-support list: what this milestone does for it. An item this milestone can't meet goes in gaps instead.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "item",
+          "change"
+        ],
+        "properties": {
+          "item": {
+            "type": "string",
+            "pattern": "^MS-\\d+$",
+            "description": "The item's id on the must-support list, such as MS-1."
+          },
+          "change": {
+            "type": "string",
+            "description": "What this milestone builds or keeps for the item, on one line."
+          }
+        }
+      }
+    },
     "gaps": {
       "type": "array",
       "description": "Items on the must-support list that this work can't meet. Leave it out when every item can be met.",

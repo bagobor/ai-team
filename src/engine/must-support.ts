@@ -144,3 +144,24 @@ export function gateStatuses(items: MsItem[], rows: ItemStatus[], forGood: ItemS
     return row ?? { item_id: id, status: 'not_measured', evidence: '' };
   });
 }
+
+const NOT_MET_HERE = 'Not met in this milestone (raised with the stakeholder)';
+
+// A Spec says what its milestone does for every item, so no item is left out by saying nothing. An item the PM named in
+// gaps needs no line: the stakeholder decides on it, and the Spec says so. A list with no items gets no section.
+export function specSection(lines: { item: string; change: string }[], items: MsItem[], gapped: string[]): { problems: string[]; section: string } {
+  const problems: string[] = [];
+  const said = new Map<string, string>();
+  for (const { item, change } of lines) {
+    if (!items.some(({ id }) => id === item)) problems.push(`The spec names ${item}, which is not on the must-support list`);
+    else if (said.has(item)) problems.push(`The spec lists ${item} twice`);
+    else if (isBlank(change)) problems.push(`The spec's line for ${item} says nothing`);
+    if (!said.has(item)) said.set(item, change);
+  }
+  for (const { id, text } of items) {
+    if (!said.has(id) && !gapped.includes(id)) problems.push(`The spec has no must_support line for ${id} (${oneLine(text).trim()}): say what this milestone does for it, or name it in gaps`);
+  }
+  if (items.length === 0) return { problems, section: '' };
+  const rows = items.map((item) => `- ${itemLine(item)}: ${gapped.includes(item.id) ? NOT_MET_HERE : oneLine(said.get(item.id) ?? '').trim()}`);
+  return { problems, section: `## Must support\n\n${rows.join('\n')}\n` };
+}

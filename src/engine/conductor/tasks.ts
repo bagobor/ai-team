@@ -3,7 +3,7 @@ import { ENG_REVIEW_ID, ENV_PROFILE, FUN_DEFINITION, isPolishTicket, MUST_SUPPOR
 import { oneLine } from '../apply/text.ts';
 import { IllegalTransition } from '../fsm.ts';
 import type { InboxOption, InboxRef, InboxRow, NewInboxItem } from '../inbox.ts';
-import type { MsItem, MustSupportData } from '../must-support.ts';
+import { gateStatuses, itemLine, STATUS_LABEL, type MsItem, type MustSupportData } from '../must-support.ts';
 import type { EngineDeps, Runner } from '../runner.ts';
 import type { ArtifactVersionRow, AttemptRow, ProjectRow, Store, TaskRow } from '../store.ts';
 import type { Purpose, TaskKind, WorkOrder } from '../workorder.ts';
@@ -286,7 +286,9 @@ export function testPlanTask(project: ProjectRow, n: number, inputs: string[]): 
   };
 }
 
-export function qaTask(project: ProjectRow, n: number, round: number, inputs: string[]): TaskSpec {
+// `found` is what the engine's own check of the build against the must-support list came to, where the list has items.
+export function qaTask(project: ProjectRow, n: number, round: number, inputs: string[], found?: string): TaskSpec {
+  const instructions = `Verify every automated acceptance criterion of milestone ${n} on the integration branch. Where a criterion refers to the Tech Design, check the build against it. Report a Bug for each criterion that fails.`;
   return {
     project,
     ticket_id: `M${n}-QA-${round}`,
@@ -294,7 +296,7 @@ export function qaTask(project: ProjectRow, n: number, round: number, inputs: st
     milestone: n,
     role_id: 'qa_engineer',
     kind: 'qa_verify',
-    order: workOrder('qa_verify', `Verify every automated acceptance criterion of milestone ${n} on the integration branch. Where a criterion refers to the Tech Design, check the build against it. Report a Bug for each criterion that fails.`, inputs, INTEGRATION),
+    order: workOrder('qa_verify', found === undefined ? instructions : `${instructions}\n\n${found}`, inputs, INTEGRATION),
   };
 }
 
@@ -394,12 +396,13 @@ export function ticketTask(project: ProjectRow, milestone: number, row: Artifact
   };
 }
 
-// What a revision reads: the newest version of each source of the document, then the document itself.
+// What a revision reads: the newest version of each source of the document, then the document itself. The list is the
+// one in force: its newest version may still be waiting for the stakeholder.
 export async function reviseInputs(deps: Pick<EngineDeps, 'artifacts'>, project: ProjectRow, doc: ArtifactVersionRow): Promise<string[]> {
   const sources = [...new Set(doc.derived_from.map((pin) => parsePin(pin).id))].filter((id) => id !== doc.artifact_id);
   const pins: string[] = [];
   for (const id of sources) {
-    const row = await deps.artifacts.latest(project.id, id);
+    const row = id === MUST_SUPPORT ? await approvedMustSupport(deps, project) : await deps.artifacts.latest(project.id, id);
     if (row) pins.push(pinOf(row));
   }
   return [...pins, pinOf(doc)];
@@ -424,10 +427,11 @@ export async function discoveryDocs(deps: Pick<EngineDeps, 'artifacts'>, project
   return (await deps.artifacts.latest(project.id, FUN_DEFINITION)) ? [...DISCOVERY_DOCS, FUN_DEFINITION] : DISCOVERY_DOCS;
 }
 
-// What a Spec reads of discovery: the Roadmap and the Human Requirements, and the fun the stakeholder approved where there is one.
+// What a Spec reads of discovery: the Roadmap and the Human Requirements, the fun the stakeholder approved where there
+// is one, and the must-support list.
 export async function specSources(deps: Pick<EngineDeps, 'artifacts'>, project: ProjectRow): Promise<string[]> {
   const ids = (await deps.artifacts.latest(project.id, FUN_DEFINITION)) ? ['ROADMAP', 'HUMAN-REQUIREMENTS', FUN_DEFINITION] : ['ROADMAP', 'HUMAN-REQUIREMENTS'];
-  return Promise.all(ids.map((id) => latestPin(deps, project, id)));
+  return withMustSupport(deps, project, await Promise.all(ids.map((id) => latestPin(deps, project, id))));
 }
 
 // What the prototype rounds found, oldest first: each round's plan, then the stakeholder's verdict on it. A verdict being
@@ -463,6 +467,30 @@ export async function mustSupportItems(deps: Pick<EngineDeps, 'artifacts'>, proj
 export async function mustSupportPins(deps: Pick<EngineDeps, 'artifacts'>, project: ProjectRow): Promise<string[]> {
   const row = await approvedMustSupport(deps, project);
   return row ? [pinOf(row)] : [];
+}
+
+// Every milestone document and ticket is written against the list in force, so each one pins it, last.
+export async function withMustSupport(deps: Pick<EngineDeps, 'artifacts'>, project: ProjectRow, inputs: string[]): Promise<string[]> {
+  const [pin] = await mustSupportPins(deps, project);
+  return pin === undefined ? inputs : [...inputs.filter((input) => parsePin(input).id !== MUST_SUPPORT), pin];
+}
+
+// What each item on the list came to in a milestone, as the engine's last check of it found: one line an item.
+export async function statusLines(deps: Pick<EngineDeps, 'artifacts' | 'store'>, project: ProjectRow, n: number): Promise<string[]> {
+  const list = await mustSupportItems(deps, project);
+  if (!list) return [];
+  const found = gateStatuses(list.items, await deps.store.listMustSupport(project.id, { scope: 'milestone', n }), await deps.store.listMustSupport(project.id, { scope: 'project', n: 0 }));
+  return list.items.map((item, index) => {
+    const { status, evidence } = found[index]!;
+    const first = oneLine(evidence.trim().split(/\r\n?|\n/)[0] ?? '');
+    return `${itemLine(item)}: ${STATUS_LABEL[status]}${first === '' ? '' : ` — ${first}`}`;
+  });
+}
+
+// The same, as the paragraph QA and the Eng Lead read in their work orders. A list with no items says nothing.
+export async function mustSupportFound(deps: Pick<EngineDeps, 'artifacts' | 'store'>, project: ProjectRow, n: number): Promise<string | undefined> {
+  const lines = await statusLines(deps, project, n);
+  return lines.length === 0 ? undefined : ['What the game must support, as the engine last found it:', ...lines.map((line) => `- ${line}`)].join('\n');
 }
 
 // A ticket pins the list it was written against. Its work is checked against the list in force now, so that is the

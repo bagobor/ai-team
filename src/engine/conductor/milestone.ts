@@ -15,7 +15,7 @@ import type { MilestoneRow, ProjectRow, Store, TaskRow } from '../store.ts';
 import { withHeadWorktree } from './head-worktree.ts';
 import { advanceMustSupport } from './must-support.ts';
 import { playBug, problemLine, runPlayGate } from './play-gate.ts';
-import { CHECKS_TASK, designMoving, engReviewTask, ensureTask, isClosed, latestPin, milestoneReviewTask, mustSupportChecksTask, mustSupportItems, noteOf, pinOf, qaTask, raiseHold, RETRY_OR_HALT, roundId, roundOf, scopeTask, specSources, specTask, techTask, testPlanTask, ticketTask, openHold, type TaskSpec, type TicketFields } from './tasks.ts';
+import { CHECKS_TASK, designMoving, engReviewTask, ensureTask, isClosed, latestPin, milestoneReviewTask, mustSupportChecksTask, mustSupportFound, mustSupportItems, noteOf, pinOf, qaTask, raiseHold, RETRY_OR_HALT, roundId, roundOf, scopeTask, specSources, specTask, techTask, testPlanTask, ticketTask, openHold, withMustSupport, type TaskSpec, type TicketFields } from './tasks.ts';
 import { offerTry, removeTryWorktree, serveTryAgain } from './try.ts';
 
 type HoldKind = 'smoke' | 'base_conflict' | 'base_refused' | 'play';
@@ -158,7 +158,7 @@ async function design(deps: EngineDeps, project: ProjectRow, { n }: MilestoneRow
       await holdBaseConflict(store, project, n, synced.conflicts);
       return;
     }
-    const inputs = [await latestPin(deps, project, specId(n)), await latestPin(deps, project, ENV_PROFILE)];
+    const inputs = await withMustSupport(deps, project, [await latestPin(deps, project, specId(n)), await latestPin(deps, project, ENV_PROFILE)]);
     await store.atomically(async (s) => {
       await ensureTask(s, techTask(project, n, inputs));
       await ensureTask(s, testPlanTask(project, n, inputs));
@@ -171,7 +171,7 @@ async function design(deps: EngineDeps, project: ProjectRow, { n }: MilestoneRow
   const scope = byId(tasks, `M${n}-SCOPE`);
   if (!scope) {
     if (designMoving(await deps.artifacts.list(project.id), tasks, n)) return;
-    const inputs = [await latestPin(deps, project, specId(n)), await latestPin(deps, project, ENV_PROFILE), await latestPin(deps, project, techId(n)), await latestPin(deps, project, testPlanId(n))];
+    const inputs = await withMustSupport(deps, project, [await latestPin(deps, project, specId(n)), await latestPin(deps, project, ENV_PROFILE), await latestPin(deps, project, techId(n)), await latestPin(deps, project, testPlanId(n))]);
     await store.atomically((s) => ensureTask(s, scopeTask(project, n, inputs)));
     return;
   }
@@ -243,10 +243,11 @@ async function build(deps: EngineDeps, runner: Runner, project: ProjectRow, m: M
   }
 
   const round = m.verify_round + 1;
-  const inputs = [await latestPin(deps, project, specId(n)), await latestPin(deps, project, techId(n)), await latestPin(deps, project, testPlanId(n))];
+  const inputs = await withMustSupport(deps, project, [await latestPin(deps, project, specId(n)), await latestPin(deps, project, techId(n)), await latestPin(deps, project, testPlanId(n))]);
+  const found = await mustSupportFound(deps, project, n);
   await store.atomically(async (s) => {
     await s.patchMilestone(project.id, n, { verify_round: round });
-    await ensureTask(s, qaTask(project, n, round, inputs));
+    await ensureTask(s, qaTask(project, n, round, inputs, found));
     await s.setMilestonePhase(project.id, n, 'verify');
   });
 }
@@ -281,20 +282,21 @@ async function verify(deps: EngineDeps, project: ProjectRow, m: MilestoneRow, ta
 
 // The Eng Lead reviews what QA passed against the Tech Design. Its work order carries the engine's own measure of each
 // component, which is what holds an approve to the tests, and says whether polish from this round will be built.
-export async function engReviewSpec(deps: Pick<EngineDeps, 'artifacts'>, project: ProjectRow, m: MilestoneRow): Promise<TaskSpec> {
+export async function engReviewSpec(deps: Pick<EngineDeps, 'artifacts' | 'store'>, project: ProjectRow, m: MilestoneRow): Promise<TaskSpec> {
   const { artifacts } = deps;
   const { n, verify_round: round } = m;
   const { from, to, rows } = await milestoneCoverage(deps, project, n);
   const budgets = structureOf(await artifacts.read(project, techId(n)))?.performance ?? [];
   const polished = (await artifacts.list(project.id)).filter((row) => row.type === 'ticket' && row.milestone === n && isPolishTicket(row.artifact_id)).map(({ artifact_id }) => artifact_id);
   const scope = await artifacts.latest(project.id, scopeId(n));
-  const inputs = [
+  const inputs = await withMustSupport(deps, project, [
     await latestPin(deps, project, specId(n)),
     await latestPin(deps, project, techId(n)),
     ...(scope ? [pinOf(scope)] : []),
     await latestPin(deps, project, testPlanId(n)),
     await latestPin(deps, project, `QA-REPORT-M${n}-${round}`),
-  ];
+  ]);
+  const found = await mustSupportFound(deps, project, n);
   const instructions = [
     `Review the code of milestone ${n}, ${from}..${to} on the integration branch, which QA has passed. Judge it against the Tech Design: its components, their tests and its performance budgets. Approve it, or file polish tickets for what falls short.`,
     '',
@@ -307,6 +309,7 @@ export async function engReviewSpec(deps: Pick<EngineDeps, 'artifacts'>, project
     `Polish tickets so far: ${polished.length > 0 ? polished.join(', ') : 'none'}. A new one takes a number none of them has.`,
     '',
     m.eng_round < m.eng_cap ? 'Polish tickets from this review will be built.' : 'This is the last polish round: polish tickets will not be built and open findings go to the stakeholder as known issues.',
+    ...(found === undefined ? [] : ['', found]),
   ].join('\n');
   return engReviewTask(project, n, round, inputs, instructions);
 }
@@ -333,7 +336,7 @@ async function engReview(deps: EngineDeps, project: ProjectRow, m: MilestoneRow,
     });
     return;
   }
-  const inputs = [await latestPin(deps, project, specId(n)), await latestPin(deps, project, techId(n)), await latestPin(deps, project, testPlanId(n)), await latestPin(deps, project, `QA-REPORT-M${n}-${round}`), pinOf(review)];
+  const inputs = await withMustSupport(deps, project, [await latestPin(deps, project, specId(n)), await latestPin(deps, project, techId(n)), await latestPin(deps, project, testPlanId(n)), await latestPin(deps, project, `QA-REPORT-M${n}-${round}`), pinOf(review)]);
   const note = verdict === 'polish' ? `No polish round is left to build what ${review.artifact_id} asked for: list its findings and polish tickets under known_issues.` : undefined;
   await store.atomically(async (s) => {
     await ensureTask(s, milestoneReviewTask(project, n, round, inputs, note));
