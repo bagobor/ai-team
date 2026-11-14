@@ -14,8 +14,7 @@ import { removeTryWorktree } from './try.ts';
 import { approvedMustSupport, discoveryDocs, discoveryInputs, discoveryTask, ensureTask, isClosed, isTerminal, latestPin, markHalted, profileTask, protoPlanInputs, protoPlanTask, replanInputs, replanTask, roundOf, specSources, specTask, stopProjectWork } from './tasks.ts';
 
 // What an answer does once the work outside SQLite is finished. It never holds a key named then: Effect comes out of async functions, and a promise would take it for a thenable.
-// What it publishes and its message go in the same commit as the Decision Record.
-export type Effect = { status?: StatusChange[]; publish?: NewVersion[]; message?: string; after?: (s: Store) => Promise<void> };
+export type Effect = { status?: StatusChange[]; after?: (s: Store) => Promise<void> };
 
 const LABELS: Record<string, string> = { approve: 'Approve', request_changes: 'Request changes', reject: 'Reject' };
 
@@ -272,11 +271,7 @@ async function applyAnswer(deps: EngineDeps, runner: Runner, projectId: number, 
   const effect = isTerminal(project) ? {} : await effectOf(deps, runner, project, item, answer);
   await deps.artifacts.commit(
     project,
-    {
-      message: [`decision: ${oneLine(item.title)}`, ...(effect.message ? [effect.message] : [])].join('\n\n'),
-      publish: [decisionRecord(item, answer), ...(effect.publish ?? [])],
-      ...(effect.status ? { status: effect.status } : {}),
-    },
+    { message: `decision: ${oneLine(item.title)}`, publish: [decisionRecord(item, answer)], ...(effect.status ? { status: effect.status } : {}) },
     async (s) => {
       await effect.after?.(s);
       await s.markInboxApplied(item.id);

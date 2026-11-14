@@ -1,5 +1,5 @@
 import { parsePin } from '../../artifacts/format.ts';
-import { mustSupportItems, pinOf } from '../conductor/tasks.ts';
+import { approvedMustSupport, mustSupportItems, pinOf } from '../conductor/tasks.ts';
 import { mustSupportProblems, nextUsed, renderMustSupport, type MsItem, type MsPrior, type MustSupportData } from '../must-support.ts';
 import { commandCheckProblems, profileBody, type MsCheckCommand, type ProfileData } from './discovery.ts';
 import { ENV_PROFILE, MUST_SUPPORT } from './ids.ts';
@@ -9,12 +9,17 @@ import { withRaised } from './raised.ts';
 type MustSupportOutput = { items: MsItem[]; stakeholder_note: string };
 type ChecksOutput = { must_support_checks: MsCheckCommand[]; stakeholder_note: string };
 
-// The ids of the latest list, whatever its status, and every id any version has used: a revision keeps the ids it keeps
-// and never gives a removed one to a new item.
+// The ids a revision may keep, and every id any version has used, so a removed one is never given to a new item. It
+// may keep the ids of the list in force and of a proposal still waiting for the stakeholder. A proposal they rejected
+// lends none: its new ids are used, and nothing more.
 async function priorOf({ deps, project }: Pick<ApplyCtx, 'deps' | 'project'>): Promise<MsPrior> {
-  if (!(await deps.artifacts.latest(project.id, MUST_SUPPORT))) return { current: [], used: [] };
-  const { items, used } = (await deps.artifacts.read(project, MUST_SUPPORT)).fields.data as MustSupportData;
-  return { current: items.map(({ id }) => id), used };
+  const latest = await deps.artifacts.latest(project.id, MUST_SUPPORT);
+  if (!latest) return { current: [], used: [] };
+  const dataOf = async (pin: string) => (await deps.artifacts.read(project, pin)).fields.data as MustSupportData;
+  const approved = await approvedMustSupport(deps, project);
+  const live = [...(approved ? [pinOf(approved)] : []), ...(latest.status === 'proposed' ? [pinOf(latest)] : [])];
+  const current = (await Promise.all(live.map(dataOf))).flatMap(({ items }) => items.map(({ id }) => id));
+  return { current: [...new Set(current)], used: (await dataOf(pinOf(latest))).used };
 }
 
 export const applyMustSupport: Applier = async (ctx) => {

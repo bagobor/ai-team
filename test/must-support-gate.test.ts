@@ -1,6 +1,6 @@
 import { applyOutput } from '../src/engine/apply/index.ts';
 import { Conductor } from '../src/engine/conductor/index.ts';
-import { ensureTask, mustSupportTask } from '../src/engine/conductor/tasks.ts';
+import { ensureTask, mustSupportPins, mustSupportTask } from '../src/engine/conductor/tasks.ts';
 import type { InboxAnswer, InboxRow } from '../src/engine/inbox.ts';
 import type { MsItem } from '../src/engine/must-support.ts';
 import type { ProjectRow, TaskRow } from '../src/engine/store.ts';
@@ -202,15 +202,100 @@ describe('the must-support confirm gate', () => {
       expect(await h.artifacts.latest(h.project.id, 'MUST-SUPPORT')).toMatchObject({ version: 2, status: 'approved', approved_by: 'stakeholder' });
     });
 
-    it('rejecting it keeps the approved list', async () => {
+    // A document written against the approved list, as discovery's are.
+    const roadmap = (h: Harness) =>
+      h.artifacts.commit(h.project, { message: 'roadmap', publish: [{ id: 'ROADMAP', type: 'roadmap', status: 'approved', approvedBy: 'stakeholder', ownerRole: 'pm', derivedFrom: ['BRIEF@1', 'MUST-SUPPORT@1'], body: '# Roadmap\n' }] });
+    const gap = (h: Harness, item: string) =>
+      h.store.raiseInbox({ project_id: h.project.id, type: 'question', dedupe_key: `ms_gap:milestone:1:${item}`, ref: { kind: 'ms_gap', item, scope: 'milestone', n: 1, raised_in: 'M1-TECH', why: `${item} needs more than this milestone has` }, title: `Milestone 1 can't meet ${item}`, asked_by: 'tech_lead', why: 'w', blocks: [], evidence: [], recommendation: '', options: [{ id: 'milestone', label: 'Accept it for this milestone' }, { id: 'for_good', label: 'Accept it for good' }, { id: 'change', label: 'Change the requirement' }] });
+    const pendingConfirms = async (h: Harness) => (await confirmItems(h)).filter(({ state }) => state === 'pending');
+
+    it('rejecting it keeps the approved list as the version it is, so nothing written against it goes stale', async () => {
       const h = await harness();
-      await answer(h, await toRevision(h), { action: 'reject' });
-      expect(await h.artifacts.latest(h.project.id, 'MUST-SUPPORT')).toMatchObject({ version: 3, status: 'approved', approved_by: 'stakeholder' });
-      expect((await h.artifacts.read(h.project, 'MUST-SUPPORT@3')).fields.data).toEqual((await h.artifacts.read(h.project, 'MUST-SUPPORT@1')).fields.data);
-      expect((await h.artifacts.read(h.project, 'MUST-SUPPORT@3')).body).toBe((await h.artifacts.read(h.project, 'MUST-SUPPORT@1')).body);
+      const item = await toRevision(h);
+      await roadmap(h);
+      await answer(h, item, { action: 'reject' });
+
+      expect(await h.artifacts.latest(h.project.id, 'MUST-SUPPORT')).toMatchObject({ version: 2, status: 'superseded', approved_by: null });
+      expect(await mustSupportPins(h, h.project)).toEqual(['MUST-SUPPORT@1']);
+      expect((await h.artifacts.latest(h.project.id, 'ROADMAP'))!.status).toBe('approved');
       expect(await phaseOf(h)).toBe('discovery');
       await h.conductor.tick();
-      expect((await confirmItems(h)).filter(({ state }) => state === 'pending')).toEqual([]);
+      expect(await pendingConfirms(h)).toEqual([]);
+    });
+
+    const idsOf = async (h: Harness, pin: string) => ((await h.artifacts.read(h.project, pin)).fields.data as { items: MsItem[] }).items.map(({ id }) => id);
+
+    it('a revision asked to change can bring back an item it dropped, under its own id', async () => {
+      const h = await harness();
+      await answer(h, await toRevision(h), { action: 'request_changes', comment: 'Keep the build step' });
+
+      await finish(h, 'MUST-SUPPORT-PM-r3', list([phone, cmd, tablet]));
+
+      expect(await idsOf(h, 'MUST-SUPPORT@3')).toEqual(['MS-1', 'MS-2', 'MS-3']);
+    });
+
+    it('after a rejected revision, the next one keeps the ids of the list in force, and never reuses an id the rejected one took', async () => {
+      const h = await harness();
+      await answer(h, await toRevision(h), { action: 'reject' });
+      await h.store.atomically((s) => ensureTask(s, mustSupportTask(h.project, 3, ['BRIEF@1', 'MUST-SUPPORT@1'], 'Add tablets only')));
+
+      await expect(finish(h, 'MUST-SUPPORT-PM-r3', list([phone, cmd, tablet]))).rejects.toThrow('MS-3 is new, so its id must be above MS-3, the highest used so far');
+      await finish(h, 'MUST-SUPPORT-PM-r3', list([phone, cmd, { ...tablet, id: 'MS-4' }]));
+
+      expect(await idsOf(h, 'MUST-SUPPORT@3')).toEqual(['MS-1', 'MS-2', 'MS-4']);
+    });
+
+    it('approving a changed item ends the waivers given for it as it was, and keeps the others', async () => {
+      const h = await harness();
+      await answer(h, await toConfirm(h), { action: 'approve' });
+      const waiver = (item_id: string) => ({ item_id, status: 'waived' as const, evidence: 'DEC-9@1', source: 'stakeholder' as const, must_support_version: 1 });
+      await h.store.recordMustSupport(h.project.id, { scope: 'project', n: 0 }, [waiver('MS-1'), waiver('MS-2')]);
+      await h.store.atomically((s) => ensureTask(s, mustSupportTask(h.project, 2, ['BRIEF@1', 'MUST-SUPPORT@1'], 'Sideways too')));
+      await finish(h, 'MUST-SUPPORT-PM-r2', list([{ ...phone, text: 'Plays in a phone browser held upright or sideways' }, cmd]));
+      await h.conductor.tick();
+
+      await answer(h, (await pendingConfirms(h))[0]!, { action: 'approve' });
+
+      expect(await h.store.listMustSupport(h.project.id, { scope: 'project', n: 0 })).toMatchObject([
+        { item_id: 'MS-1', status: 'not_measured', evidence: 'MUST-SUPPORT@2 changed this item, so the earlier waiver (DEC-9@1) no longer stands', must_support_version: 2 },
+        { item_id: 'MS-2', status: 'waived', evidence: 'DEC-9@1', must_support_version: 1 },
+      ]);
+    });
+
+    it('two changes asked for at once become one revision to confirm', async () => {
+      const h = await harness();
+      await answer(h, await toConfirm(h), { action: 'approve' });
+      const first = await gap(h, 'MS-1');
+      const second = await gap(h, 'MS-2');
+      await h.store.answerInbox(first.id, { option: 'change' });
+      await h.store.answerInbox(second.id, { option: 'change' });
+      await h.conductor.tick();
+
+      // The second builds on what the first comes to, which doesn't exist yet.
+      expect(orderOf(await byTicket(h, 'MUST-SUPPORT-PM-r2')).inputs).toEqual(['BRIEF@1', 'MUST-SUPPORT@1']);
+      expect(await byTicket(h, 'MUST-SUPPORT-PM-r3')).toMatchObject({ depends_on: ['MUST-SUPPORT-PM-r2'] });
+      expect(orderOf(await byTicket(h, 'MUST-SUPPORT-PM-r3')).inputs).toEqual(['BRIEF@1', 'MUST-SUPPORT']);
+
+      await finish(h, 'MUST-SUPPORT-PM-r2', list([phone, cmd, tablet]));
+      await h.conductor.tick();
+      expect(await pendingConfirms(h)).toEqual([]);
+
+      await finish(h, 'MUST-SUPPORT-PM-r3', list([phone, tablet]));
+      await h.conductor.tick();
+      expect((await pendingConfirms(h)).map(({ dedupe_key }) => dedupe_key)).toEqual(['must_support:3']);
+    });
+
+    it('a change asked for while a revision waits builds on that revision, and withdraws the question it replaces', async () => {
+      const h = await harness();
+      const waiting = await toRevision(h);
+      await answer(h, await gap(h, 'MS-3'), { option: 'change' });
+
+      expect(orderOf(await byTicket(h, 'MUST-SUPPORT-PM-r3')).inputs).toEqual(['BRIEF@1', 'MUST-SUPPORT@2']);
+      await finish(h, 'MUST-SUPPORT-PM-r3', list([phone, tablet]));
+      await h.conductor.tick();
+
+      expect((await h.store.getInbox(waiting.id))!.state).toBe('withdrawn');
+      expect((await pendingConfirms(h)).map(({ dedupe_key }) => dedupe_key)).toEqual(['must_support:3']);
     });
   });
 

@@ -800,6 +800,40 @@ describe('flow', () => {
 
       expect((await h.artifacts.read(h.project, 'MILESTONE-REVIEW-M1')).body).not.toContain('Must support');
     });
+
+    // The PM's revision of the list, as its applier leaves it: proposed, with one more item only the stakeholder can judge.
+    const revise = (h: Harness) =>
+      h.artifacts.commit(h.project, { message: 'revision', publish: [{ id: 'MUST-SUPPORT', type: 'must_support', status: 'proposed', ownerRole: 'pm', derivedFrom: ['BRIEF@1'], body: '# List\n', fields: { data: { items: [sound, { ...sound, id: 'MS-2', text: 'Reads well in sunlight' }], used: ['MS-1', 'MS-2'] } } }] });
+
+    it('a change to the list approved while the milestone waits for approval sends it back to be checked', async () => {
+      const h = await harness();
+      const cp4 = await toCp4(h, LISTED);
+      await revise(h);
+      await h.conductor.tick();
+
+      await h.store.answerInbox((await pending(h, 'must_support')).id, { action: 'approve' });
+      await h.conductor.tick();
+
+      // The approval it had offered nothing for the new item, so it could never have merged.
+      expect((await h.store.getInbox(cp4.id))!.state).toBe('withdrawn');
+      expect(await milestonePhase(h)).toBe('build');
+    });
+
+    it('rejecting a change to the list leaves the milestone and its documents as they were', async () => {
+      const h = await harness();
+      const cp4 = await toCp4(h, LISTED);
+      await revise(h);
+      await h.conductor.tick();
+
+      await h.store.answerInbox((await pending(h, 'must_support')).id, { action: 'reject' });
+      await h.conductor.tick();
+      await h.conductor.tick();
+
+      for (const id of ['SPEC-M1', 'TECH-M1', 'TEST-PLAN-M1', 'SCOPE-M1', 'M1-T-1']) expect([id, await statusOf(h, id)]).toEqual([id, 'approved']);
+      expect((await taskIds(h)).filter((id) => id.includes('REVISE'))).toEqual([]);
+      expect((await h.store.getInbox(cp4.id))!.state).toBe('pending');
+      expect(await milestonePhase(h)).toBe('cp4');
+    });
   });
 
   it('tells the stakeholder at milestone approval that the automated criteria passed QA', async () => {

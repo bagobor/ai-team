@@ -1,13 +1,14 @@
 import { isDeepStrictEqual } from 'node:util';
 import { parsePin } from '../../artifacts/format.ts';
-import { MUST_SUPPORT } from '../apply/ids.ts';
+import { MUST_SUPPORT, PROTO_PLAN_ID } from '../apply/ids.ts';
 import { oneLine, sentence } from '../apply/text.ts';
 import type { InboxRef, InboxRow } from '../inbox.ts';
 import { itemLine, itemSource, type MsItem, type MustSupportData } from '../must-support.ts';
 import type { EngineDeps, Runner } from '../runner.ts';
-import type { ArtifactVersionRow, ProjectRow, TaskRow } from '../store.ts';
+import type { ArtifactVersionRow, MsScope, ProjectRow, Store, TaskRow } from '../store.ts';
 import { halt, type Effect } from './answers.ts';
-import { approvedMustSupport, ensureTask, latestPin, mustSupportItems, mustSupportPins, mustSupportTask, noteOf, pinOf, roundId, roundOf } from './tasks.ts';
+import { resetVerification } from './change-requests.ts';
+import { approvedMustSupport, ensureTask, isClosed, latestPin, mustSupportItems, mustSupportTask, noteOf, pinOf, roundId, roundOf, type TaskSpec } from './tasks.ts';
 
 export { approvedMustSupport, mustSupportItems };
 
@@ -57,7 +58,10 @@ function changeLines(before: MsItem[], after: MsItem[]): string[] {
 
 async function raiseConfirm(deps: EngineDeps, project: ProjectRow, proposed: ArtifactVersionRow, approved: ArtifactVersionRow | undefined, task: TaskRow | undefined): Promise<void> {
   const dedupe_key = `must_support:${proposed.version}`;
-  if ((await deps.store.inboxByPrefix(project.id, dedupe_key)).some((item) => item.dedupe_key === dedupe_key)) return;
+  const earlier = await deps.store.inboxByPrefix(project.id, 'must_support:');
+  if (earlier.some((item) => item.dedupe_key === dedupe_key)) return;
+  // A question about a version this one replaces has nothing left to decide.
+  for (const item of earlier) await deps.store.withdrawInbox(item.id, `${pinOf(proposed)} replaces the list this asked about`);
   const items = await itemsOf(deps, project, proposed);
   const why = approved
     ? [`The PM changed the list. Approve to build against the new one, or reject to keep ${pinOf(approved)}.`, '', ...changeLines(await itemsOf(deps, project, approved), items)]
@@ -80,33 +84,72 @@ async function raiseConfirm(deps: EngineDeps, project: ProjectRow, proposed: Art
   });
 }
 
+// A revision builds on the newest list there is: one still waiting for the stakeholder, else the one in force. While
+// the PM is still writing a round, the next one waits for it and reads what it comes to, so no change asked for is
+// lost to another asked for at the same time.
+async function revisionTask(deps: EngineDeps, project: ProjectRow, comment: string | undefined): Promise<TaskSpec> {
+  const tasks = await deps.store.listTasks(project.id);
+  const k = roundOf(tasks, PM_TASK);
+  const open = tasks.find(({ ticket_id, state }) => ticket_id === roundId(PM_TASK, k) && !isClosed({ state }));
+  const brief = await latestPin(deps, project, 'BRIEF');
+  if (open) return { ...mustSupportTask(project, k + 1, [brief, MUST_SUPPORT], comment), depends_on: [open.ticket_id] };
+  const latest = await deps.artifacts.latest(project.id, MUST_SUPPORT);
+  const base = latest?.status === 'proposed' ? latest : await approvedMustSupport(deps, project);
+  return mustSupportTask(project, k + 1, [brief, ...(base ? [pinOf(base)] : [])], comment);
+}
+
+// A waiver was given for the item as it read then. Once the stakeholder approves the item changed, it no longer stands:
+// for good, in a milestone still open, or in a prototype round. The row stays, and says why it ended.
+async function endWaivers(s: Store, project: ProjectRow, tasks: TaskRow[], changed: string[], version: number): Promise<void> {
+  if (changed.length === 0) return;
+  const milestones: MsScope[] = (await s.listMilestones(project.id)).filter(({ phase }) => phase !== 'merged').map(({ n }) => ({ scope: 'milestone', n }));
+  const rounds: MsScope[] = tasks.flatMap(({ ticket_id }) => PROTO_PLAN_ID.exec(ticket_id)?.slice(1) ?? []).map((r) => ({ scope: 'prototype', n: Number(r), subject: '' }));
+  for (const at of [{ scope: 'project' as const, n: 0 }, ...milestones, ...rounds]) {
+    const ended = (await s.listMustSupport(project.id, at)).filter(({ status, subject, item_id }) => status === 'waived' && subject === '' && changed.includes(item_id));
+    const why = (evidence: string) => `${MUST_SUPPORT}@${version} changed this item, so the earlier waiver (${evidence}) no longer stands`;
+    await s.recordMustSupport(project.id, at, ended.map(({ item_id, evidence }) => ({ item_id, status: 'not_measured', evidence: why(evidence), source: 'stakeholder', must_support_version: version })));
+  }
+}
+
 // An answer to a version the PM has since replaced is only recorded: the newer version asks again.
 export async function answerMustSupport(deps: EngineDeps, runner: Runner, project: ProjectRow, item: InboxRow, version: number, choice: string, words?: string): Promise<Effect> {
-  if ((await deps.artifacts.latest(project.id, MUST_SUPPORT))?.version !== version) return {};
-  if (choice === 'approve') return { status: [{ id: MUST_SUPPORT, status: 'approved', approvedBy: 'stakeholder' }] };
-  if (choice === 'request_changes') {
-    const k = roundOf(await deps.store.listTasks(project.id), PM_TASK) + 1;
-    const inputs = [await latestPin(deps, project, 'BRIEF'), `${MUST_SUPPORT}@${version}`];
-    return { after: (s) => ensureTask(s, mustSupportTask(project, k, inputs, words)).then(() => {}) };
-  }
+  const latest = await deps.artifacts.latest(project.id, MUST_SUPPORT);
+  if (latest?.version !== version) return {};
   const approved = await approvedMustSupport(deps, project);
+  if (choice === 'approve') {
+    const before = approved ? await itemsOf(deps, project, approved) : [];
+    const after = await itemsOf(deps, project, latest);
+    const added = after.some((now) => !before.some(({ id }) => id === now.id));
+    const changed = after.filter((now) => before.some((was) => was.id === now.id && !isDeepStrictEqual(was, now))).map(({ id }) => id);
+    const tasks = await deps.store.listTasks(project.id);
+    return {
+      status: [{ id: MUST_SUPPORT, status: 'approved', approvedBy: 'stakeholder' }],
+      after: async (s) => {
+        await endWaivers(s, project, tasks, changed, version);
+        // A milestone already checked, or waiting for approval, was checked against the list as it was: its approval
+        // offers nothing for a new item, and the merge guard would refuse it for ever. So it goes back to be checked,
+        // as it does when a Change Request changes any other project-level document.
+        if (added || changed.length > 0) await resetVerification(s, project, null);
+      },
+    };
+  }
+  if (choice === 'request_changes') {
+    const revision = await revisionTask(deps, project, words);
+    return { after: (s) => ensureTask(s, revision).then(() => {}) };
+  }
   if (!approved) return halt(deps, runner, project, item);
-  // The approved list comes back as the newest version, so the one the stakeholder rejected is no longer the latest.
-  const kept = await deps.artifacts.read(project, pinOf(approved));
-  return {
-    message: `The stakeholder kept ${pinOf(approved)}`,
-    publish: [{ id: MUST_SUPPORT, type: 'must_support', status: 'approved', approvedBy: approved.approved_by ?? 'stakeholder', ownerRole: approved.owner_role, derivedFrom: approved.derived_from, body: kept.body, fields: kept.fields }],
-  };
+  // The list in force stays the version it is, so nothing written against it has anything new to read. The rejected
+  // version is retired, and is no longer the one waiting.
+  return { status: [{ id: MUST_SUPPORT, status: 'superseded' }] };
 }
 
 // A gap is the stakeholder's to settle: go without the item in this round or milestone, go without it for good, or
 // have the PM change the list, which then comes back to them at the confirm item.
 export async function answerGap(deps: EngineDeps, project: ProjectRow, item: InboxRow, ref: Extract<InboxRef, { kind: 'ms_gap' }>, choice: string, words?: string): Promise<Effect> {
   if (choice === 'change') {
-    const k = roundOf(await deps.store.listTasks(project.id), PM_TASK) + 1;
-    const inputs = [await latestPin(deps, project, 'BRIEF'), ...(await mustSupportPins(deps, project))];
     const comment = `${ref.raised_in} says ${ref.item} can't be met: ${sentence(oneLine(ref.why))}${words === undefined ? '' : ` The stakeholder wrote: ${words}`}`;
-    return { after: (s) => ensureTask(s, mustSupportTask(project, k, inputs, comment)).then(() => {}) };
+    const revision = await revisionTask(deps, project, comment);
+    return { after: (s) => ensureTask(s, revision).then(() => {}) };
   }
   const list = await approvedMustSupport(deps, project);
   if (!list) throw new Error(`Inbox item ${item.id} is a gap against a must-support list that is no longer approved`);
