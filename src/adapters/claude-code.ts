@@ -8,6 +8,7 @@ import type { TaskManifest } from '../manifest/build.ts';
 import { workerDenyRead, type Paths } from '../paths.ts';
 import { killGroup, killGroupNow, spawnGroup } from '../proc.ts';
 import { buildClaudeInvocation, claudeEnv } from './claude-args.ts';
+import { findClaudeBinary } from './claude-binary.ts';
 import { ClaudeStreamParser } from './claude-stream.ts';
 import type { AttemptHandle, AttemptResult, WorkerAdapter, WorkerEvent, Workspace } from './types.ts';
 
@@ -77,9 +78,15 @@ export class ClaudeCodeAdapter implements WorkerAdapter {
     return `CLAUDE_CONFIG_DIR=${this.cfg.agentHome} claude auth login`;
   }
 
+  // Looked for on every use: an update can remove the folder the configured path is in while the daemon runs.
+  private get binary(): string {
+    return findClaudeBinary(this.cfg.binary, this.cfg.parentEnv).binary;
+  }
+
   // Never cached: a login can expire between two attempts.
   preflight(): Promise<{ ok: true } | { ok: false; reason: string; fix: string }> {
-    const { binary, agentHome } = this.cfg;
+    const { binary } = this;
+    const { agentHome } = this.cfg;
     return new Promise((resolve) => {
       execFile(binary, ['auth', 'status'], { env: claudeEnv(this.cfg), timeout: AUTH_STATUS_TIMEOUT_MS }, (err, stdout) => {
         // `auth status` exits nonzero when logged out and still prints its JSON, so only a failed start is decisive.
@@ -97,6 +104,7 @@ export class ClaudeCodeAdapter implements WorkerAdapter {
   }
 
   start(m: TaskManifest, ws: Workspace): AttemptHandle {
+    const { binary } = this;
     const { argv, env } = buildClaudeInvocation(m, ws, this.cfg);
     const events = new EventQueue();
     let settle!: (result: AttemptResult) => void;
@@ -119,7 +127,7 @@ export class ClaudeCodeAdapter implements WorkerAdapter {
       stdinFd = openSync(join(ws.manifestDir, 'task.md'), 'r');
       mkdirSync(dirname(ws.transcriptPath), { recursive: true });
       transcriptFd = openSync(ws.transcriptPath, 'a');
-      child = spawnGroup(this.cfg.binary, argv, { cwd: ws.path, env, stdio: [stdinFd, 'pipe', 'pipe'] });
+      child = spawnGroup(binary, argv, { cwd: ws.path, env, stdio: [stdinFd, 'pipe', 'pipe'] });
     } catch (err) {
       if (transcriptFd !== undefined) closeSync(transcriptFd);
       failToStart(errorText(err));
@@ -137,7 +145,7 @@ export class ClaudeCodeAdapter implements WorkerAdapter {
     if (pid === undefined) {
       child.once('error', (err) => {
         transcript.end();
-        failToStart(`Could not start ${this.cfg.binary}: ${err.message}`);
+        failToStart(`Could not start ${binary}: ${err.message}`);
       });
       return notStarted;
     }

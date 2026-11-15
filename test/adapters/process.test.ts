@@ -1,5 +1,5 @@
-import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ClaudeCodeAdapter, type ClaudeAdapterConfig } from '../../src/adapters/claude-code.ts';
 import type { AttemptHandle, WorkerEvent, Workspace } from '../../src/adapters/types.ts';
@@ -235,13 +235,24 @@ describe('ClaudeCodeAdapter process', () => {
   });
 
   it('handles a missing binary', async () => {
-    const handle = adapter([{}], { binary: join(root, 'no-such-claude') }).start(manifest, ws);
+    const handle = adapter([{}], { binary: join(root, 'no-such-claude'), parentEnv: { PATH: '' } }).start(manifest, ws);
 
     const [events, result] = await Promise.all([collect(handle), handle.result]);
 
     expect(events).toEqual([]);
     expect(result).toMatchObject({ status: 'failed', failureKind: 'spawn_error' });
     expect(handle.pid).toBeUndefined();
+  });
+
+  it('runs the version beside a configured path whose own version is gone', async () => {
+    const beside = join(root, 'app', '2.1.325', 'bbb', 'claude');
+    mkdirSync(dirname(beside), { recursive: true });
+    symlinkSync(fakeClaude, beside);
+
+    const handle = adapter([{ fixture: 'success.jsonl' }], { binary: join(root, 'app', '2.1.309', 'aaa', 'claude') }).start(manifest, ws);
+    const [, result] = await Promise.all([collect(handle), handle.result]);
+
+    expect(result.status).toBe('succeeded');
   });
 
   it('handles a missing task file', async () => {
@@ -287,7 +298,7 @@ describe('ClaudeCodeAdapter process', () => {
 
     it('preflight reports a missing binary', async () => {
       const binary = join(root, 'no-such-claude');
-      const result = await adapter([{}], { binary }).preflight();
+      const result = await adapter([{}], { binary, parentEnv: { PATH: '' } }).preflight();
       expect(result).toMatchObject({ ok: false, reason: expect.stringContaining(binary) });
     });
 
