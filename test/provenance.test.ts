@@ -1,7 +1,9 @@
 import { execFileSync } from 'node:child_process';
 import { appendFileSync, cpSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { listRoles, roleProvenance, type ProvenanceDirs, type RoleProvenance } from '../src/roles/provenance.ts';
+import { playbookSection } from '../src/knowledge/entries.ts';
+import { estimateTokens } from '../src/manifest/tokens.ts';
+import { listRoles, roleMemory, roleProvenance, type ProvenanceDirs, type RoleProvenance } from '../src/roles/provenance.ts';
 import { initRepo, run, tempDir } from './helpers/repo.ts';
 
 const ROLE_YAML = `id: pm
@@ -174,5 +176,97 @@ describe('a role’s provenance', () => {
       expect.objectContaining({ id: 'pm', department: 'product', charterTokenLimit: 600, lessons: 4, lastLesson: '2026-04-01T00:00:00.000Z', uncommitted: true, error: null }),
       expect.objectContaining({ id: 'qa', lessons: 0, lastLesson: null, uncommitted: true, error: 'role.yaml is missing' }),
     ]);
+  });
+
+  const entry = (id: string, text: string, kind?: string) => [`## ${id}`, ...(kind === undefined ? [] : [`Kind: ${kind}`]), 'Added by: the stakeholder', 'Added: 2026-11-15', '', text, ''].join('\n');
+
+  describe('the playbook', () => {
+    const file = () => join(dirs.knowledge, 'roles', 'pm', 'playbook.md');
+
+    it('is empty for a role nobody has written one for', async () => {
+      expect((await provenance()).playbook).toEqual({ path: 'roles/pm/playbook.md', entries: [], problems: [], tokens: 0 });
+      expect(await listRoles(dirs)).toMatchObject([{ id: 'pm', playbookTokens: 0 }]);
+    });
+
+    it('credits each entry to the newest commit that changed it, and none to an entry not committed yet', async () => {
+      writeFileSync(file(), `# PM playbook\n\n${entry('PB-1', 'Ask for a check.')}\n${entry('PB-2', 'Keep it small.')}`);
+      sha.written = commitAt(dirs.knowledge, 'pm: a playbook', '2026-05-01T00:00:00Z');
+      writeFileSync(file(), `# PM playbook\n\n${entry('PB-1', 'Ask for a check you can run.')}\n${entry('PB-2', 'Keep it small.')}`);
+      sha.sharper = commitAt(dirs.knowledge, 'pm: PB-1, sharper', '2026-06-01T00:00:00Z');
+      appendFileSync(file(), `\n${entry('PB-3', 'Not committed yet.')}`);
+
+      const { playbook, lessons } = await provenance();
+
+      expect(playbook.entries.map(({ id, text, sha: commit, subject }) => [id, text, commit, subject])).toEqual([
+        ['PB-1', 'Ask for a check you can run.', sha.sharper, 'pm: PB-1, sharper'],
+        ['PB-2', 'Keep it small.', sha.written, 'pm: a playbook'],
+        ['PB-3', 'Not committed yet.', null, null],
+      ]);
+      expect(nth(playbook.entries, 0)).toMatchObject({ addedBy: 'the stakeholder', added: '2026-11-15', date: '2026-06-01T00:00:00.000Z' });
+      expect(playbook.tokens).toBe(estimateTokens(playbookSection(playbook.entries)));
+      expect(lessons.find(({ sha: commit }) => commit === sha.sharper)?.files).toMatchObject([{ path: 'roles/pm/playbook.md', kind: 'playbook' }]);
+      expect(await listRoles(dirs)).toMatchObject([{ id: 'pm', playbookTokens: playbook.tokens }]);
+    });
+
+    it('shows a playbook with a problem, with what is wrong and the entries that are right', async () => {
+      writeFileSync(file(), `${entry('PB-1', '')}\n${entry('PB-2', 'Keep it small.')}`);
+
+      expect((await provenance()).playbook).toMatchObject({ problems: ['PB-1 has no text'], entries: [{ id: 'PB-2', sha: null }] });
+    });
+  });
+
+  describe('a project’s memory for the role', () => {
+    let state: string;
+
+    beforeEach(() => {
+      state = join(home, 'state');
+      mkdirSync(join(state, 'memory', 'roles'), { recursive: true });
+      initRepo(state);
+    });
+
+    const write = (path: string, text: string) => writeFileSync(join(state, 'memory', path), text);
+
+    it('is empty for a project that has kept none', async () => {
+      expect(await roleMemory(dirs, 'pm', state)).toEqual({
+        files: { project: { path: 'memory/project.md', entries: [], problems: [] }, role: { path: 'memory/roles/pm.md', entries: [], problems: [] } },
+        tokens: 0,
+        omitted: [],
+        problems: [],
+      });
+    });
+
+    it('is the project’s file and the role’s own, each entry with its commit', async () => {
+      write('project.md', entry('MEM-1', 'The stakeholder plays on a phone.', 'feedback'));
+      write('roles/pm.md', entry('MEM-2', 'Criteria need a command.', 'lesson'));
+      write('roles/engineer.md', entry('MEM-3', 'Not the PM’s.', 'lesson'));
+      sha.memory = commitAt(state, 'memory: first notes', '2026-07-01T00:00:00Z');
+      write('roles/pm.md', `${entry('MEM-2', 'Criteria need a command.', 'lesson')}\n${entry('MEM-4', 'Not committed yet.', 'structure')}`);
+
+      const memory = (await roleMemory(dirs, 'pm', state))!;
+
+      expect(memory.files.project.entries).toMatchObject([{ id: 'MEM-1', kind: 'feedback', sha: sha.memory, subject: 'memory: first notes' }]);
+      expect(memory.files.role.entries.map(({ id, sha: commit }) => [id, commit])).toEqual([
+        ['MEM-2', sha.memory],
+        ['MEM-4', null],
+      ]);
+      expect(memory.tokens).toBeGreaterThan(0);
+      expect(memory).toMatchObject({ omitted: [], problems: [] });
+    });
+
+    // The PM's budget for memory in this test is 400 tokens.
+    it('says which entries a task would be given none of, and what stops any being given', async () => {
+      write('project.md', `${entry('MEM-1', 'x'.repeat(4000), 'feedback')}\n${entry('MEM-2', 'Short.', 'lesson')}`);
+      write('roles/pm.md', `${entry('MEM-2', 'The same id.', 'lesson')}\n${entry('MEM-5', '', 'lesson')}`);
+
+      const memory = (await roleMemory(dirs, 'pm', state))!;
+
+      expect(memory.omitted).toEqual([{ file: 'project', id: 'MEM-1' }]);
+      expect(memory.files.role.problems).toEqual(['MEM-5 has no text']);
+      expect(memory.problems).toEqual(['MEM-2 is in both memory/project.md and memory/roles/pm.md']);
+    });
+
+    it('knows no memory for a role the knowledge repo doesn’t have', async () => {
+      expect(await roleMemory(dirs, 'nope', state)).toBeNull();
+    });
   });
 });

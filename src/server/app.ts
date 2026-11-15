@@ -17,7 +17,8 @@ import { projectLedger } from '../engine/ledger.ts';
 import type { EngineDeps, Runner } from '../engine/runner.ts';
 import type { MilestoneRow, ProjectRow, TaskRow } from '../engine/store.ts';
 import { git } from '../git/git.ts';
-import { listRoles, roleProvenance } from '../roles/provenance.ts';
+import { stateRepoDir } from '../paths.ts';
+import { listRoles, roleMemory, roleProvenance } from '../roles/provenance.ts';
 import { DEFAULT_SEED } from '../setup/setup.ts';
 import { SAFE_ID, TicketError } from '../tickets/ticket.ts';
 import { streamEvents } from './events-stream.ts';
@@ -299,6 +300,13 @@ export function createApp(deps: EngineDeps & { runner: Runner; seedDir?: string 
     const provenance = await roleProvenance(provenanceDirs, id);
     if (provenance === null) throw new NotFound(`Unknown role ${id}`);
     return c.json(provenance);
+  });
+
+  app.get('/api/roles/:id/memory/:name', async (c) => {
+    const id = c.req.param('id');
+    const memory = await roleMemory(provenanceDirs, id, stateRepoDir(deps.paths, (await projectOf(c)).name));
+    if (memory === null) throw new NotFound(`Unknown role ${id}`);
+    return c.json(memory);
   });
 
   // The status comes from the registry and nowhere else: only a QA verification task can change it there.
