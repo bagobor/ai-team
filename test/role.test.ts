@@ -40,7 +40,8 @@ describe('loadRole', () => {
   it.each(ROLES)('loads the seeded role %s', async (id) => {
     const { role, charter } = await loadRole(seedKnowledge, id);
     expect(role.id).toBe(id);
-    expect(role.defaults.budgets).toEqual({ max_turns: 60, max_usd: 3, context_tokens: 12000, playbook_tokens: 2000, memory_tokens: 1000 });
+    // The Tech Lead reads the whole milestone to design it, and has room for that.
+    expect(role.defaults.budgets).toEqual({ max_turns: 60, max_usd: 3, context_tokens: id === 'tech_lead' ? 20000 : 12000, playbook_tokens: 2000, memory_tokens: 1000 });
     expect(charter.length).toBeGreaterThan(0);
   });
 
@@ -156,6 +157,35 @@ describe('loadRole', () => {
   it('rejects an oversized charter', async () => {
     writeFileSync(roleFile('charter.md'), 'x'.repeat(3000));
     await expect(loadRole(knowledge, 'engineer')).rejects.toThrow(/charter.*600/);
+  });
+
+  describe('the playbook', () => {
+    const entry = (id: string, text: string) => `## ${id}\nAdded by: the stakeholder\nAdded: 2026-11-15\n\n${text}\n`;
+
+    it('is empty for a role that has no playbook file', async () => {
+      expect((await loadRole(knowledge, 'engineer')).playbook).toEqual([]);
+    });
+
+    it('is the entries of roles/<id>/playbook.md', async () => {
+      writeFileSync(roleFile('playbook.md'), `# Engineer playbook\n\n${entry('PB-1', 'Run the checks first.')}\n${entry('PB-2', 'Then report.')}`);
+
+      expect((await loadRole(knowledge, 'engineer')).playbook).toMatchObject([
+        { id: 'PB-1', text: 'Run the checks first.' },
+        { id: 'PB-2', text: 'Then report.' },
+      ]);
+    });
+
+    it('refuses a playbook with a problem, and names every one', async () => {
+      writeFileSync(roleFile('playbook.md'), `${entry('PB-1', '')}\n## Notes\n`);
+
+      await expect(loadRole(knowledge, 'engineer')).rejects.toThrow('Role engineer: roles/engineer/playbook.md can’t be given to a worker: Line 7: "## Notes" is not an entry heading such as "## PB-1"; PB-1 has no text');
+    });
+
+    it('refuses a playbook over the role’s budget for one', async () => {
+      writeFileSync(roleFile('playbook.md'), entry('PB-1', 'x'.repeat(8000)));
+
+      await expect(loadRole(knowledge, 'engineer')).rejects.toThrow(/Role engineer: its playbook is \d+ tokens, over the limit of 2000/);
+    });
   });
 
   it('rejects a role whose file names another id', async () => {

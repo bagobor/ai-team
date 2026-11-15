@@ -53,7 +53,9 @@ function readSection({ id, line, body }: Section, prefix: EntryPrefix): Entry | 
 
 // Every problem in the file is reported, and the entries that have none are still read: the page that shows a file
 // shows both, and whatever gives a file to a worker refuses it while it has any.
-export function parseEntries(text: string, prefix: EntryPrefix): { entries: Entry[]; problems: string[] } {
+export type ParsedEntries = { entries: Entry[]; problems: string[] };
+
+export function parseEntries(text: string, prefix: EntryPrefix): ParsedEntries {
   const id = new RegExp(`^${prefix}-[1-9]\\d*$`);
   const problems: string[] = [];
   const sections: Section[] = [];
