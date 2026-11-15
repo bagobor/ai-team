@@ -2,8 +2,6 @@ import { readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { Ajv } from 'ajv';
 import { parse } from 'yaml';
-import type { Entry } from '../knowledge/entries.ts';
-import { loadPlaybook } from '../knowledge/load.ts';
 import { estimateTokens } from '../manifest/tokens.ts';
 import { isWithin } from '../paths.ts';
 
@@ -132,7 +130,7 @@ async function loadOutputSchema(knowledgeDir: string, role: Role, source: string
   }
 }
 
-export type LoadedRole = { role: Role; charter: string; playbook: Entry[]; schema: object; schemaSource: string };
+export type LoadedRole = { role: Role; charter: string; schema: object; schemaSource: string };
 
 export async function loadRole(knowledgeDir: string, roleId: string, purpose?: string): Promise<LoadedRole> {
   if (!ROLE_ID.test(roleId)) throw new Error(`"${roleId}" is not a valid role id`);
@@ -148,5 +146,5 @@ export async function loadRole(knowledgeDir: string, roleId: string, purpose?: s
     throw new Error(`Role ${roleId}: charter is ${tokens} tokens, over the limit of ${CHARTER_TOKEN_LIMIT}`);
   }
 
-  return { role, charter, playbook: await loadPlaybook(knowledgeDir, role), schema: await loadOutputSchema(knowledgeDir, role, schemaSource), schemaSource };
+  return { role, charter, schema: await loadOutputSchema(knowledgeDir, role, schemaSource), schemaSource };
 }

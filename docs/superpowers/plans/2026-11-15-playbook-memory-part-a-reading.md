@@ -6,7 +6,7 @@
 
 **Architecture:**
 - **Entries.** A pure module, `src/knowledge/entries.ts`, parses a playbook or memory file into entries and renders the two prompt sections.
-- **Loading.** `loadRole` also returns the role's playbook. A new `loadMemory` reads a project's two memory files from its state repo.
+- **Loading.** `src/knowledge/load.ts` reads a role's playbook from the knowledge repo and a project's two memory files from its state repo. The runner calls both when it prepares a task. `loadRole` stays as it is: taking a ticket in and choosing what to run next also call it, and a broken playbook must not stop either.
 - **Manifest.** `buildManifest` puts both sections in the system prompt between the charter and the output contract, counts them, names every entry given, and records the prompt's sections and a fingerprint.
 - **Showing.** A role's provenance carries its playbook entries with the commit behind each; a new endpoint gives a role's memory for one project. The Roles page draws both.
 
@@ -68,9 +68,9 @@ Files: `src/knowledge/entries.ts`, `test/entries.test.ts`.
 
 ### Task 2: Loading
 
-Files: `src/roles/role.ts`, `src/knowledge/memory.ts`, `test/role.test.ts`, `test/memory.test.ts`.
+Files: `src/knowledge/load.ts`, `test/knowledge-load.test.ts`.
 
-- `loadRole` returns `playbook`. It throws on a problem and on a section over `playbook_tokens`.
+- `loadPlaybook(knowledgeDir, role)` returns the entries. It throws on a problem and on a section over `playbook_tokens`.
 - `loadMemory(stateDir, roleId)` returns `{ project, role }`. It throws on a problem in either file and on an id both files use.
 - Tests: no file gives no entries; a playbook loads; a bad one and an oversize one are refused by name; memory loads from both files; a shared id is refused.
 

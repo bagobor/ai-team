@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { parse as parseYaml } from 'yaml';
 import { applyDiscovery } from '../src/engine/apply/discovery.ts';
@@ -118,6 +118,57 @@ describe('Runner', () => {
 
     expect(systemPrompt(e, t.ticket_id)).not.toContain('TOP-SECRET');
     expect((await task(e, t.id)).state).toBe('review');
+  });
+
+  describe('what the role knows', () => {
+    const entry = (id: string, text: string, kind?: string) => [`## ${id}`, ...(kind === undefined ? [] : [`Kind: ${kind}`]), 'Added by: the stakeholder', 'Added: 2026-11-15', '', text, ''].join('\n');
+    const playbookFile = (e: TestEngine) => join(e.paths.knowledge, 'roles', 'engineer', 'playbook.md');
+
+    it('gives the worker its role’s playbook and the project’s memory, and records which entries', async () => {
+      const e = await engine({ steps: [okStep({ 'src/a.mjs': '' })] });
+      const memory = join(stateRepoDir(e.paths, 'p'), 'memory');
+      mkdirSync(join(memory, 'roles'), { recursive: true });
+      writeFileSync(playbookFile(e), entry('PB-1', 'Run the checks before you report.'));
+      writeFileSync(join(memory, 'project.md'), entry('MEM-1', 'The stakeholder plays on a phone.', 'feedback'));
+      writeFileSync(join(memory, 'roles', 'engineer.md'), entry('MEM-2', 'Tests live in test/.', 'structure'));
+      writeFileSync(join(memory, 'roles', 'pm.md'), entry('MEM-3', 'Only the PM reads this.', 'lesson'));
+      const t = await e.addTicket(ticket());
+
+      await runOnce(e, t.id);
+
+      const system = systemPrompt(e, t.ticket_id);
+      expect(system).toContain('### PB-1\n\nRun the checks before you report.');
+      expect(system).toContain('### MEM-1 (feedback)\n\nThe stakeholder plays on a phone.');
+      expect(system).toContain('### MEM-2 (structure, your own note)\n\nTests live in test/.');
+      expect(system).not.toContain('Only the PM reads this.');
+      const [attempt] = await e.store.listAttempts(t.id);
+      const sources = Object.fromEntries((attempt!.manifest as TaskManifest).parts.map((part) => [part.name, part.sources]));
+      expect(sources.playbook).toEqual(['roles/engineer/playbook.md#PB-1']);
+      expect(sources.memory).toEqual(['memory/project.md#MEM-1', 'memory/roles/engineer.md#MEM-2']);
+    });
+
+    it('stops a task whose role’s playbook has a problem, and says what to fix', async () => {
+      const e = await engine({ steps: [okStep({ 'src/a.mjs': '' })] });
+      writeFileSync(playbookFile(e), '## PB-1\nAdded by: the stakeholder\n\nNo date.\n');
+      const t = await e.addTicket(ticket());
+
+      await runOnce(e, t.id);
+
+      expect(await task(e, t.id)).toMatchObject({ state: 'escalated', escalation_reason: 'workspace_error: Role engineer: roles/engineer/playbook.md can’t be given to a worker: PB-1 has no "Added" line' });
+      expect(e.spawnCount()).toBe(0);
+    });
+
+    it('stops a task whose project’s memory has a problem', async () => {
+      const e = await engine({ steps: [okStep({ 'src/a.mjs': '' })] });
+      mkdirSync(join(stateRepoDir(e.paths, 'p'), 'memory'), { recursive: true });
+      writeFileSync(join(stateRepoDir(e.paths, 'p'), 'memory', 'project.md'), entry('MEM-1', 'No kind.'));
+      const t = await e.addTicket(ticket());
+
+      await runOnce(e, t.id);
+
+      expect(await task(e, t.id)).toMatchObject({ state: 'escalated', escalation_reason: 'workspace_error: memory/project.md can’t be given to a worker: MEM-1 has no "Kind" line' });
+      expect(e.spawnCount()).toBe(0);
+    });
   });
 
   afterEach(async () => {
