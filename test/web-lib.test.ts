@@ -30,7 +30,7 @@ import {
 } from '../web/src/lib/inbox.ts';
 import { duration, foldedQuote, ledgerTotals, purposeLabel, roleChip, runLabel, thenOf, when } from '../web/src/lib/ledger.ts';
 import { layoutLineage, staleNotes } from '../web/src/lib/lineageLayout.ts';
-import { changeKey, charterRows, day, fileLabel, linesFrom, roleName, rolePath, unwrap } from '../web/src/lib/roles.ts';
+import { changeKey, charterRows, day, entryByline, fileLabel, linesFrom, roleName, rolePath, unwrap } from '../web/src/lib/roles.ts';
 
 const item = (id: number, type: InboxItem['type']): InboxItem => ({ id, type, title: `Item ${id}` }) as InboxItem;
 
@@ -637,7 +637,13 @@ describe('a role’s provenance, as the page draws it', () => {
     expect(fileLabel({ kind: 'schema', path: 'schemas/spec.json' })).toBe('spec.json');
     expect(fileLabel({ kind: 'other', path: 'roles/pm/notes.md' })).toBe('notes.md');
     expect(fileLabel({ kind: 'charter', path: 'roles/pm/charter.md' })).toBe('charter');
+    expect(fileLabel({ kind: 'playbook', path: 'roles/pm/playbook.md' })).toBe('playbook');
     expect(day('2026-11-07T12:00:00.000Z')).toBe('7 Nov 2026');
+  });
+
+  it('says who added an entry and on which day, whatever the time zone of the reader', () => {
+    expect(entryByline({ addedBy: 'the stakeholder', added: '2026-11-01' })).toBe('Added by the stakeholder on 1 Nov 2026');
+    expect(entryByline({ addedBy: 'engineer, M1-T-4 attempt 2', added: '2026-01-31' })).toBe('Added by engineer, M1-T-4 attempt 2 on 31 Jan 2026');
   });
 
   it('joins a commit message’s wrapped lines and keeps its list items and paragraphs', () => {
