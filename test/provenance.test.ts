@@ -265,6 +265,16 @@ describe('a role’s provenance', () => {
       expect(memory.problems).toEqual(['MEM-2 is in both memory/project.md and memory/roles/pm.md']);
     });
 
+    it('shows what is kept for a role whose role.yaml sets no budget, none of which a task would be given', async () => {
+      writeFileSync(join(dirs.knowledge, 'roles', 'pm', 'role.yaml'), 'id: [');
+      write('project.md', entry('MEM-1', 'The stakeholder plays on a phone.', 'feedback'));
+
+      const memory = (await roleMemory(dirs, 'pm', state))!;
+
+      expect(memory.files.project.entries).toMatchObject([{ id: 'MEM-1' }]);
+      expect(memory).toMatchObject({ tokens: 0, omitted: [{ file: 'project', id: 'MEM-1' }] });
+    });
+
     it('knows no memory for a role the knowledge repo doesn’t have', async () => {
       expect(await roleMemory(dirs, 'nope', state)).toBeNull();
     });

@@ -86,4 +86,10 @@ describe('a project’s memory, as a task reads it', () => {
 
     await expect(loadMemory(state, 'engineer')).rejects.toThrow('MEM-1 is in both memory/project.md and memory/roles/engineer.md');
   });
+
+  it('fails on a file it can’t read, and never takes one for an empty file', async () => {
+    mkdirSync(join(state, 'memory', 'project.md'), { recursive: true });
+
+    await expect(loadMemory(state, 'engineer')).rejects.toThrow(/EISDIR/);
+  });
 });
