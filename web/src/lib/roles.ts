@@ -1,3 +1,4 @@
+import type { Entry } from '../../../src/knowledge/entries.ts';
 import type { CharterLine, Lesson, LessonFile } from '../../../src/roles/provenance.ts';
 
 // Names and wording for a role's provenance: which commit wrote each charter line, and what each change taught.
@@ -28,6 +29,12 @@ export const shortSha = (sha: string) => sha.slice(0, 7);
 export function day(iso: string): string {
   const date = new Date(iso);
   return `${date.getDate()} ${MONTHS[date.getMonth()]} ${date.getFullYear()}`;
+}
+
+// An entry's date is a day with no time, so it is read as written: a Date would move it a day back west of Greenwich.
+export function entryByline({ addedBy, added }: Pick<Entry, 'addedBy' | 'added'>): string {
+  const [year, month, date] = added.split('-').map(Number);
+  return `Added by ${addedBy} on ${date} ${MONTHS[(month ?? 1) - 1]} ${year}`;
 }
 
 const SOURCE: Record<Lesson['source'], string> = { seed: 'AI Team seed', knowledge: 'knowledge repo', uncommitted: 'not committed' };

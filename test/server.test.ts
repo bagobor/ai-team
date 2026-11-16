@@ -4,6 +4,7 @@ import type { Hono } from 'hono';
 import { Conductor } from '../src/engine/conductor/index.ts';
 import { IllegalTransition, type MilestonePhase } from '../src/engine/fsm.ts';
 import type { NewInboxItem } from '../src/engine/inbox.ts';
+import { stateRepoDir } from '../src/paths.ts';
 import { createApp, serveWeb } from '../src/server/app.ts';
 import { lockSpec, projectOf, ticketTask } from './helpers/apply.ts';
 import { makeEngine, seedMustSupport, ticket, until, type TestEngine } from './helpers/engine.ts';
@@ -983,6 +984,23 @@ describe('the API', () => {
       const res = await req(`/api/roles/${id}/provenance`);
 
       expect(res.status).toBe(404);
+    });
+
+    it('gives a role’s memory for one project, with the commit behind each entry', async () => {
+      const memory = join(stateRepoDir(e.paths, 'p'), 'memory');
+      mkdirSync(join(memory, 'roles'), { recursive: true });
+      writeFileSync(join(memory, 'project.md'), '## MEM-1\nKind: feedback\nAdded by: the engine\nAdded: 2026-11-15\n\nThe stakeholder plays on a phone.\n');
+      writeFileSync(join(memory, 'roles', 'pm.md'), '## MEM-2\nKind: lesson\nAdded by: pm\nAdded: 2026-11-15\n\nCriteria need a command.\n');
+
+      const body = (await (await req('/api/roles/pm/memory/p')).json()) as { files: Record<string, { entries: { id: string; sha: string | null }[] }>; tokens: number };
+
+      expect(body.files.project?.entries).toMatchObject([{ id: 'MEM-1', sha: null }]);
+      expect(body.files.role?.entries).toMatchObject([{ id: 'MEM-2', sha: null }]);
+      expect(body.tokens).toBeGreaterThan(0);
+    });
+
+    it.each([['/api/roles/nope/memory/p'], ['/api/roles/pm/memory/no-such-project']])('is 404 for %s', async (path) => {
+      expect((await req(path)).status).toBe(404);
     });
   });
 

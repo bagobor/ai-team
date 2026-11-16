@@ -412,8 +412,25 @@ textarea{width:100%;min-height:64px;resize:vertical;line-height:1.45}
 .charter-body .ln .tx{white-space:pre-wrap;overflow-wrap:anywhere;padding:1px 4px;margin-left:-4px;color:var(--ink);line-height:1.5}
 .charter-body .ln.dim .tx{opacity:.35}
 .charter-body .ln.hit .tx{background:var(--sel);border-radius:3px}
-.mem-empty{display:grid;grid-template-columns:1fr 1fr;gap:16px}
-.mem-empty .panel-b{color:var(--ink-3);font-size:12px}
+.entry{padding:10px 14px;border-top:1px solid var(--line-2)}
+.panel-h + .entry{border-top:0}
+.entry.unc{box-shadow:inset 3px 0 0 var(--stale)}
+.entry-h{display:flex;flex-wrap:wrap;gap:4px 8px;align-items:center;font-size:12px}
+.entry-h .tag{background:var(--sunken);color:var(--ink-2)}
+.entry-h .tag.back{background:var(--stale-bg);color:var(--stale-ink)}
+.entry-h .by{color:var(--ink-3)}
+.entry-h .commit{margin-left:auto;color:var(--ink-3);font-size:11px;white-space:nowrap}
+.entry-h .commit button{border:0;background:none;padding:0;font:inherit;color:inherit;cursor:pointer}
+.entry-h .commit button:hover{color:var(--ink);text-decoration:underline}
+.entry-h .commit button:focus-visible{outline:2px solid var(--focus);outline-offset:1px;border-radius:2px}
+.entry-t{white-space:pre-wrap;overflow-wrap:anywhere;margin-top:5px;line-height:1.5}
+.entry-src{margin-top:4px;color:var(--ink-3);font-size:12px}
+.entry-file h3{margin:0;padding:8px 14px;font-size:12px;font-weight:600;background:var(--panel-2);border-top:1px solid var(--line-2);border-bottom:1px solid var(--line-2)}
+.entry-file h3 .mono{font-weight:400;color:var(--ink-3);margin-left:6px}
+.entry-file h3 + .entry{border-top:0}
+.entry-problems{padding:10px 14px;background:var(--fail-bg);color:var(--fail-ink);font-size:12px}
+.entry-problems ul{margin:4px 0 0;padding-left:18px}
+.panel-h .aside select{font:inherit;color:var(--ink);background:var(--panel);border:1px solid var(--line);border-radius:4px;padding:1px 4px}
 .lessons-col{position:sticky;top:12px;max-height:calc(100vh - 24px);display:flex;flex-direction:column}
 .lessons{display:flex;flex-direction:column;overflow:auto;min-height:0}
 .lesson{border-bottom:1px solid var(--line-2)}
@@ -428,6 +445,7 @@ textarea{width:100%;min-height:64px;resize:vertical;line-height:1.45}
 .lesson .files{margin-top:5px;display:flex;flex-wrap:wrap;gap:4px}
 .ftag{font-family:var(--mono);font-size:10.5px;border-radius:4px;padding:1px 5px;background:var(--sunken);color:var(--ink-2)}
 .ftag.charter{background:var(--pass-bg);color:var(--pass-ink)}
+.ftag.playbook{background:var(--run-bg);color:var(--run-ink)}
 .ftag.config{background:var(--human-bg);color:var(--human-ink)}
 .ftag .p{color:var(--add-ink)}.ftag .m{color:var(--del-ink)}
 .lesson-diff{border-top:1px solid var(--line-2);background:var(--panel-2);max-height:460px;overflow:auto}
@@ -464,5 +482,4 @@ textarea{width:100%;min-height:64px;resize:vertical;line-height:1.45}
   .charter-body .ln{grid-template-columns:4px minmax(0,1fr);gap:0 10px}
   .charter-body .ln .g{grid-column:1/-1;text-align:left}
   .charter-body .ln:not(.first) .g{display:none}
-  .mem-empty{grid-template-columns:minmax(0,1fr)}
 }

@@ -67,6 +67,8 @@ The stakeholder agreed this order. Each part merges to ai-team main on its own, 
 3. **Designer roles** (point 4).
 4. **Memory** (point 5).
 
+Changed on 2026-11-15: Part 1 is merged. Memory now comes next, ahead of Parts 2 and 3, and is built to `2026-11-15-playbook-memory-trials-design.md`, which replaces Part 4 below and adds role playbooks.
+
 Hollow Comet Souls finishes milestone 1 on the engine that is running now (`67d24d4`), then waits until all four parts are merged, and starts milestone 2 on the new engine. See "Switching Hollow Comet Souls at milestone 2" at the end.
 
 ---
@@ -258,6 +260,8 @@ Per the recon, a new role and document type need: `ARTIFACT_TYPES` (`src/artifac
 ---
 
 ## Part 4: Memory
+
+Replaced on 2026-11-15 by `2026-11-15-playbook-memory-trials-design.md`. That design keeps what this part says about how entries are added, their provenance and removal, and changes the rest.
 
 ### Two levels
 
