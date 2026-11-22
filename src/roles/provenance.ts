@@ -3,6 +3,8 @@ import { readdir, readFile } from 'node:fs/promises';
 import { isAbsolute, join, posix } from 'node:path';
 import { parse } from 'yaml';
 import { git } from '../git/git.ts';
+import { memorySection, parseEntries, playbookSection, type Entry, type EntryPrefix, type MemoryFile, type MemoryRef } from '../knowledge/entries.ts';
+import { memoryPaths, playbookPath } from '../knowledge/load.ts';
 import { estimateTokens } from '../manifest/tokens.ts';
 import { CHARTER_TOKEN_LIMIT, ROLE_ID, type Budgets } from './role.ts';
 
@@ -14,15 +16,27 @@ export type Source = 'seed' | 'knowledge';
 // A null sha is a line nobody has committed yet.
 export type CharterLine = { text: string; sha: string | null; source: Source | null; date: string | null; subject: string | null };
 
-export type LessonFile = { path: string; kind: 'charter' | 'config' | 'schema' | 'other'; add: number; del: number; diff: string; clipped: boolean; untracked: boolean };
+export type LessonFile = { path: string; kind: 'charter' | 'playbook' | 'config' | 'schema' | 'other'; add: number; del: number; diff: string; clipped: boolean; untracked: boolean };
 
 export type Lesson = { sha: string | null; source: Source | 'uncommitted'; date: string | null; author: string | null; subject: string; body: string; files: LessonFile[] };
 
 export type RoleFacts = { department: string | null; mission: string | null; model: string | null; budgets: Budgets | null; produces: string[] };
 
-export type RoleProvenance = RoleFacts & { id: string; charterTokens: number; charterTokenLimit: number; lines: CharterLine[]; lessons: Lesson[]; error: string | null };
+// An entry with the newest commit that changed any of its lines. A null sha is an entry with a line no commit has seen.
+export type EntryView = Entry & { sha: string | null; date: string | null; subject: string | null };
 
-export type RoleSummary = RoleFacts & { id: string; charterTokens: number; charterTokenLimit: number; lessons: number; lastLesson: string | null; uncommitted: boolean; error: string | null };
+// A playbook or memory file as a person reads it: what is wrong with it beside the entries that are right.
+export type EntriesView = { path: string; entries: EntryView[]; problems: string[] };
+
+// tokens is the size of what a task is given: the whole playbook, or the memory that fits the role's budget for it.
+export type PlaybookView = EntriesView & { tokens: number };
+
+// problems here are the ones between the two files, which stop a task as much as one inside a file does.
+export type MemoryView = { files: Record<MemoryFile, EntriesView>; tokens: number; omitted: MemoryRef[]; problems: string[] };
+
+export type RoleProvenance = RoleFacts & { id: string; charterTokens: number; charterTokenLimit: number; lines: CharterLine[]; playbook: PlaybookView; lessons: Lesson[]; error: string | null };
+
+export type RoleSummary = RoleFacts & { id: string; charterTokens: number; charterTokenLimit: number; playbookTokens: number; lessons: number; lastLesson: string | null; uncommitted: boolean; error: string | null };
 
 const MAX_DIFF_LINES = 260;
 const ZERO_SHA = /^0{40}$/;
@@ -72,6 +86,7 @@ const readOrNull = (path: string): Promise<string | null> => readFile(path, 'utf
 
 function kindOf(path: string): LessonFile['kind'] {
   if (path.endsWith('/charter.md')) return 'charter';
+  if (path.endsWith('/playbook.md')) return 'playbook';
   if (path.endsWith('/role.yaml')) return 'config';
   if (path.startsWith('schemas/')) return 'schema';
   return 'other';
@@ -195,7 +210,42 @@ export async function roleProvenance(dirs: ProvenanceDirs, id: string): Promise<
   const charter = (await readOrNull(join(dir, 'charter.md'))) ?? '';
   const { lessons, seeded } = await history(dirs, id, schemas, true);
   const lines = charter === '' ? [] : await attribute(dirs, seeded, id, charter);
-  return { id, ...facts, charterTokens: estimateTokens(charter), charterTokenLimit: CHARTER_TOKEN_LIMIT, lines, lessons, error };
+  const playbook = await entriesView(dirs.knowledge, playbookPath(id), 'PB');
+  return { id, ...facts, charterTokens: estimateTokens(charter), charterTokenLimit: CHARTER_TOKEN_LIMIT, lines, playbook: { ...playbook, tokens: estimateTokens(playbookSection(playbook.entries)) }, lessons, error };
+}
+
+// A file's entries, each with the commit behind it. A file git has never seen, or one outside a repo, has none.
+async function entriesView(repo: string, path: string, prefix: EntryPrefix): Promise<EntriesView> {
+  const text = (await readOrNull(join(repo, path))) ?? '';
+  const { entries, problems } = parseEntries(text, prefix);
+  const lines = text.replace(/\n$/, '').split('\n');
+  const blamed = entries.length === 0 ? null : await blame(repo, path, null, lines.length).catch(() => null);
+  const headings = lines.flatMap((line, i) => (line.startsWith('## ') ? [i] : []));
+  return {
+    path,
+    problems,
+    entries: entries.map((entry): EntryView => {
+      const start = entry.line - 1;
+      const end = headings.find((heading) => heading > start) ?? lines.length;
+      // The blank lines between two entries belong to neither: adding an entry below must not make this one look changed.
+      const own = (blamed ?? []).slice(start, end).filter((_, i) => lines[start + i]?.trim() !== '');
+      const newest = own.every(committed) ? own.reduce<Blamed | null>((best, commit) => (best === null || (commit.date ?? '') > (best.date ?? '') ? commit : best), null) : null;
+      return { ...entry, sha: newest?.sha ?? null, date: newest?.date ?? null, subject: newest?.subject ?? null };
+    }),
+  };
+}
+
+// What the role would read on this project today, within its budget for memory, and what is kept for it that it would
+// not. Null for a role the knowledge repo doesn't have.
+export async function roleMemory(dirs: ProvenanceDirs, id: string, stateDir: string): Promise<MemoryView | null> {
+  const dir = roleDir(dirs, id);
+  if (dir === null) return null;
+  const budget = readFacts(await readOrNull(join(dir, 'role.yaml'))).facts.budgets?.memory_tokens ?? 0;
+  const paths = memoryPaths(id);
+  const files = { project: await entriesView(stateDir, paths.project, 'MEM'), role: await entriesView(stateDir, paths.role, 'MEM') };
+  const { text, omitted } = memorySection({ project: files.project.entries, role: files.role.entries }, budget);
+  const shared = files.role.entries.filter((entry) => files.project.entries.some((other) => other.id === entry.id));
+  return { files, tokens: estimateTokens(text), omitted, problems: shared.map((entry) => `${entry.id} is in both ${paths.project} and ${paths.role}`) };
 }
 
 export async function listRoles(dirs: ProvenanceDirs): Promise<RoleSummary[]> {
@@ -213,6 +263,7 @@ export async function listRoles(dirs: ProvenanceDirs): Promise<RoleSummary[]> {
         ...facts,
         charterTokens: estimateTokens(charter),
         charterTokenLimit: CHARTER_TOKEN_LIMIT,
+        playbookTokens: estimateTokens(playbookSection(parseEntries((await readOrNull(join(dir, 'playbook.md'))) ?? '', 'PB').entries)),
         lessons: commits.length,
         lastLesson: commits[0]?.date ?? null,
         uncommitted: lessons.length > commits.length,

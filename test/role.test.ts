@@ -40,7 +40,8 @@ describe('loadRole', () => {
   it.each(ROLES)('loads the seeded role %s', async (id) => {
     const { role, charter } = await loadRole(seedKnowledge, id);
     expect(role.id).toBe(id);
-    expect(role.defaults.budgets).toEqual({ max_turns: 60, max_usd: 3, context_tokens: 12000, playbook_tokens: 2000, memory_tokens: 1000 });
+    // The Tech Lead reads the whole milestone to design it, and has room for that.
+    expect(role.defaults.budgets).toEqual({ max_turns: 60, max_usd: 3, context_tokens: id === 'tech_lead' ? 20000 : 12000, playbook_tokens: 2000, memory_tokens: 1000 });
     expect(charter.length).toBeGreaterThan(0);
   });
 

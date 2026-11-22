@@ -13,10 +13,12 @@ import type { DB } from '../db/schema.ts';
 import type { EventLog, EventType } from '../events.ts';
 import { gitOk } from '../git/git.ts';
 import { addAttemptWorktree, ensureIntegrationBranch, removeAttemptWorktree, snapshotAttempt } from '../git/workspace.ts';
+import type { Entry, Memory } from '../knowledge/entries.ts';
+import { loadMemory, loadPlaybook } from '../knowledge/load.ts';
 import { buildManifest, readRepoInstructions, type BuildInput, type ManifestInput } from '../manifest/build.ts';
 import { manifestDir, stateRepoDir, transcriptPath, workerDenyRead, worktreePath, type Paths } from '../paths.ts';
 import { processStartTime } from '../proc.ts';
-import { loadRole, type Role } from '../roles/role.ts';
+import { loadRole, type LoadedRole } from '../roles/role.ts';
 import { parseTicket } from '../tickets/ticket.ts';
 import { ENV_PROFILE, techId } from './apply/ids.ts';
 import { applyOutput } from './apply/index.ts';
@@ -82,19 +84,18 @@ type TaskText = {
   comment?: string;
 };
 
-type Work = TaskText & {
-  task: TaskRow;
-  project: ProjectRow;
-  role: Role;
-  charter: string;
-  schema: object;
-  schemaSource: string;
-  adapter: WorkerAdapter;
-  baseSha: string;
-  order: WorkOrder | null;
-  networkAllow: string[];
-  setup?: string;
-};
+type Work = TaskText &
+  LoadedRole & {
+    task: TaskRow;
+    project: ProjectRow;
+    playbook: Entry[];
+    memory: Memory;
+    adapter: WorkerAdapter;
+    baseSha: string;
+    order: WorkOrder | null;
+    networkAllow: string[];
+    setup?: string;
+  };
 
 type ChangeReportOutput = {
   summary?: string;
@@ -290,6 +291,8 @@ export class Runner {
       attemptK: k,
       role,
       charter: work.charter,
+      playbook: work.playbook,
+      memory: work.memory,
       schema: work.schema,
       schemaSource: work.schemaSource,
       taskId: task.ticket_id,
@@ -352,7 +355,7 @@ export class Runner {
     const workspaceError = (err: unknown) => store.setTaskState(taskId, 'escalated', { reason: `workspace_error: ${errorText(err)}` });
 
     const order = task.work_order;
-    let loaded: Awaited<ReturnType<typeof loadRole>>;
+    let loaded: LoadedRole;
     let adapter: WorkerAdapter;
     try {
       if (task.kind !== 'ticket' && !order) throw new Error(`A ${task.kind} task needs a work order`);
@@ -378,6 +381,9 @@ export class Runner {
         task,
         project,
         ...loaded,
+        // Read here and not with the role: taking a ticket in and choosing what to run next need only the role.
+        playbook: await loadPlaybook(paths.knowledge, loaded.role),
+        memory: await loadMemory(stateRepoDir(paths, project.name), task.role_id),
         adapter,
         ...text,
         order,

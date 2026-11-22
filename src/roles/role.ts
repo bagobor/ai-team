@@ -130,7 +130,9 @@ async function loadOutputSchema(knowledgeDir: string, role: Role, source: string
   }
 }
 
-export async function loadRole(knowledgeDir: string, roleId: string, purpose?: string): Promise<{ role: Role; charter: string; schema: object; schemaSource: string }> {
+export type LoadedRole = { role: Role; charter: string; schema: object; schemaSource: string };
+
+export async function loadRole(knowledgeDir: string, roleId: string, purpose?: string): Promise<LoadedRole> {
   if (!ROLE_ID.test(roleId)) throw new Error(`"${roleId}" is not a valid role id`);
 
   const dir = join(knowledgeDir, 'roles', roleId);

@@ -1,20 +1,19 @@
 import { useQuery } from '@tanstack/react-query';
 import { useEffect, useState, type KeyboardEvent } from 'react';
-import type { Lesson, RoleProvenance, RoleSummary } from '../../../src/roles/provenance.ts';
-import { getRoleProvenance, listRoles } from '../api.ts';
+import type { MemoryFile } from '../../../src/knowledge/entries.ts';
+import type { EntriesView, EntryView, Lesson, RoleProvenance, RoleSummary } from '../../../src/roles/provenance.ts';
+import { getRoleMemory, getRoleProvenance, listProjects, listRoles } from '../api.ts';
 import { DiffView } from '../components/DiffTab.tsx';
 import { plural, roleChip, when } from '../lib/ledger.ts';
-import { changeKey, charterRows, day, fileLabel, linesFrom, roleName, rolePath, shortSha, sourceLabel, unwrap } from '../lib/roles.ts';
+import { changeKey, charterRows, day, entryByline, fileLabel, linesFrom, roleName, rolePath, shortSha, sourceLabel, unwrap } from '../lib/roles.ts';
 import { Link } from '../router.tsx';
 
-function Memory({ budgets }: { budgets: RoleSummary['budgets'] }) {
-  if (budgets === null) return <span className="muted">–</span>;
+function Knowledge({ role }: { role: RoleSummary }) {
+  if (role.budgets === null) return <span className="muted">–</span>;
   return (
     <>
-      Empty
-      <div className="muted">
-        0 of {budgets.playbook_tokens.toLocaleString()} and 0 of {budgets.memory_tokens.toLocaleString()} tokens
-      </div>
+      {role.playbookTokens === 0 ? 'No playbook' : `Playbook: ${role.playbookTokens.toLocaleString()} of ${role.budgets.playbook_tokens.toLocaleString()} tokens`}
+      <div className="muted">Memory is kept per project, up to {role.budgets.memory_tokens.toLocaleString()} tokens</div>
     </>
   );
 }
@@ -49,7 +48,7 @@ function RosterRow({ role }: { role: RoleSummary }) {
         {role.uncommitted && <span className="tag back">not committed</span>}
       </td>
       <td className="nw">
-        <Memory budgets={role.budgets} />
+        <Knowledge role={role} />
       </td>
     </tr>
   );
@@ -73,8 +72,8 @@ export function Roles() {
       </header>
       <div className="content">
         <p className="lede">
-          A role is a charter and a config file in the knowledge repo, and nothing else carries over from one task to the next. Each role sets budget aside for a playbook and a
-          project memory, but nothing writes to either yet: every lesson so far is a change someone committed. Open a role to see which change wrote each line of its charter.
+          A role is a charter, a playbook and a config file in the knowledge repo. A task is given all of the charter and the playbook, and what fits of the memory kept for its
+          project. Open a role to see which change wrote each line of its charter and each entry of its playbook, and what it remembers about a project.
         </p>
         {error && <p className="err">Couldn't load the roles: {error.message}</p>}
         {roles && roles.length === 0 && <div className="panel empty">The knowledge repo has no roles.</div>}
@@ -116,6 +115,142 @@ function RoleNav({ current }: { current: string }) {
         </Link>
       ))}
     </nav>
+  );
+}
+
+// onCommit is given for a file whose commits are among the role's lessons, so that an entry's commit can be opened there.
+function Entries({ view, leftOut, onCommit }: { view: EntriesView; leftOut?: string[]; onCommit?: (key: string) => void }) {
+  const commitOf = ({ sha, date }: EntryView) =>
+    sha === null || date === null ? (
+      'not committed'
+    ) : (
+      <>
+        {day(date)} <span className="mono">{shortSha(sha)}</span>
+      </>
+    );
+  return (
+    <>
+      {view.problems.length > 0 && (
+        <div className="entry-problems">
+          <b>Every task that would read this file is stopped until this is fixed in {view.path}:</b>
+          <ul>
+            {view.problems.map((problem) => (
+              <li key={problem}>{problem}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {view.entries.map((entry) => (
+        <div key={entry.id} className={`entry${entry.sha === null ? ' unc' : ''}`}>
+          <div className="entry-h">
+            <b className="mono">{entry.id}</b>
+            {entry.kind !== null && <span className="tag">{entry.kind}</span>}
+            {leftOut?.includes(entry.id) && <span className="tag back">too long to fit, so no task is given it</span>}
+            <span className="by">{entryByline(entry)}</span>
+            <span className="commit" title={entry.subject ?? 'Not committed yet'}>
+              {onCommit ? (
+                <button type="button" onClick={() => onCommit(changeKey(entry))}>
+                  {commitOf(entry)}
+                </button>
+              ) : (
+                commitOf(entry)
+              )}
+            </span>
+          </div>
+          <div className="entry-t">{entry.text}</div>
+          {entry.sources.length > 0 && <div className="entry-src">From {entry.sources.join(', ')}</div>}
+        </div>
+      ))}
+    </>
+  );
+}
+
+function Playbook({ role, onCommit }: { role: RoleProvenance; onCommit: (key: string) => void }) {
+  const { playbook, budgets } = role;
+  return (
+    <section className="panel">
+      <div className="panel-h">
+        <h2>Playbook</h2>
+        <span className="aside">
+          {playbook.tokens.toLocaleString()} of {budgets?.playbook_tokens.toLocaleString() ?? '–'} tokens{playbook.problems.length === 0 && playbook.tokens > 0 && ', all of it given to every task'}
+        </span>
+      </div>
+      {playbook.entries.length === 0 && playbook.problems.length === 0 ? (
+        <div className="panel-b muted">
+          Empty. A playbook is how to do this role’s work well in any project. For now it is written by hand, in <span className="mono">{playbook.path}</span> in the knowledge repo.
+        </div>
+      ) : (
+        <Entries view={playbook} onCommit={onCommit} />
+      )}
+    </section>
+  );
+}
+
+const MEMORY_FILES: { file: MemoryFile; title: string }[] = [
+  { file: 'project', title: 'Known to the whole team' },
+  { file: 'role', title: 'This role’s own notes' },
+];
+
+function ProjectMemory({ role }: { role: RoleProvenance }) {
+  const { data: projects } = useQuery({ queryKey: ['projects'], queryFn: listProjects });
+  const [picked, setPicked] = useState<string | null>(null);
+  // The newest project is the one most likely in hand.
+  const project = picked ?? projects?.at(-1)?.name ?? null;
+  const { data: memory, error } = useQuery({ queryKey: ['role-memory', role.id, project], queryFn: () => getRoleMemory(role.id, project!), enabled: project !== null });
+  const empty = memory !== undefined && MEMORY_FILES.every(({ file }) => memory.files[file].entries.length === 0 && memory.files[file].problems.length === 0);
+
+  return (
+    <section className="panel">
+      <div className="panel-h">
+        <h2>Project memory</h2>
+        <span className="aside">
+          {memory && (
+            <span>
+              {memory.tokens.toLocaleString()} of {role.budgets?.memory_tokens.toLocaleString() ?? '–'} tokens given to a task
+            </span>
+          )}
+          {projects && projects.length > 0 && (
+            <select aria-label="Project" value={project ?? ''} onChange={(event) => setPicked(event.target.value)}>
+              {projects.map(({ name }) => (
+                <option key={name} value={name}>
+                  {name}
+                </option>
+              ))}
+            </select>
+          )}
+        </span>
+      </div>
+      {projects?.length === 0 && <div className="panel-b muted">There is no project yet, so nothing to remember.</div>}
+      {error && <div className="panel-b err-line">Couldn’t load the memory: {error.message}</div>}
+      {memory && memory.problems.length > 0 && (
+        <div className="entry-problems">
+          <b>Every task of this role on this project is stopped until this is fixed:</b>
+          <ul>
+            {memory.problems.map((problem) => (
+              <li key={problem}>{problem}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {empty && <div className="panel-b muted">Empty. Nothing has been kept about {project} yet.</div>}
+      {memory &&
+        !empty &&
+        MEMORY_FILES.map(({ file, title }) => {
+          const view = memory.files[file];
+          return (
+            <div key={file} className="entry-file">
+              <h3>
+                {title} <span className="mono">{view.path}</span>
+              </h3>
+              {view.entries.length === 0 && view.problems.length === 0 ? (
+                <div className="panel-b muted">Nothing yet.</div>
+              ) : (
+                <Entries view={view} leftOut={memory.omitted.filter((ref) => ref.file === file).map(({ id }) => id)} />
+              )}
+            </div>
+          );
+        })}
+    </section>
   );
 }
 
@@ -267,22 +402,14 @@ export function RoleDetail({ id }: { id: string }) {
                 setReveal(key);
               }}
             />
-            <div className="mem-empty">
-              <section className="panel">
-                <div className="panel-h">
-                  <h2>Playbook</h2>
-                  <span className="aside">0 of {b?.playbook_tokens.toLocaleString() ?? '–'} tokens</span>
-                </div>
-                <div className="panel-b">Empty. Nothing writes a role’s playbook yet, so every run starts without one.</div>
-              </section>
-              <section className="panel">
-                <div className="panel-h">
-                  <h2>Project memory</h2>
-                  <span className="aside">0 of {b?.memory_tokens.toLocaleString() ?? '–'} tokens</span>
-                </div>
-                <div className="panel-b">Empty. Nothing a role learns about a project is kept for its next task.</div>
-              </section>
-            </div>
+            <Playbook
+              role={role}
+              onCommit={(key) => {
+                setSelected(key);
+                setReveal(key);
+              }}
+            />
+            <ProjectMemory role={role} />
             <section className="panel">
               <div className="kv">
                 <div>

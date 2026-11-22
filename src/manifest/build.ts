@@ -1,15 +1,23 @@
+import { createHash } from 'node:crypto';
 import { readFile, realpath, stat } from 'node:fs/promises';
 import { join } from 'node:path';
+import { memorySection, playbookSection, type Entry, type Memory, type MemoryRef } from '../knowledge/entries.ts';
+import { memoryPaths, playbookPath } from '../knowledge/load.ts';
 import { isWithin } from '../paths.ts';
 import { CHARTER_TOKEN_LIMIT, type Budgets, type Role, type RoleTool } from '../roles/role.ts';
 import { charsForTokens, estimateTokens } from './tokens.ts';
 
+// omitted is the memory that was there and did not fit, which only the memory part has.
 export type ManifestPart = {
   name: 'charter' | 'playbook' | 'memory' | 'task_inputs' | 'output_contract' | 'repo_instructions';
   tokens: number;
   budget: number | null;
   sources: string[];
+  omitted?: string[];
 };
+
+// The system prompt, piece by piece and in order, so that what a role knew can be told from what it was asked.
+export type SystemSections = { charter: string; playbook: string; memory: string; contract: string; instructions: string };
 
 export type TaskManifest = {
   project: string;
@@ -21,6 +29,9 @@ export type TaskManifest = {
   budgets: Budgets;
   tools: RoleTool[];
   system: string;
+  sections: SystemSections;
+  // The same for any two attempts that were given the same charter, playbook and memory on the same model.
+  fingerprint: string;
   task: string;
   outputSchema: object;
   writeScope: Role['write_scope'];
@@ -40,6 +51,8 @@ export type BuildInput = {
   attemptK: number;
   role: Role;
   charter: string;
+  playbook: Entry[];
+  memory: Memory;
   schema: object;
   schemaSource: string;
   taskId: string;
@@ -157,6 +170,13 @@ function taskBody(i: BuildInput): string {
   return sections.length === 1 ? i.taskMarkdown : `${sections.join('\n\n')}\n`;
 }
 
+const systemOf = ({ charter, playbook, memory, contract, instructions }: SystemSections): string =>
+  `${[charter, playbook, memory, contract].filter((section) => section !== '').join('\n\n')}\n${instructions && `\n${instructions}\n`}`;
+
+export function knowledgeFingerprint({ charter, playbook, memory }: Pick<SystemSections, 'charter' | 'playbook' | 'memory'>, model: string): string {
+  return createHash('sha256').update(JSON.stringify([charter, playbook, memory, model])).digest('hex');
+}
+
 export function buildManifest(i: BuildInput): BuildResult {
   const { role, retry } = i;
   const budgets = role.defaults.budgets;
@@ -164,20 +184,27 @@ export function buildManifest(i: BuildInput): BuildResult {
 
   const contract = outputContract(i);
   const charterTokens = estimateTokens(i.charter);
+  const playbook = playbookSection(i.playbook);
+  const playbookTokens = estimateTokens(playbook);
+  const memory = memorySection(i.memory, budgets.memory_tokens);
+  const memoryTokens = estimateTokens(memory.text);
+  const memoryFiles = memoryPaths(role.id);
+  const memorySource = ({ file, id }: MemoryRef) => `${memoryFiles[file]}#${id}`;
   // The schema reaches the model too, through the adapter, so it counts even though it isn't in the system prompt.
   const contractTokens = estimateTokens(`${contract}\n\n${JSON.stringify(i.schema)}`);
   const instructions = instructionsSection(i.repoInstructions);
   const instructionTokens = estimateTokens(instructions);
-  const taskBudget = contextBudget - charterTokens - contractTokens - instructionTokens;
+  const taskBudget = contextBudget - charterTokens - playbookTokens - memoryTokens - contractTokens - instructionTokens;
 
   const body = taskBody(i);
   const task = retry ? taskWithPreviousAttempt(body, retry, charsForTokens(taskBudget)) : body;
   const taskSources = [i.taskSource, ...i.inputs.map((input) => input.path)];
+  const sections: SystemSections = { charter: i.charter.trimEnd(), playbook, memory: memory.text, contract, instructions };
 
   const parts: ManifestPart[] = [
     { name: 'charter', tokens: charterTokens, budget: CHARTER_TOKEN_LIMIT, sources: [`roles/${role.id}/charter.md`] },
-    { name: 'playbook', tokens: 0, budget: budgets.playbook_tokens, sources: [] },
-    { name: 'memory', tokens: 0, budget: budgets.memory_tokens, sources: [] },
+    { name: 'playbook', tokens: playbookTokens, budget: budgets.playbook_tokens, sources: i.playbook.map(({ id }) => `${playbookPath(role.id)}#${id}`) },
+    { name: 'memory', tokens: memoryTokens, budget: budgets.memory_tokens, sources: memory.given.map(memorySource), omitted: memory.omitted.map(memorySource) },
     {
       name: 'task_inputs',
       tokens: estimateTokens(task),
@@ -202,7 +229,9 @@ export function buildManifest(i: BuildInput): BuildResult {
       model: role.defaults.model,
       budgets,
       tools: role.tools,
-      system: `${i.charter.trimEnd()}\n\n${contract}\n${instructions && `\n${instructions}\n`}`,
+      system: systemOf(sections),
+      sections,
+      fingerprint: knowledgeFingerprint(sections, role.defaults.model),
       task,
       outputSchema: i.schema,
       writeScope: role.write_scope,

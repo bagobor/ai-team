@@ -46,7 +46,8 @@ describe('what a role reads on a milestone of 10 tickets and 30 criteria', () =>
 
   function expectRoomForM4({ attempt, manifest }: { attempt: AttemptRow; manifest: TaskManifest }): void {
     expect(attempt).toMatchObject({ failure_kind: null });
-    expect(manifest.contextBudget).toBe(12_000);
+    // No role has less than 12000 tokens, and a full playbook and memory take 3000 of them.
+    expect(manifest.contextBudget).toBeGreaterThanOrEqual(12_000);
     expect(manifest.totalTokens).toBeLessThanOrEqual(ROOM_BEFORE_M4);
   }
 
@@ -667,7 +668,7 @@ describe('what the PM reads after three prototype rounds', () => {
 
   function expectRoomForM4({ attempt, manifest }: { attempt: AttemptRow; manifest: TaskManifest | null }): void {
     expect(attempt.failure_evidence ?? '').not.toContain('context_over_budget');
-    expect(manifest!.contextBudget).toBe(12_000);
+    expect(manifest!.contextBudget).toBeGreaterThanOrEqual(12_000);
     expect(manifest!.totalTokens).toBeLessThanOrEqual(ROOM_BEFORE_M4);
   }
 

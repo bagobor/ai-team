@@ -7,7 +7,7 @@ import type { Ledger } from '../../src/engine/ledger.ts';
 import type { ArtifactVersionRow, AttemptRow, CriterionRow, MilestoneRow, ProjectRow, TaskRow } from '../../src/engine/store.ts';
 import type { EventRow } from '../../src/events.ts';
 import type { TaskManifest } from '../../src/manifest/build.ts';
-import type { RoleProvenance, RoleSummary } from '../../src/roles/provenance.ts';
+import type { MemoryView, RoleProvenance, RoleSummary } from '../../src/roles/provenance.ts';
 import type { InboxItem } from './lib/inbox.ts';
 import { applyEvent, EMPTY_LOG, EVENT_TYPES, type LogState } from './logState.ts';
 
@@ -85,6 +85,7 @@ export const listCriteria = (name: string, milestone: number) => request<Criteri
 
 export const listRoles = () => request<RoleSummary[]>('/api/roles');
 export const getRoleProvenance = (id: string) => request<RoleProvenance>(`/api/roles/${encodeURIComponent(id)}/provenance`);
+export const getRoleMemory = (id: string, project: string) => request<MemoryView>(`/api/roles/${encodeURIComponent(id)}/memory/${encodeURIComponent(project)}`);
 
 // The badge and the Inbox page share one poll, so they can't disagree. It covers every project: the page narrows it down itself.
 export const useInbox = () => useQuery({ queryKey: ['inbox'], queryFn: () => listInbox(), refetchInterval: INBOX_POLL_MS });

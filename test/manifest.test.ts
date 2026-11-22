@@ -1,6 +1,7 @@
 import { mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import type { Entry } from '../src/knowledge/entries.ts';
 import { buildManifest, readRepoInstructions, REVIEW_DIFF_TOKENS, type BuildInput, type TaskManifest } from '../src/manifest/build.ts';
 import { estimateTokens } from '../src/manifest/tokens.ts';
 import { loadRole } from '../src/roles/role.ts';
@@ -21,6 +22,8 @@ describe('buildManifest', () => {
       attemptK: 1,
       role,
       charter,
+      playbook: [],
+      memory: { project: [], role: [] },
       schema,
       schemaSource,
       taskId: ticket.id,
@@ -230,6 +233,78 @@ describe('buildManifest', () => {
     const small = built(input).parts.find((p) => p.name === 'output_contract')!.tokens;
     const big = built({ ...input, schema: { description: 'x'.repeat(3500) } }).parts.find((p) => p.name === 'output_contract')!.tokens;
     expect(big).toBeGreaterThan(small);
+  });
+
+  describe('what the role knows', () => {
+    const entry = (id: string, over: Partial<Entry> = {}): Entry => ({ id, kind: null, addedBy: 'the PM', added: '2026-11-15', sources: [], text: `What ${id} says.`, line: 1, ...over });
+    const playbook = [entry('PB-1'), entry('PB-2')];
+    const memory = { project: [entry('MEM-1', { kind: 'feedback' })], role: [entry('MEM-2', { kind: 'lesson' })] };
+    const part = (m: TaskManifest, name: string) => m.parts.find((p) => p.name === name)!;
+
+    it('leaves the prompt as it was for a role with no playbook on a project with no memory', () => {
+      const m = built(input);
+
+      expect(m.system).toBe(`${input.charter.trimEnd()}\n\n${m.sections.contract}\n`);
+      expect(m.sections).toMatchObject({ charter: input.charter.trimEnd(), playbook: '', memory: '', instructions: '' });
+    });
+
+    it('puts the playbook and then the memory between the charter and the output contract', () => {
+      const m = built({ ...input, playbook, memory, repoInstructions: [{ path: 'AGENTS.md', content: 'Use tabs.' }] });
+      const { charter, playbook: book, memory: notes, contract, instructions } = m.sections;
+
+      expect(m.system).toBe(`${charter}\n\n${book}\n\n${notes}\n\n${contract}\n\n${instructions}\n`);
+      expect(book).toContain('### PB-2\n\nWhat PB-2 says.');
+      expect(notes).toContain('### MEM-2 (lesson, your own note)');
+      expect(contract).toMatch(/^## Output contract/);
+      expect(instructions).toContain('Use tabs.');
+    });
+
+    it('names every entry it gave, and counts both against the context budget', () => {
+      const bare = built(input);
+      const m = built({ ...input, playbook, memory });
+
+      expect(part(m, 'playbook')).toEqual({ name: 'playbook', tokens: estimateTokens(m.sections.playbook), budget: 2000, sources: ['roles/engineer/playbook.md#PB-1', 'roles/engineer/playbook.md#PB-2'] });
+      expect(part(m, 'memory')).toEqual({ name: 'memory', tokens: estimateTokens(m.sections.memory), budget: 1000, sources: ['memory/project.md#MEM-1', 'memory/roles/engineer.md#MEM-2'], omitted: [] });
+      expect(m.totalTokens).toBe(bare.totalTokens + part(m, 'playbook').tokens + part(m, 'memory').tokens);
+    });
+
+    it('names the memory that did not fit', () => {
+      const long = entry('MEM-3', { kind: 'feedback', added: '2026-11-16', text: 'x'.repeat(4000) });
+      const m = built({ ...input, memory: { project: [long, ...memory.project], role: memory.role } });
+
+      expect(part(m, 'memory')).toMatchObject({ sources: ['memory/project.md#MEM-1', 'memory/roles/engineer.md#MEM-2'], omitted: ['memory/project.md#MEM-3'] });
+      expect(m.sections.memory).not.toContain('MEM-3');
+    });
+
+    it('refuses a task that only its playbook takes over the context budget', () => {
+      const ticket = 'x'.repeat(Math.floor((12000 - built(input).totalTokens + estimateTokens(t1) - 100) * 3.5));
+      expect(buildManifest({ ...input, taskMarkdown: ticket }).ok).toBe(true);
+
+      const r = buildManifest({ ...input, taskMarkdown: ticket, playbook: [entry('PB-1', { text: 'y'.repeat(1400) })] });
+
+      expect(r).toMatchObject({ ok: false, reason: 'context_over_budget' });
+    });
+
+    it('leaves a retry’s evidence only the room the playbook and memory do not take', () => {
+      const retry = { evidence: 'e'.repeat(5_000_000), changeReport: null };
+
+      const m = built({ ...input, playbook: [entry('PB-1', { text: 'y'.repeat(5000) })], memory, retry });
+
+      expect(m.totalTokens).toBeLessThanOrEqual(12000);
+      expect(m.task).toContain('### Evidence');
+    });
+
+    it('gives one fingerprint to the same charter, playbook, memory and model, whatever the task', () => {
+      const of = (over: Partial<BuildInput>) => built({ ...input, playbook, memory, ...over }).fingerprint;
+      const same = of({});
+
+      expect(same).toMatch(/^[0-9a-f]{64}$/);
+      expect(of({ taskMarkdown: `${t1}\nMore.`, attemptK: 2, repoInstructions: [{ path: 'AGENTS.md', content: 'Use tabs.' }] })).toBe(same);
+      expect(of({ charter: `${input.charter}\nOne more rule.` })).not.toBe(same);
+      expect(of({ playbook: [entry('PB-1')] })).not.toBe(same);
+      expect(of({ memory: { project: [], role: memory.role } })).not.toBe(same);
+      expect(of({ role: { ...input.role, defaults: { ...input.role.defaults, model: 'another-model' } } })).not.toBe(same);
+    });
   });
 
   describe('on a retry', () => {
