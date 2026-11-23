@@ -19,6 +19,8 @@ import { EventLog } from './events.ts';
 import type { Paths } from './paths.ts';
 import { createApp, serveWeb } from './server/app.ts';
 import { keptWarning, syncSeed } from './setup/setup.ts';
+import { TrialStore } from './trials/store.ts';
+import { TrialRunner } from './trials/trial.ts';
 
 const PRUNE_INTERVAL_MS = 3_600_000;
 const HOST = '127.0.0.1';
@@ -87,7 +89,9 @@ export async function startDaemon(opts: { paths: Paths; config: Config; webDist?
     // The port asked for can be 0, and the API's guard has to know the real one.
     const deps = engineDeps(db, paths, { ...config, port }, tryServer);
     const runner = new Runner(deps);
-    const scheduler = new Scheduler(deps, runner, new Conductor(deps, runner));
+    const trials = new TrialStore(db);
+    const trialRunner = new TrialRunner({ ...deps, trials });
+    const scheduler = new Scheduler(deps, runner, new Conductor(deps, runner), trialRunner);
 
     const pruneQuietly = () => pruneWorktrees(deps).catch((err: unknown) => console.error('Pruning worktrees failed:', err));
     const { kept } = await syncSeed(paths);
@@ -96,11 +100,13 @@ export async function startDaemon(opts: { paths: Paths; config: Config; webDist?
     const claude = findClaudeBinary(config.claude.binary);
     if (claude.replaces !== undefined) console.warn(`${claude.replaces}, the path set as claude.binary in config.yaml, is gone. The engine runs ${claude.binary} in its place.`);
     await recover(deps);
+    // A run or a judgment the last daemon had begun is made again from the start.
+    await trials.requeueRunning();
     await pruneQuietly();
     scheduler.start();
     const pruning = setInterval(() => void pruneQuietly(), PRUNE_INTERVAL_MS);
 
-    const app = createApp({ ...deps, runner });
+    const app = createApp({ ...deps, runner, trialRunner });
     serveWeb(app, webDist);
     handler = app.fetch;
 
@@ -111,6 +117,7 @@ export async function startDaemon(opts: { paths: Paths; config: Config; webDist?
         clearInterval(pruning);
         await scheduler.stop();
         await runner.shutdown();
+        await trialRunner.shutdown();
         await tryServer.close();
         await close(server);
         await db.destroy();

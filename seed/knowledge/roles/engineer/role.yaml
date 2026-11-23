@@ -18,3 +18,4 @@ defaults:
   model: claude-sonnet-5-5
   budgets: { max_turns: 60, max_usd: 3.00, context_tokens: 12000, playbook_tokens: 2000, memory_tokens: 1000 }
 output_schema: schemas/change_report.json
+evaluator: code_reviewer      # judges an engineer's results when a change to its charter, playbook or memory is tried

@@ -3,12 +3,14 @@ import { useInbox } from './api.ts';
 import { newPendingIds, projectPath } from './lib/inbox.ts';
 import { Board } from './pages/Board.tsx';
 import { Documents } from './pages/Documents.tsx';
+import { DraftPage } from './pages/Draft.tsx';
 import { Inbox } from './pages/Inbox.tsx';
 import { Ledger } from './pages/Ledger.tsx';
 import { Projects } from './pages/Projects.tsx';
 import { RoleDetail, Roles } from './pages/Roles.tsx';
 import { TaskDetail } from './pages/TaskDetail.tsx';
 import { TaskList } from './pages/TaskList.tsx';
+import { TrialPage } from './pages/Trial.tsx';
 import { Link, usePath } from './router.tsx';
 
 const PROJECT_PAGE = /^\/projects\/([^/]+)\/(inbox|board|documents|iterations)\/?$/;
@@ -42,6 +44,13 @@ function Page({ path }: { path: string }) {
   const role = decoded(/^\/roles\/([^/]+)\/?$/.exec(path)?.[1]);
   // The key drops one role's selected change when another role opens.
   if (role !== undefined) return <RoleDetail key={role} id={role} />;
+
+  const draft = /^\/drafts\/(\d+)\/?$/.exec(path)?.[1];
+  if (draft !== undefined) return <Wide><DraftPage key={draft} id={Number(draft)} /></Wide>;
+
+  // The key drops the answers given to one trial when another opens.
+  const trial = /^\/trials\/(\d+)\/?$/.exec(path)?.[1];
+  if (trial !== undefined) return <Wide><TrialPage key={trial} id={Number(trial)} /></Wide>;
 
   return (
     <p className="notice">
@@ -113,7 +122,7 @@ export function App() {
           <NavLink to="/tasks" active={path.startsWith('/tasks')}>
             Tasks
           </NavLink>
-          <NavLink to="/roles" active={path.startsWith('/roles')}>
+          <NavLink to="/roles" active={['/roles', '/drafts', '/trials'].some((prefix) => path.startsWith(prefix))}>
             Roles
           </NavLink>
           {project !== undefined && (

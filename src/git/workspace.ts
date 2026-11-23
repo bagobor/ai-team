@@ -171,8 +171,9 @@ export async function pruneGitWorktrees(repoPath: string): Promise<void> {
   await engineGit(repoPath, ['worktree', 'prune']);
 }
 
-// Branches for work that begins and ends within one engine step: a QA run, a smoke check, a play gate, a state snapshot.
-const TEMP_BRANCH = /^refs\/heads\/(aiteam\/(?:verify\/.+|smoke\/.+|play\/.+|snapshot-m\d+))$/;
+// Branches for work that begins and ends within one engine step: a QA run, a smoke check, a play gate, a state
+// snapshot, and one run of a trial, which is made again from the start if the daemon died under it.
+const TEMP_BRANCH = /^refs\/heads\/(aiteam\/(?:verify\/.+|smoke\/.+|play\/.+|trial\/.+|snapshot-m\d+))$/;
 
 // Nothing else ever comes back for these once the daemon that made them has died. Attempt worktrees stay, since a ticket in review needs its own.
 export async function removeTempWorktrees(repoPath: string): Promise<void> {
@@ -184,7 +185,7 @@ export async function removeTempWorktrees(repoPath: string): Promise<void> {
     if (path !== undefined && branch !== undefined) await removeAttemptWorktree(repoPath, path, branch);
   }
 
-  const refs = await gitOk(repoPath, ['for-each-ref', '--format=%(refname)', 'refs/heads/aiteam/verify', 'refs/heads/aiteam/smoke', 'refs/heads/aiteam/play', 'refs/heads/aiteam/snapshot-m*']);
+  const refs = await gitOk(repoPath, ['for-each-ref', '--format=%(refname)', 'refs/heads/aiteam/verify', 'refs/heads/aiteam/smoke', 'refs/heads/aiteam/play', 'refs/heads/aiteam/trial', 'refs/heads/aiteam/snapshot-m*']);
   for (const ref of refs.split('\n')) {
     const branch = ref.match(TEMP_BRANCH)?.[1];
     // Fails only if the stakeholder has it checked out, which leaves it theirs.

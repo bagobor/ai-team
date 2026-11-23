@@ -6,8 +6,12 @@ import type { InboxAnswer } from '../../src/engine/inbox.ts';
 import type { Ledger } from '../../src/engine/ledger.ts';
 import type { ArtifactVersionRow, AttemptRow, CriterionRow, MilestoneRow, ProjectRow, TaskRow } from '../../src/engine/store.ts';
 import type { EventRow } from '../../src/events.ts';
+import type { MemoryKind } from '../../src/knowledge/entries.ts';
 import type { TaskManifest } from '../../src/manifest/build.ts';
 import type { MemoryView, RoleProvenance, RoleSummary } from '../../src/roles/provenance.ts';
+import type { DraftView, EntryFile } from '../../src/trials/drafts.ts';
+import type { PastAttempt } from '../../src/trials/source.ts';
+import type { TrialSummary, TrialView } from '../../src/trials/view.ts';
 import type { InboxItem } from './lib/inbox.ts';
 import { applyEvent, EMPTY_LOG, EVENT_TYPES, type LogState } from './logState.ts';
 
@@ -86,6 +90,35 @@ export const listCriteria = (name: string, milestone: number) => request<Criteri
 export const listRoles = () => request<RoleSummary[]>('/api/roles');
 export const getRoleProvenance = (id: string) => request<RoleProvenance>(`/api/roles/${encodeURIComponent(id)}/provenance`);
 export const getRoleMemory = (id: string, project: string) => request<MemoryView>(`/api/roles/${encodeURIComponent(id)}/memory/${encodeURIComponent(project)}`);
+
+// Drafts of a change to what a role knows. Each change answers with the draft as it now stands.
+export type EntryBody = { text: string; sources?: string[]; kind?: MemoryKind; project?: string };
+const roleApi = (id: string) => `/api/roles/${encodeURIComponent(id)}`;
+const entriesApi = (draft: number, file: EntryFile) => `/api/drafts/${draft}/entries/${file}`;
+
+export const getOpenDraft = (role: string) => request<DraftView | null>(`${roleApi(role)}/draft`);
+export const startDraft = (role: string, title: string) => post<DraftView>(`${roleApi(role)}/draft`, { title });
+export const getDraft = (id: number) => request<DraftView>(`/api/drafts/${id}`);
+export const setDraftCharter = (id: number, text: string) => post<DraftView>(`/api/drafts/${id}/charter`, { text });
+export const addDraftEntry = (id: number, file: EntryFile, body: EntryBody) => post<DraftView>(entriesApi(id, file), body);
+export const changeDraftEntry = (id: number, file: EntryFile, entry: string, body: EntryBody) => post<DraftView>(`${entriesApi(id, file)}/${encodeURIComponent(entry)}`, body);
+export const removeDraftEntry = (id: number, file: EntryFile, entry: string) => post<DraftView>(`${entriesApi(id, file)}/${encodeURIComponent(entry)}/remove`);
+export const keepDraft = (id: number) => post<DraftView>(`/api/drafts/${id}/keep`);
+export const discardDraft = (id: number) => post<DraftView>(`/api/drafts/${id}/discard`);
+
+// Trials of a draft on the role's past attempts.
+export type PastAttempts = { attempts: PastAttempt[]; fine: number[] };
+export type NewTrial = { expectations: string[]; problem: number[]; fine: number[]; capUsd?: number };
+
+export const listPastAttempts = (role: string, project: string | null) => request<PastAttempts>(`${roleApi(role)}/attempts${project === null ? '' : `?project=${encodeURIComponent(project)}`}`);
+export const listDraftTrials = (draft: number) => request<TrialSummary[]>(`/api/drafts/${draft}/trials`);
+export const startTrial = (draft: number, body: NewTrial) => post<TrialView>(`/api/drafts/${draft}/trials`, body);
+export const getTrial = (id: number) => request<TrialView>(`/api/trials/${id}`);
+export const stopTrial = (id: number) => post<TrialView>(`/api/trials/${id}/stop`);
+export const resumeTrial = (id: number, capUsd?: number) => post<TrialView>(`/api/trials/${id}/resume`, capUsd === undefined ? {} : { capUsd });
+export const answerTrial = (id: number, choices: Record<string, string>) => post<TrialView>(`/api/trials/${id}/answer`, { choices });
+export const commitTrial = (id: number) => post<TrialView>(`/api/trials/${id}/commit`);
+export const undoTrial = (id: number) => post<TrialView>(`/api/trials/${id}/undo`);
 
 // The badge and the Inbox page share one poll, so they can't disagree. It covers every project: the page narrows it down itself.
 export const useInbox = () => useQuery({ queryKey: ['inbox'], queryFn: () => listInbox(), refetchInterval: INBOX_POLL_MS });

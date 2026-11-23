@@ -21,7 +21,11 @@ import { stateRepoDir } from '../paths.ts';
 import { listRoles, roleMemory, roleProvenance } from '../roles/provenance.ts';
 import { DEFAULT_SEED } from '../setup/setup.ts';
 import { SAFE_ID, TicketError } from '../tickets/ticket.ts';
+import { Refused } from '../trials/errors.ts';
+import { TrialStore } from '../trials/store.ts';
+import type { TrialRunner } from '../trials/trial.ts';
 import { streamEvents } from './events-stream.ts';
+import { trialRoutes } from './trial-routes.ts';
 
 class BadRequest extends Error {}
 class NotFound extends Error {}
@@ -126,7 +130,8 @@ const unframed: MiddlewareHandler = async (c, next) => {
 };
 
 // seedDir is where the seed's history lives, for a role's provenance. Tests point it at a repo of their own.
-export function createApp(deps: EngineDeps & { runner: Runner; seedDir?: string }): Hono {
+// trialRunner is the daemon's, which holds the trial runs in flight. Without one, a trial can be laid out and nothing runs it.
+export function createApp(deps: EngineDeps & { runner: Runner; seedDir?: string; trialRunner?: TrialRunner }): Hono {
   const { store, log, runner } = deps;
   const app = new Hono();
 
@@ -134,6 +139,7 @@ export function createApp(deps: EngineDeps & { runner: Runner; seedDir?: string 
     if (err instanceof BadRequest) return fail(c, 400, err.message);
     if (err instanceof NotFound) return fail(c, 404, err.message);
     if (err instanceof Conflict) return fail(c, 409, err.message);
+    if (err instanceof Refused) return fail(c, err.status, err.message);
     console.error(err);
     return fail(c, 500, 'Something went wrong in the daemon. Its log has the details.');
   });
@@ -295,11 +301,20 @@ export function createApp(deps: EngineDeps & { runner: Runner; seedDir?: string 
 
   app.get('/api/roles', async (c) => c.json(await listRoles(provenanceDirs)));
 
+  // Each change that came from a trial is marked with it, and so is the change that took one back, so the page can
+  // tell a tried change from one made by hand.
   app.get('/api/roles/:id/provenance', async (c) => {
     const id = c.req.param('id');
     const provenance = await roleProvenance(provenanceDirs, id);
     if (provenance === null) throw new NotFound(`Unknown role ${id}`);
-    return c.json(provenance);
+    const trials = await new TrialStore(deps.db).listTrials({ roleId: id });
+    const lessons = provenance.lessons.map((lesson) => {
+      if (lesson.sha === null) return lesson;
+      const passed = trials.find(({ commits }) => commits?.knowledge === lesson.sha);
+      const undone = trials.find(({ commits }) => commits?.undone?.knowledge === lesson.sha);
+      return { ...lesson, ...(passed ? { trial: passed.id } : {}), ...(undone ? { undoes: undone.id } : {}) };
+    });
+    return c.json({ ...provenance, lessons });
   });
 
   app.get('/api/roles/:id/memory/:name', async (c) => {
@@ -308,6 +323,8 @@ export function createApp(deps: EngineDeps & { runner: Runner; seedDir?: string 
     if (memory === null) throw new NotFound(`Unknown role ${id}`);
     return c.json(memory);
   });
+
+  trialRoutes(app, deps);
 
   // The status comes from the registry and nowhere else: only a QA verification task can change it there.
   app.get('/api/projects/:name/acs', async (c) => {

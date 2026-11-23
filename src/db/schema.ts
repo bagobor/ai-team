@@ -166,6 +166,57 @@ export type MustSupportStatusTable = {
   recorded_at: string;
 };
 
+export type DraftsTable = {
+  id: Generated<number>;
+  role_id: string;
+  project_id: number | null;
+  title: string;
+  state: string;
+  base: Generated<string>;
+  created_at: string;
+  updated_at: string;
+};
+
+export type TrialsTable = {
+  id: Generated<number>;
+  draft_id: number;
+  role_id: string;
+  state: string;
+  stop_reason: string | null;
+  expectations: string;
+  tasks: string;
+  knowledge: string;
+  cap_usd: number;
+  spent_usd: Generated<number>;
+  human: string | null;
+  verdict: string | null;
+  commits: string | null;
+  created_at: string;
+  ended_at: string | null;
+};
+
+export type TrialResultsTable = {
+  id: Generated<number>;
+  trial_id: number;
+  attempt_id: number;
+  arm: string;
+  state: string;
+  output: string | null;
+  measured: string | null;
+  fingerprint: string | null;
+  error: string | null;
+};
+
+export type TrialJudgmentsTable = {
+  id: Generated<number>;
+  trial_id: number;
+  attempt_id: number;
+  judge: string;
+  state: string;
+  answers: string | null;
+  error: string | null;
+};
+
 export type DB = {
   projects: ProjectsTable;
   tasks: TasksTable;
@@ -178,4 +229,8 @@ export type DB = {
   acceptance_criteria: AcceptanceCriteriaTable;
   inbox_items: InboxItemsTable;
   must_support_status: MustSupportStatusTable;
+  drafts: DraftsTable;
+  trials: TrialsTable;
+  trial_results: TrialResultsTable;
+  trial_judgments: TrialJudgmentsTable;
 };

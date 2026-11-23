@@ -28,5 +28,6 @@ describe('workerDenyRead', () => {
 
   it('covers every worktree, since each attempt only gets its own back', () => {
     expect(denied).toContain(paths.worktrees);
+    expect(denied).toContain(paths.trials);
   });
 });

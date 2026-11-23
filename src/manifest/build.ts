@@ -136,7 +136,7 @@ function taskWithPreviousAttempt(task: string, retry: NonNullable<BuildInput['re
 }
 
 // Models wrote most inputs, so one could try to end its tag early and speak as the engine.
-function fenced(tag: string, content: string): string {
+export function fenced(tag: string, content: string): string {
   return content.replace(new RegExp(`</(${tag}\\s*>)`, 'gi'), '&lt;/$1');
 }
 
@@ -170,7 +170,7 @@ function taskBody(i: BuildInput): string {
   return sections.length === 1 ? i.taskMarkdown : `${sections.join('\n\n')}\n`;
 }
 
-const systemOf = ({ charter, playbook, memory, contract, instructions }: SystemSections): string =>
+export const systemOf = ({ charter, playbook, memory, contract, instructions }: SystemSections): string =>
   `${[charter, playbook, memory, contract].filter((section) => section !== '').join('\n\n')}\n${instructions && `\n${instructions}\n`}`;
 
 export function knowledgeFingerprint({ charter, playbook, memory }: Pick<SystemSections, 'charter' | 'playbook' | 'memory'>, model: string): string {

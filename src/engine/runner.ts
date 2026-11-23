@@ -29,7 +29,7 @@ import { withListInForce } from './conductor/tasks.ts';
 import { IllegalTransition } from './fsm.ts';
 import { checkProtectedPaths, isHarnessTicket, protectedPaths, type ProtectedPath } from './protected.ts';
 import { reviewInputs } from './review-inputs.ts';
-import { roleInputs, writeReference, type Reference, type Views } from './role-inputs.ts';
+import { keepReference, roleInputs, writeReference, type Reference, type Views } from './role-inputs.ts';
 import type { AttemptPatch, AttemptRow, ProjectRow, Store, TaskRow } from './store.ts';
 import type { TryServer } from './try-server.ts';
 import type { Purpose, WorkOrder } from './workorder.ts';
@@ -111,12 +111,38 @@ const MAX_BACKOFF_S = 3600;
 // The roles that read a document without rewriting it may get its whole text in a file: QA judges the build against the
 // Tech Design's sections, and the Eng Lead splits the work, and later reviews it, by its components and the Test Plan's
 // coverage, and reviews it by QA's verdicts. A replan is a scope revision. Every other role reads its inputs whole in the manifest.
-const VIEWS: Partial<Record<Purpose, Views>> = {
+export const VIEWS: Partial<Record<Purpose, Views>> = {
   qa_verify: { design: 'sections' },
   ticket_scope: { design: 'components', plan: 'coverage' },
   revise_scope: { design: 'components', plan: 'coverage', eng: 'verdict' },
   eng_review: { design: 'components', plan: 'coverage', report: 'verdicts' },
 };
+
+type ReadsArtifacts = Pick<EngineDeps, 'artifacts'>;
+
+// Every ticket but QA's harness tickets, bug tickets included, since they are the engineers' to write. What the
+// must-support checks read is held from the harness tickets too: nobody's ticket rewrites what judges every milestone.
+export async function protectedFor(deps: ReadsArtifacts, project: ProjectRow, task: TaskRow): Promise<ProtectedPath[]> {
+  return isHarnessTicket(task.ticket_id) ? checkProtectedPaths(deps, project) : protectedPaths(deps, project, task.milestone);
+}
+
+// What a ticket's changes are held to. QA's harness tickets are tests themselves, a prototype (milestone 0) has no design,
+// and a Tech Design from before the structure has no components. One gone stale was still approved, as with the profile.
+export async function componentsFor({ artifacts }: ReadsArtifacts, project: ProjectRow, task: TaskRow): Promise<CoverageComponent[] | undefined> {
+  if (task.kind !== 'ticket' || task.milestone === 0 || isHarnessTicket(task.ticket_id)) return undefined;
+  const id = techId(task.milestone);
+  const row = await artifacts.latest(project.id, id);
+  if (row?.status !== 'approved' && row?.status !== 'stale') return undefined;
+  return structureOf(await artifacts.read(project, formatPin({ id, version: row.version })))?.components;
+}
+
+// A profile gone stale was still one the stakeholder approved, and workers shouldn't lose their setup because the Roadmap moved.
+export async function approvedProfile({ artifacts }: ReadsArtifacts, project: ProjectRow): Promise<{ networkAllow: string[]; setup?: string }> {
+  const row = await artifacts.latest(project.id, ENV_PROFILE);
+  if (row?.status !== 'approved' && row?.status !== 'stale') return { networkAllow: [] };
+  const { network_allow, setup } = (await artifacts.read(project, ENV_PROFILE)).fields.data as { network_allow: string[]; setup: string | null };
+  return { networkAllow: network_allow, ...(setup ? { setup } : {}) };
+}
 
 function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
@@ -321,6 +347,8 @@ export class Runner {
     await mkdir(dir, { recursive: true });
     await writeFile(join(dir, 'system.md'), manifest.system);
     await writeFile(join(dir, 'task.md'), manifest.task);
+    // Kept beside the prompt, since the worktree they were written into goes when the attempt is done with.
+    if (work.reference !== undefined) await keepReference(dir, work.reference);
     await this.deps.log.append({
       projectId: project.id,
       taskId,
@@ -376,7 +404,7 @@ export class Runner {
 
     try {
       const text = order ? await this.orderText(project, task, order) : await this.ticketText(project, task);
-      const profile = await this.approvedProfile(project);
+      const profile = await approvedProfile(this.deps, project);
       return {
         task,
         project,
@@ -411,26 +439,9 @@ export class Runner {
       taskSource: task.ticket_path,
       doneCommands: ticket.definition_of_done,
       acRefs: ticket.ac_refs,
-      protectedPaths: (await this.protectedFrom(project, task)).map(({ glob }) => glob),
+      protectedPaths: (await protectedFor(this.deps, project, task)).map(({ glob }) => glob),
       ...(await roleInputs(this.deps, project, await withListInForce(this.deps, project, ticket.inputs))),
     };
-  }
-
-  // Every ticket but QA's harness tickets, bug tickets included, since they are the engineers' to write. What the
-  // must-support checks read is held from the harness tickets too: nobody's ticket rewrites what judges every milestone.
-  private async protectedFrom(project: ProjectRow, task: TaskRow): Promise<ProtectedPath[]> {
-    return isHarnessTicket(task.ticket_id) ? checkProtectedPaths(this.deps, project) : protectedPaths(this.deps, project, task.milestone);
-  }
-
-  // What a ticket's changes are held to. QA's harness tickets are tests themselves, a prototype (milestone 0) has no design,
-  // and a Tech Design from before the structure has no components. One gone stale was still approved, as with the profile.
-  private async componentsFor(project: ProjectRow, task: TaskRow): Promise<CoverageComponent[] | undefined> {
-    if (task.kind !== 'ticket' || task.milestone === 0 || isHarnessTicket(task.ticket_id)) return undefined;
-    const { artifacts } = this.deps;
-    const id = techId(task.milestone);
-    const row = await artifacts.latest(project.id, id);
-    if (row?.status !== 'approved' && row?.status !== 'stale') return undefined;
-    return structureOf(await artifacts.read(project, formatPin({ id, version: row.version })))?.components;
   }
 
   private async orderText(project: ProjectRow, task: TaskRow, order: WorkOrder): Promise<TaskText> {
@@ -452,15 +463,6 @@ export class Runner {
     if (!subject?.base_sha || !subject.head_sha) throw new Error('A code review needs an attempt with a recorded head to review');
     const text = await gitOk(project.repo_path, ['diff', '--no-ext-diff', '--no-textconv', '--no-color', subject.base_sha, subject.head_sha]);
     return { base: subject.base_sha, head: subject.head_sha, text: `${text}\n` };
-  }
-
-  // A profile gone stale was still one the stakeholder approved, and workers shouldn't lose their setup because the Roadmap moved.
-  private async approvedProfile(project: ProjectRow): Promise<{ networkAllow: string[]; setup?: string }> {
-    const { artifacts } = this.deps;
-    const row = await artifacts.latest(project.id, ENV_PROFILE);
-    if (row?.status !== 'approved' && row?.status !== 'stale') return { networkAllow: [] };
-    const { network_allow, setup } = (await artifacts.read(project, ENV_PROFILE)).fields.data as { network_allow: string[]; setup: string | null };
-    return { networkAllow: network_allow, ...(setup ? { setup } : {}) };
   }
 
   private runSetup(work: Work, attempt: AttemptRow, setup: string, live: Live) {
@@ -554,13 +556,13 @@ export class Runner {
     const { headSha } = await snapshotAttempt(project.repo_path, attempt.worktree_path, `aiteam: ${task.ticket_id} attempt ${attempt.k}`);
 
     const reporter = this.commandReporter(project, task.id, attempt.id);
-    const components = await this.componentsFor(project, task);
+    const components = await componentsFor(this.deps, project, task);
     const ran = await runChecks({
       repoPath: project.repo_path,
       worktree: attempt.worktree_path,
       baseSha: work.baseSha,
       writeScope: role.write_scope,
-      protectedPaths: await this.protectedFrom(project, task),
+      protectedPaths: await protectedFor(this.deps, project, task),
       ...(components ? { components } : {}),
       commands: task.dod,
       denyRead: workerDenyRead(paths, homedir()),

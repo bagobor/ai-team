@@ -27,9 +27,14 @@ const spawnCount = spawnLog && existsSync(spawnLog) ? readFileSync(spawnLog, 'ut
 if (spawnLog) appendFileSync(spawnLog, `${JSON.stringify({ argv: args, cwd: process.cwd(), pid: process.pid })}\n`);
 
 // A worker's folder is named <ticket_id>-a<k>, so a script can act out a team, whatever order its tasks run in.
+// A name ending in "*" is the step of every folder that starts with the rest of it, the longest such name first, so
+// "*" alone is the step of any folder the script doesn't name.
 function stepOfAttempt(byTask) {
   const attempt = basename(process.cwd());
-  const step = byTask[attempt] ?? byTask[attempt.replace(/-a\d+$/, '')];
+  const [pattern] = Object.keys(byTask)
+    .filter((name) => name.endsWith('*') && attempt.startsWith(name.slice(0, -1)))
+    .sort((a, b) => b.length - a.length);
+  const step = byTask[attempt] ?? byTask[attempt.replace(/-a\d+$/, '')] ?? byTask[pattern];
   if (step) return step;
   process.stderr.write(`The script has no step for ${attempt}\n`);
   process.exit(70);
