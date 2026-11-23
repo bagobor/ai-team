@@ -53,6 +53,10 @@ Every role has enough for a trial. Task 1 keeps the reference files with each ne
 13. **A trial stops, and can be resumed**, when its spending cap is reached, the login has expired, or the vendor is rate-limited. The default cap is $10.
 14. **Undo is a git revert** of the trial's commit, refused if later changes conflict with it.
 15. **No component-test setup is added.** Every decision the pages make (what is enabled, what a verdict says, which label is which) sits in pure functions under `web/src/lib/`, tested as the others are. The pages are checked in a browser.
+16. **The model judge answers with a probability** (agreed with the stakeholder on 2026-11-22). Each yes/no question is asked several times, three by default, and the probability is the share of runs that said yes. An expectation is met at 0.7 or more and not met at 0.3 or less; between the two it is unsure, and counts as not met.
+17. **A local model can judge beside it, and is shown but not counted.** It is set in `config.yaml` (an OpenAI-compatible address such as Ollama's or `llama-server`'s, and a model name) and gives the probability of "yes" from the model's own token probabilities. Without the setting there is no local judge. A failure of it never stops a trial.
+18. **The evaluator is asked once.** Its answers are yes or no. Only the model judge is asked several times.
+19. **Each judgment is kept beside the stakeholder's answer for the same task**, which is what will show how far each judge can be trusted.
 
 ## Tasks
 
@@ -60,7 +64,7 @@ Every role has enough for a trial. Task 1 keeps the reference files with each ne
 
 - The runner saves the reference files it writes into a worktree beside `system.md` and `task.md`, in the attempt's manifest folder.
 - `role.yaml` takes an optional `evaluator: <role id>`. A role naming itself is refused. The seed sets the engineer's to `code_reviewer`.
-- `config.yaml` takes `trials: { judge_model, cap_usd }`, with defaults.
+- `config.yaml` takes `trials: { judge_model, judge_runs, cap_usd, local_judge: { url, model } }`, with defaults and no local judge.
 - `paths.trials` (`~/.aiteam/trials`), which no worker may read.
 
 ### Task 2: The tables
@@ -112,17 +116,19 @@ Migration 006 and the store's methods for them.
 
 **Checkpoint, with the stakeholder's OK:** the full suite, then one real trial on the engineer, to see a real replay before the judges are built. It costs about $1 to $3.
 
-### Task 7: The model and the evaluator
+### Task 7: The judge and its providers
 
-- The judge's instructions and its answer schema ship in the seed (`trials/judge.md`, `schemas/trial_judgment.json`), so they can be read and changed like a charter.
-- One call per task per judge. It gets the expectations and that task's results under letters in a random order, masked (call 9), each output with its diff where there is one.
-- It answers yes or no for every result and every expectation, with the passage that shows it. An answer that leaves one out is asked for again once, then stops the trial.
-- The evaluator is the same call with the evaluating role's own charter and playbook in front, on that role's model.
+`src/judge/`, one interface: the material to judge and a set of yes/no questions go in, a probability of yes per question comes out, with the passage that shows it where the provider gives one.
+
+- **Claude through the CLI.** One run answers every question with yes or no and a passage. The provider makes the configured number of runs and gives the share that said yes. Its instructions and answer schema ship in the seed (`trials/judge.md`, `schemas/trial_judgment.json`), so they can be read and changed like a charter. A run that leaves a question out is made again once, then stops the trial.
+- **A local model.** One request per question, asking for a single token and its probabilities, from which the probability of "yes" against "no" is taken.
+- **In a trial:** one judgment per task per judge. It gets the expectations as questions about each of that task's results, the results under letters in a random order, masked (call 9), each output with its diff where there is one.
+- The evaluator is the Claude provider with the evaluating role's own charter and playbook in front, on that role's model, asked once.
 
 ### Task 8: The stakeholder's answer and the verdict
 
 - For each task they say which of the two compared results is better, or that there is no difference. The letters are turned back into labels once they have answered every task.
-- The verdict: no measured check worse on any task (calls 7 and 8), and each judge calls it an improvement (the spec's rule for the model and the evaluator, call 11 for the stakeholder).
+- The verdict: no measured check worse on any task (calls 7 and 8), and each judge that counts calls it an improvement: the model judge and the evaluator by the spec's rule over the expectations met (call 16), the stakeholder by call 11. The local judge's answers are shown and do not count.
 - A trial ends `agreed` or `not agreed`, and keeps who said what for each task.
 
 ### Task 9: Commit, discard, undo
