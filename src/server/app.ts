@@ -301,15 +301,18 @@ export function createApp(deps: EngineDeps & { runner: Runner; seedDir?: string;
 
   app.get('/api/roles', async (c) => c.json(await listRoles(provenanceDirs)));
 
-  // Each change that came from a trial is marked with it, so the page can tell a tried change from one made by hand.
+  // Each change that came from a trial is marked with it, and so is the change that took one back, so the page can
+  // tell a tried change from one made by hand.
   app.get('/api/roles/:id/provenance', async (c) => {
     const id = c.req.param('id');
     const provenance = await roleProvenance(provenanceDirs, id);
     if (provenance === null) throw new NotFound(`Unknown role ${id}`);
     const trials = await new TrialStore(deps.db).listTrials({ roleId: id });
     const lessons = provenance.lessons.map((lesson) => {
-      const trial = trials.find(({ commits }) => lesson.sha !== null && (commits?.knowledge === lesson.sha || commits?.undone?.knowledge === lesson.sha));
-      return trial ? { ...lesson, trial: trial.id } : lesson;
+      if (lesson.sha === null) return lesson;
+      const passed = trials.find(({ commits }) => commits?.knowledge === lesson.sha);
+      const undone = trials.find(({ commits }) => commits?.undone?.knowledge === lesson.sha);
+      return { ...lesson, ...(passed ? { trial: passed.id } : {}), ...(undone ? { undoes: undone.id } : {}) };
     });
     return c.json({ ...provenance, lessons });
   });

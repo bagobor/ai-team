@@ -9,13 +9,18 @@ export function usePath(): string {
   return useSyncExternalStore(subscribe, () => window.location.pathname);
 }
 
+// Goes to a page of the app without loading it afresh, as a click on a Link does.
+export function navigate(to: string): void {
+  window.history.pushState(null, '', to);
+  window.dispatchEvent(new PopStateEvent('popstate'));
+}
+
 export function Link({ to, className, children }: { to: string; className?: string; children: ReactNode }) {
   const onClick = (event: MouseEvent) => {
     // Leave a click that opens a new tab or window to the browser.
     if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
     event.preventDefault();
-    window.history.pushState(null, '', to);
-    window.dispatchEvent(new PopStateEvent('popstate'));
+    navigate(to);
   };
   return (
     <a href={to} className={className} onClick={onClick}>

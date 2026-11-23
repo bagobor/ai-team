@@ -188,7 +188,10 @@ describe('committing a draft that a trial agreed on', () => {
       expect(older.every((lesson) => lesson.trial === undefined)).toBe(true);
 
       expect((await post(`/api/trials/${trial.id}/undo`)).status).toBe(200);
-      expect((await lessons()).slice(0, 2)).toMatchObject([{ subject: 'Revert "engineer: Run the checks first"', trial: trial.id }, { trial: trial.id }]);
+      const [revert, change] = await lessons();
+      expect(revert).toMatchObject({ subject: 'Revert "engineer: Run the checks first"', undoes: trial.id });
+      expect(revert!.trial).toBeUndefined();
+      expect(change).toMatchObject({ trial: trial.id });
       expect((await post(`/api/trials/${trial.id}/undo`)).status).toBe(409);
     });
   });

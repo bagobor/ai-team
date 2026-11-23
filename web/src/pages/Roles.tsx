@@ -1,12 +1,47 @@
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery } from '@tanstack/react-query';
 import { useEffect, useState, type KeyboardEvent } from 'react';
 import type { MemoryFile } from '../../../src/knowledge/entries.ts';
 import type { EntriesView, EntryView, Lesson, RoleProvenance, RoleSummary } from '../../../src/roles/provenance.ts';
-import { getRoleMemory, getRoleProvenance, listProjects, listRoles } from '../api.ts';
+import { getOpenDraft, getRoleMemory, getRoleProvenance, listProjects, listRoles, startDraft } from '../api.ts';
 import { DiffView } from '../components/DiffTab.tsx';
 import { plural, roleChip, when } from '../lib/ledger.ts';
 import { changeKey, charterRows, day, entryByline, fileLabel, linesFrom, roleName, rolePath, shortSha, sourceLabel, unwrap } from '../lib/roles.ts';
-import { Link } from '../router.tsx';
+import { draftPath, howTried, trialPath } from '../lib/trials.ts';
+import { Link, navigate } from '../router.tsx';
+
+// A change to the charter, the playbook or a project's memory is made as a draft, and the role has one at a time.
+function DraftPanel({ roleId }: { roleId: string }) {
+  const { data: draft } = useQuery({ queryKey: ['open-draft', roleId], queryFn: () => getOpenDraft(roleId) });
+  const [title, setTitle] = useState('');
+  const start = useMutation({ mutationFn: () => startDraft(roleId, title), onSuccess: (started) => navigate(draftPath(started.id)) });
+  if (draft === undefined) return null;
+  return (
+    <section className="panel">
+      <div className="panel-h">
+        <h2>Change what this role knows</h2>
+        <span className="aside">a change is tried on the role’s past work before it goes live</span>
+      </div>
+      {draft !== null ? (
+        <div className="panel-b row">
+          <span className="grow">
+            A draft is open: <b>{draft.title}</b>. {draft.changed ? `It changes ${draft.files.filter(({ changed }) => changed).map(({ file }) => file.replace('_', ' ')).join(', ')}.` : 'It changes nothing yet.'}
+          </span>
+          <Link to={draftPath(draft.id)} className="btn primary">
+            Open the draft
+          </Link>
+        </div>
+      ) : (
+        <div className="panel-b row">
+          <input type="text" className="grow" value={title} placeholder="What the change is for, such as: Run the checks before reporting" aria-label="What the draft is for" onChange={(event) => setTitle(event.target.value)} />
+          <button type="button" className="btn primary" disabled={title.trim() === '' || start.isPending} onClick={() => start.mutate()}>
+            Start a draft
+          </button>
+          {start.error && <span className="err">{start.error.message}</span>}
+        </div>
+      )}
+    </section>
+  );
+}
 
 function Knowledge({ role }: { role: RoleSummary }) {
   if (role.budgets === null) return <span className="muted">–</span>;
@@ -177,7 +212,7 @@ function Playbook({ role, onCommit }: { role: RoleProvenance; onCommit: (key: st
       </div>
       {playbook.entries.length === 0 && playbook.problems.length === 0 ? (
         <div className="panel-b muted">
-          Empty. A playbook is how to do this role’s work well in any project. For now it is written by hand, in <span className="mono">{playbook.path}</span> in the knowledge repo.
+          Empty. A playbook is how to do this role’s work well in any project. Start a draft above to add to it; it is kept in <span className="mono">{playbook.path}</span> in the knowledge repo.
         </div>
       ) : (
         <Entries view={playbook} onCommit={onCommit} />
@@ -318,6 +353,15 @@ function LessonItem({ lesson, on, onToggle }: { lesson: Lesson; on: boolean; onT
           <span>{lesson.date === null ? 'now' : when(lesson.date)}</span>
           {lesson.sha !== null && <span className="mono">{shortSha(lesson.sha)}</span>}
           <span>{sourceLabel(lesson.source)}</span>
+          {(howTried(lesson) === 'trial' || howTried(lesson) === 'undo') && (
+            // The link opens the trial, and must not also open or close the change it sits in.
+            <span onClick={(event) => event.stopPropagation()}>
+              <Link to={trialPath((lesson.trial ?? lesson.undoes)!)} className={`tag ${lesson.trial === undefined ? 'back' : 'ok'}`}>
+                {lesson.trial === undefined ? `took back trial ${lesson.undoes}` : `passed trial ${lesson.trial}`}
+              </Link>
+            </span>
+          )}
+          {howTried(lesson) === 'untried' && <span className="tag">not tried</span>}
         </div>
         <div className="what">{lesson.subject}</div>
         <div className="files">
@@ -394,6 +438,7 @@ export function RoleDetail({ id }: { id: string }) {
         <div className="prov">
           <RoleNav current={role.id} />
           <div className="prov-main">
+            <DraftPanel roleId={role.id} />
             <Charter
               role={role}
               selected={selected}

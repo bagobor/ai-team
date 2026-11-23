@@ -60,6 +60,14 @@ Task 1 keeps the reference files with each new attempt, so everything run from t
 18. **The evaluator is asked once.** Its answers are yes or no. Only the model judge is asked several times.
 19. **Each judgment is kept beside the stakeholder's answer for the same task**, which is what will show how far each judge can be trusted.
 
+## What the build changed
+
+- **Turns are not counted.** The adapter reports what a run cost and not how many turns it took, so cost is the one figure a trial shows beside the checks.
+- **Editing is on the draft's own page.** The role's page starts a draft or opens the one that is open; the charter, the entries and the trial form are on `/drafts/<n>`.
+- **Four tables, not three.** A judgment is one judge's answers about one task, with a row of its own in `trial_judgments`.
+- **A task of another project reads that project's memory.** A draft that changes no memory can be tried on any project's tasks; each run of a task is given its own project's memory as it stood when the trial began.
+- **The real trial at the checkpoint was not run.** The suite was green there (2366 tests). The stakeholder is asked once, at the end, for one real trial that covers the runs and the judges together.
+
 ## Tasks
 
 ### Task 1: Keep what a replay needs
@@ -116,7 +124,7 @@ Migration 006 and the store's methods for them.
 - The scheduler starts a replay only when a worker is free and no live task is waiting.
 - Stop, resume, and what a daemon restart does with a run that was in flight: it runs again.
 
-**Checkpoint, with the stakeholder's OK:** the full suite, then one real trial on the engineer, to see a real replay before the judges are built. It costs about $1 to $3.
+**Checkpoint, with the stakeholder's OK:** the full suite, then one real trial on the engineer, to see a real replay before the judges are built. It costs about $1 to $3. *(See "What the build changed".)*
 
 ### Task 7: The judge and its providers
 
