@@ -10,6 +10,8 @@ export type Paths = {
   worktrees: string;
   transcripts: string;
   claudeHome: string;
+  // Drafts of a change to what a role knows, and what trying them left behind.
+  trials: string;
 };
 
 export function resolvePaths(env: NodeJS.ProcessEnv = process.env): Paths {
@@ -23,6 +25,7 @@ export function resolvePaths(env: NodeJS.ProcessEnv = process.env): Paths {
     worktrees: join(root, 'worktrees'),
     transcripts: join(root, 'transcripts'),
     claudeHome: join(root, 'agent-home', 'claude'),
+    trials: join(root, 'trials'),
   };
 }
 
@@ -41,6 +44,7 @@ export function workerDenyRead(p: Paths, home: string): string[] {
     p.projects,
     p.transcripts,
     p.worktrees,
+    p.trials,
     ...HOME_SECRETS.map((name) => join(home, name)),
   ];
 }

@@ -93,6 +93,8 @@ describe('the Milestone Review inputs', () => {
     expect(text).not.toContain('design-prose-marker');
     expect(readFileSync(join(attempt!.worktree_path, '.aiteam-reference', 'tech-design.md'), 'utf8')).toContain(proseDesign.body.trim());
     expect(existsSync(join(attempt!.worktree_path, '.aiteam-reference', 'verification.md'))).toBe(false);
+    // The worktree goes once the attempt is done with, and running the task again needs the file.
+    expect(readFileSync(join(manifestDir(e.paths, 'p', task.ticket_id, 1), 'reference', 'tech-design.md'), 'utf8')).toContain(proseDesign.body.trim());
   });
 
   it('leave out the verification commands, which ran and passed before the review began', async () => {

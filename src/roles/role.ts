@@ -32,6 +32,8 @@ export type Role = {
   defaults: { adapter: string; model: string; budgets: Budgets };
   output_schema: string;
   output_schemas?: Record<string, string>;
+  // The role that judges this one's work when a change to what it knows is tried.
+  evaluator?: string;
 };
 
 const stringList = { type: 'array', items: { type: 'string' } };
@@ -83,6 +85,7 @@ const ROLE_SCHEMA = {
     },
     output_schema: { type: 'string' },
     output_schemas: { type: 'object', additionalProperties: { type: 'string' } },
+    evaluator: { type: 'string' },
   },
 };
 
@@ -104,6 +107,8 @@ function parseRole(text: string, roleId: string): Role {
   }
   if (!isRole(parsed)) throw new Error(`Role ${roleId}: role.yaml is invalid: ${ajv.errorsText(isRole.errors)}`);
   if (parsed.id !== roleId) throw new Error(`Role ${roleId}: role.yaml has the id ${parsed.id}`);
+  if (parsed.evaluator === roleId) throw new Error(`Role ${roleId}: role.yaml names the role as its own evaluator`);
+  if (parsed.evaluator !== undefined && !ROLE_ID.test(parsed.evaluator)) throw new Error(`Role ${roleId}: "${parsed.evaluator}" is not a valid role id for its evaluator`);
   return parsed;
 }
 

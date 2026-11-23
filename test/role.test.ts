@@ -164,6 +164,14 @@ describe('loadRole', () => {
     await expect(loadRole(knowledge, 'engineer')).rejects.toThrow(/Role engineer: .*other/);
   });
 
+  it('reads the role that judges this one’s work, and refuses a role as its own', async () => {
+    expect((await loadRole(seedKnowledge, 'engineer')).role.evaluator).toBe('code_reviewer');
+    expect((await loadRole(seedKnowledge, 'pm')).role.evaluator).toBeUndefined();
+
+    writeFileSync(roleFile('role.yaml'), readFileSync(roleFile('role.yaml'), 'utf8').replace('evaluator: code_reviewer', 'evaluator: engineer'));
+    await expect(loadRole(knowledge, 'engineer')).rejects.toThrow('Role engineer: role.yaml names the role as its own evaluator');
+  });
+
   it('rejects a role.yaml with a missing section', async () => {
     writeFileSync(roleFile('role.yaml'), 'id: engineer\nmission: x\n');
     await expect(loadRole(knowledge, 'engineer')).rejects.toThrow(/role\.yaml/);

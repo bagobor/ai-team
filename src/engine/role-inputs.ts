@@ -204,3 +204,12 @@ export async function writeReference(worktree: string, reference: Reference): Pr
   await writeFile(join(dir, '.gitignore'), '*\n');
   for (const [name, text] of Object.entries(reference)) await writeFile(join(dir, name), text);
 }
+
+// Where an attempt's reference files are kept, beside its prompt, for anything that runs its task again.
+export const KEPT_REFERENCE = 'reference';
+
+export async function keepReference(manifestDir: string, reference: Reference): Promise<void> {
+  const dir = join(manifestDir, KEPT_REFERENCE);
+  await mkdir(dir, { recursive: true });
+  for (const [name, text] of Object.entries(reference)) await writeFile(join(dir, name), text);
+}

@@ -22,6 +22,7 @@ describe('loadConfig', () => {
       worktreeRetentionDays: 7,
       claude: { binary: 'claude', mode: 'subscription' },
       chrome: { binary: null },
+      trials: { judgeModel: 'claude-opus-5-5', judgeRuns: 3, capUsd: 10, localJudge: null },
     });
   });
 
@@ -35,6 +36,17 @@ describe('loadConfig', () => {
   it('rejects unknown keys by name', () => {
     expect(() => loadConfig(home('max_wrkers: 5\n'))).toThrow(/max_wrkers/);
     expect(() => loadConfig(home('claude:\n  binry: x\n'))).toThrow(/binry/);
+  });
+
+  it('reads how a change to what a role knows is tried', () => {
+    const cfg = loadConfig(home('trials:\n  judge_model: some-model\n  judge_runs: 5\n  cap_usd: 2.5\n  local_judge:\n    url: http://127.0.0.1:11434/v1\n    model: qwen3\n'));
+
+    expect(cfg.trials).toEqual({ judgeModel: 'some-model', judgeRuns: 5, capUsd: 2.5, localJudge: { url: 'http://127.0.0.1:11434/v1', model: 'qwen3' } });
+    expect(DEFAULT_CONFIG.trials.localJudge).toBeNull();
+  });
+
+  it.each(['judge_runs: 0', 'judge_runs: 1.5', 'cap_usd: 0', 'judge_model: ""', 'local_judge:\n    url: http://x', 'judges: 3'])('refuses trials with %j', (line) => {
+    expect(() => loadConfig(home(`trials:\n  ${line}\n`))).toThrow(/trials\./);
   });
 
   it('rejects an empty value of the wrong type', () => {
@@ -69,6 +81,7 @@ describe('resolvePaths', () => {
       worktrees: '/h/worktrees',
       transcripts: '/h/transcripts',
       claudeHome: '/h/agent-home/claude',
+      trials: '/h/trials',
     });
   });
 

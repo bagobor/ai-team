@@ -29,7 +29,7 @@ import { withListInForce } from './conductor/tasks.ts';
 import { IllegalTransition } from './fsm.ts';
 import { checkProtectedPaths, isHarnessTicket, protectedPaths, type ProtectedPath } from './protected.ts';
 import { reviewInputs } from './review-inputs.ts';
-import { roleInputs, writeReference, type Reference, type Views } from './role-inputs.ts';
+import { keepReference, roleInputs, writeReference, type Reference, type Views } from './role-inputs.ts';
 import type { AttemptPatch, AttemptRow, ProjectRow, Store, TaskRow } from './store.ts';
 import type { TryServer } from './try-server.ts';
 import type { Purpose, WorkOrder } from './workorder.ts';
@@ -321,6 +321,8 @@ export class Runner {
     await mkdir(dir, { recursive: true });
     await writeFile(join(dir, 'system.md'), manifest.system);
     await writeFile(join(dir, 'task.md'), manifest.task);
+    // Kept beside the prompt, since the worktree they were written into goes when the attempt is done with.
+    if (work.reference !== undefined) await keepReference(dir, work.reference);
     await this.deps.log.append({
       projectId: project.id,
       taskId,
