@@ -1,17 +1,25 @@
 import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs';
+import { createServer, type Server } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { join } from 'node:path';
 import { addProject, addTicket } from '../src/engine/intake.ts';
 import { Scheduler, type Background } from '../src/engine/scheduler.ts';
 import { addEntry, startDraft } from '../src/trials/drafts.ts';
 import { TrialStore } from '../src/trials/store.ts';
-import { baselineOf, startTrial, TrialRunner, type NewTrialInput, type TrialDeps } from '../src/trials/trial.ts';
+import { startTrial, TrialRunner, type NewTrialInput, type TrialDeps } from '../src/trials/trial.ts';
 import type { TrialRow } from '../src/trials/types.ts';
-import { makeEngine, okStep, runOnce, ticket, until, type TestEngine } from './helpers/engine.ts';
+import { baselineOf } from '../src/trials/verdict.ts';
+import { makeEngine, okStep, resultStep, runOnce, ticket, until, type TestEngine } from './helpers/engine.ts';
 import { makeRepo, run, tempDir } from './helpers/repo.ts';
 import { projectState, read } from './helpers/trials.ts';
 
 const INIT = JSON.stringify({ type: 'system', subtype: 'init', session_id: 's', model: 'm' });
 const SLOW = { lines: [INIT], delayMs: 120_000 };
+
+// A judge's run that says yes or no to the one expectation about each result. Results are lettered in a fixed order
+// here: A is the stored one, the last letter the draft's, and B the committed knowledge's where that was run too.
+const judged = (byLetter: Record<string, boolean>, passage = 'It lists `node --test`.') => resultStep({ answers: ['A', 'B', 'C'].map((letter) => ({ question: `${letter}-1`, yes: byLetter[letter] ?? false, passage })) });
+const ALL_YES = judged({ A: true, B: true, C: true });
 
 describe('a trial of a draft', () => {
   let e: TestEngine;
@@ -26,10 +34,11 @@ describe('a trial of a draft', () => {
   });
 
   // Six past tickets of the engineer, each run once, then a draft that adds one rule to its playbook. Every run of the
-  // trial plays the step "*" unless the script names its folder, which is <arm>-<attempt id>.
-  async function setUp(byTask: Record<string, unknown> = {}, env: Record<string, string> = {}): Promise<void> {
-    e = await makeEngine({ steps: { byTask: { '*': okStep({ 'src/a.mjs': 'export {}' }), ...byTask } }, env });
-    deps = { ...e, trials: new TrialStore(e.db) };
+  // trial plays the step "*" unless the script names its folder, which is <arm>-<attempt id>, and every judge says yes
+  // to everything unless the script names its run, <judge>-<attempt id>-<run>.
+  async function setUp(byTask: Record<string, unknown> = {}, env: Record<string, string> = {}, localJudge: { url: string; model: string } | null = null): Promise<void> {
+    e = await makeEngine({ steps: { byTask: { '*': okStep({ 'src/a.mjs': 'export {}' }), 'model-*': ALL_YES, 'evaluator-*': ALL_YES, ...byTask } }, env });
+    deps = { ...e, config: { ...e.config, trials: { ...e.config.trials, localJudge } }, trials: new TrialStore(e.db), shuffle: (items) => items };
     runner = new TrialRunner(deps);
     attempts = [];
     for (let i = 1; i <= 6; i += 1) {
@@ -153,7 +162,7 @@ describe('a trial of a draft', () => {
   });
 
   describe('run', () => {
-    it('makes every run, a few at a time, and then waits to be judged', async () => {
+    it('makes every run, a few at a time, then has it judged, and then waits for the stakeholder', async () => {
       await setUp();
       const trial = await begin();
       const before = await projectState(e);
@@ -161,17 +170,26 @@ describe('a trial of a draft', () => {
       await runner.tick(2);
       expect(runner.liveCount()).toBe(2);
       expect((await deps.trials.listResults(trial.id)).filter(({ state }) => state === 'running')).toHaveLength(2);
-      await work();
+      await runner.idle();
+      while ((await deps.trials.listResults(trial.id)).some(({ state }) => state !== 'done')) {
+        await runner.tick(2);
+        await runner.idle();
+      }
 
       const results = await deps.trials.listResults(trial.id);
       expect(results.map(({ state }) => state)).toEqual(Array(12).fill('done'));
       expect(results.find(({ arm }) => arm === 'draft')).toMatchObject({ output: { summary: 'Did the work' }, measured: { parses: true, checks: true, changed: true, usd: 0.01 }, error: null });
       expect(results.find(({ arm }) => arm === 'draft')!.fingerprint).not.toBe(results.find(({ arm }) => arm === 'stored')!.fingerprint);
-      const ended = (await deps.trials.getTrial(trial.id))!;
-      expect(ended.state).toBe('judging');
-      expect(ended.spent_usd).toBeCloseTo(0.06);
+      expect(await deps.trials.getTrial(trial.id)).toMatchObject({ state: 'judging', spent_usd: expect.closeTo(0.06) });
+
+      await work();
+
+      // Six runs, then the model judge three times and the evaluator once for each of six tasks.
+      expect(await deps.trials.getTrial(trial.id)).toMatchObject({ state: 'awaiting_answer', spent_usd: expect.closeTo(0.06 + 0.18 + 0.06) });
+      expect((await deps.trials.listJudgments(trial.id)).map(({ state }) => state)).toEqual(Array(12).fill('done'));
       expect(await projectState(e)).toEqual(before);
     });
+
 
     it('gives each task of another project that project’s memory, in every run of it', async () => {
       await setUp();
@@ -205,7 +223,7 @@ describe('a trial of a draft', () => {
 
       expect(await runner.resume(trial.id, 1)).toMatchObject({ state: 'running', stop_reason: null, cap_usd: 1 });
       await work();
-      expect((await deps.trials.getTrial(trial.id))!.state).toBe('judging');
+      expect((await deps.trials.getTrial(trial.id))!.state).toBe('awaiting_answer');
     });
 
     it('is stopped by the stakeholder with a run in flight, which is made again when the trial goes on', async () => {
@@ -252,6 +270,91 @@ describe('a trial of a draft', () => {
       expect((await deps.trials.listResults(trial.id)).some(({ state }) => state === 'running')).toBe(false);
       await runner.tick(3);
       expect(runner.liveCount()).toBe(0);
+    });
+  });
+
+  describe('judged', () => {
+    const judgmentOf = async (trial: TrialRow, judge: string, attemptId: number) => (await deps.trials.listJudgments(trial.id)).find((one) => one.judge === judge && one.attempt_id === attemptId)!;
+
+    it('keeps for each result how likely each judge found it to meet each expectation', async () => {
+      await setUp({ 'model-1-1': judged({ A: false, B: true }), 'model-1-2': judged({ A: false, B: true }), 'model-1-3': judged({ A: true, B: true }, 'It names no command.'), 'evaluator-1-1': judged({ A: false, B: true }) });
+      const trial = await begin();
+
+      await work();
+
+      expect((await judgmentOf(trial, 'model', 1)).answers).toEqual([
+        { arm: 'stored', expectation: 0, p: expect.closeTo(1 / 3), passage: 'It lists `node --test`.' },
+        { arm: 'draft', expectation: 0, p: 1, passage: 'It lists `node --test`.' },
+      ]);
+      expect((await judgmentOf(trial, 'evaluator', 1)).answers).toMatchObject([{ arm: 'stored', p: 0 }, { arm: 'draft', p: 1 }]);
+      expect((await judgmentOf(trial, 'model', 2)).answers).toMatchObject([{ arm: 'stored', p: 1 }, { arm: 'draft', p: 1 }]);
+    });
+
+    it('shows a judge the task and its results under letters, with no entry’s id to tell them apart', async () => {
+      await setUp({ 'draft-1': okStep({ 'src/a.mjs': 'export const checked = true;' }, { summary: 'Ran the checks, as PB-1 and MEM-12 say' }) });
+      const trial = await begin();
+
+      await work();
+
+      const task = read(e.paths.trials, String(trial.id), 'model-1-1', 'task.md');
+      expect(task).toMatch(/^## The task\n\n<task>\n---\nid: T-1\n/);
+      expect(task).toContain('### Result A\n\n<result letter="A">\n{\n  "summary": "Did the work"');
+      expect(task).toContain('### Result B\n\n<result letter="B">\n{\n  "summary": "Ran the checks, as an entry and an entry say"');
+      expect(task).not.toMatch(/PB-1|MEM-12|draft|stored/);
+      expect(task).toContain('What it changed:\n\ndiff --git a/src/a.mjs b/src/a.mjs');
+      expect(task).toContain('+export const checked = true;');
+      expect(task).toMatch(/## Questions\n\n- `A-1`: About result A: Does the report list every command it ran\?\n- `B-1`: About result B: Does the report list every command it ran\?\n$/);
+      expect(read(e.paths.trials, String(trial.id), 'model-1-1', 'system.md')).toMatch(/^# Judge\n/);
+      expect(read(e.paths.trials, String(trial.id), 'evaluator-1-1', 'system.md')).toMatch(/^# Code Reviewer\n[\s\S]*\n# Judge\n/);
+    });
+
+    it('stops when a judge that counts can’t judge, and keeps what the others said', async () => {
+      await setUp({ 'model-1-*': resultStep({ answers: [] }) });
+      const trial = await begin();
+
+      await work(1);
+
+      expect(await deps.trials.getTrial(trial.id)).toMatchObject({ state: 'stopped', stop_reason: 'the model judge could not judge attempt 1: the judge twice gave an answer that left a question out or did not fit' });
+      expect(await judgmentOf(trial, 'model', 1)).toMatchObject({ state: 'pending', answers: null });
+      expect((await deps.trials.getTrial(trial.id))!.spent_usd).toBeCloseTo(0.06 + 0.02);
+    });
+
+    describe('by a local model too', () => {
+      let server: Server;
+
+      afterEach(() => new Promise((resolve) => server.close(resolve)));
+
+      async function localModel(status: number): Promise<{ url: string; model: string }> {
+        server = createServer((req, res) => {
+          req.resume().on('end', () => res.writeHead(status, { 'content-type': 'application/json' }).end(JSON.stringify({ choices: [{ message: { content: 'yes' }, logprobs: { content: [{ top_logprobs: [{ token: 'yes', logprob: Math.log(0.9) }, { token: 'no', logprob: Math.log(0.1) }] }] } }] })));
+        });
+        await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+        return { url: `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`, model: 'a-local-model' };
+      }
+
+      it('keeps its answers beside the others’', async () => {
+        await setUp({}, {}, await localModel(200));
+        const trial = await begin();
+
+        await work();
+
+        expect((await judgmentOf(trial, 'local', 1)).answers).toEqual([
+          { arm: 'stored', expectation: 0, p: expect.closeTo(0.9), passage: null },
+          { arm: 'draft', expectation: 0, p: expect.closeTo(0.9), passage: null },
+        ]);
+        expect((await deps.trials.getTrial(trial.id))!.state).toBe('awaiting_answer');
+      });
+
+      it('goes on without it when it fails, since it doesn’t count', async () => {
+        await setUp({}, {}, await localModel(500));
+        const trial = await begin();
+
+        await work();
+
+        expect(await judgmentOf(trial, 'local', 1)).toMatchObject({ state: 'failed', answers: null, error: expect.stringContaining('answered 500') });
+        expect(await judgmentOf(trial, 'model', 1)).toMatchObject({ state: 'done' });
+        expect((await deps.trials.getTrial(trial.id))!.state).toBe('awaiting_answer');
+      });
     });
   });
 

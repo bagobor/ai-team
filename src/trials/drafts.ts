@@ -33,6 +33,9 @@ const readOr = (path: string, otherwise: string): Promise<string> => readFile(pa
 
 export const draftDir = (paths: Paths, id: number): string => join(paths.trials, 'drafts', String(id));
 
+// Where a trial keeps what its runs and judges leave: prompts, transcripts and diffs.
+export const trialDir = (paths: Paths, id: number): string => join(paths.trials, String(id));
+
 // Where each live file is, as the repo it sits in and its path there. A draft with no project has no memory files.
 function liveFile(paths: Paths, roleId: string, project: string | null, file: KnowledgeFile): { repo: string; path: string } | null {
   if (file === 'charter') return { repo: paths.knowledge, path: `roles/${roleId}/charter.md` };

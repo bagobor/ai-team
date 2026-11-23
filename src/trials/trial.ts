@@ -1,17 +1,18 @@
 import { randomInt } from 'node:crypto';
-import { join } from 'node:path';
 import type { EngineDeps } from '../engine/runner.ts';
+import { JudgeStopped } from '../judge/judge.ts';
 import { knowledgeFingerprint } from '../manifest/build.ts';
-import type { Paths } from '../paths.ts';
 import { loadRole } from '../roles/role.ts';
-import { draftKnowledge, liveKnowledge, viewDraft } from './drafts.ts';
+import { draftKnowledge, liveKnowledge, trialDir, viewDraft } from './drafts.ts';
 import { Refused } from './errors.ts';
+import { judgeTask } from './judging.ts';
 import { replay, replaySections, type ReplayDeps } from './replay.ts';
 import { replaySource, storedMeasure, type ReplaySource } from './source.ts';
 import type { NewTrial, TrialStore } from './store.ts';
-import type { Arm, JudgeName, Knowledge, Letter, ResultRow, TrialRow, TrialState, TrialTask } from './types.ts';
+import type { Arm, JudgeName, JudgmentRow, Knowledge, Letter, ResultRow, TrialRow, TrialState, TrialTask } from './types.ts';
 
-export type TrialDeps = ReplayDeps & Pick<EngineDeps, 'store'> & { trials: TrialStore; now?: () => Date };
+// shuffle decides which of a task's results gets which letter. It is random unless a test says otherwise.
+export type TrialDeps = ReplayDeps & Pick<EngineDeps, 'store'> & { trials: TrialStore; now?: () => Date; shuffle?: <T>(items: T[]) => T[] };
 
 export type NewTrialInput = { expectations: string[]; problem: number[]; fine: number[]; capUsd?: number };
 
@@ -22,8 +23,6 @@ const MAX_EXPECTATION_CHARS = 300;
 // A trial that has not ended. A draft has one of these at most.
 export const UNDER_WAY: TrialState[] = ['running', 'judging', 'awaiting_answer', 'stopped'];
 const STOPPED_BY_STAKEHOLDER = 'the stakeholder stopped it';
-
-export const trialDir = (paths: Paths, id: number): string => join(paths.trials, String(id));
 
 // What a task of this project reads in one arm of the trial.
 export function armKnowledge({ project, elsewhere, ...arms }: TrialRow['knowledge'], arm: 'current' | 'draft', taskProject: string): Knowledge {
@@ -99,18 +98,12 @@ export async function startTrial(deps: TrialDeps, draftId: number, input: NewTri
     // stored result is the baseline, and nothing but the draft is run.
     const today = knowledgeFingerprint(replaySections(armKnowledge(knowledge, 'current', source.project.name), role, source.sections), role.defaults.model);
     const arms: Arm[] = ['stored', ...(today === source.fingerprint ? [] : (['current'] as const)), 'draft'];
-    const order = shuffled(arms);
+    const order = (deps.shuffle ?? shuffled)(arms);
     tasks.push({ attemptId: attempt.id, group: input.problem.includes(attempt.id) ? 'problem' : 'fine', letters: Object.fromEntries(order.map((arm, i) => [LETTERS[i]!, arm])) });
     results.push({ attempt_id: attempt.id, arm: 'stored', state: 'done', output: attempt.output, measured: storedMeasure(attempt, task), fingerprint: source.fingerprint });
     for (const arm of arms.slice(1)) results.push({ attempt_id: attempt.id, arm, state: 'pending', output: null, measured: null, fingerprint: null });
   }
   return trials.createTrial({ draft_id: draft.id, role_id: draft.role_id, expectations, tasks, knowledge, cap_usd: capUsd, results, judgments: ids.flatMap((attempt_id) => judges.map((judge) => ({ attempt_id, judge }))) });
-}
-
-// What a task's draft run is compared with: the fresh run on the committed knowledge where there is one, else the
-// stored result.
-export function baselineOf(task: TrialTask): Arm {
-  return Object.values(task.letters).includes('current') ? 'current' : 'stored';
 }
 
 type Live = { trialId: number; abort: AbortController; done: Promise<void> };
@@ -168,21 +161,56 @@ export class TrialRunner {
     await this.idle();
   }
 
-  // Judging is the next task's to add. Until then a trial with all its runs in waits here.
-  protected startJudging(_trial: TrialRow, _free: number): Promise<number> {
-    return Promise.resolve(0);
+  // Each judge's judgment of each task is one piece of work, which takes a worker as a run does.
+  private async startJudging(trial: TrialRow, free: number): Promise<number> {
+    const { trials } = this.deps;
+    const pending = (await trials.listJudgments(trial.id)).filter(({ state }) => state === 'pending');
+    if (pending.length === 0) {
+      if (![...this.live.values()].some(({ trialId }) => trialId === trial.id)) await this.settle(trial);
+      return 0;
+    }
+    if (trial.spent_usd >= trial.cap_usd) {
+      await this.stopFor(trial.id, `it reached its spending cap of $${trial.cap_usd.toFixed(2)}`);
+      return 0;
+    }
+    const starting = pending.slice(0, free);
+    for (const judgment of starting) {
+      await trials.patchJudgment(judgment.id, { state: 'running', error: null });
+      this.begin(`judgment ${judgment.id}`, trial.id, (signal) => this.judge(trial, judgment, signal));
+    }
+    return starting.length;
   }
 
-  protected judgingLeft(_trial: TrialRow): Promise<boolean> {
-    return Promise.resolve(false);
+  // The model judge and the evaluator count, so one of them failing stops the trial until it can be asked again. The
+  // local judge is shown and does not count, so its failure is kept as that and the trial goes on.
+  private async judge(trial: TrialRow, judgment: JudgmentRow, signal: AbortSignal): Promise<void> {
+    const { trials } = this.deps;
+    try {
+      const { answers, usd } = await judgeTask(this.deps, trial, judgment, signal);
+      if (usd > 0) await trials.addSpend(trial.id, usd);
+      await trials.patchJudgment(judgment.id, { state: 'done', answers, error: null });
+    } catch (err) {
+      if (err instanceof JudgeStopped && err.usd > 0) await trials.addSpend(trial.id, err.usd);
+      const why = err instanceof Error ? err.message : String(err);
+      const local = judgment.judge === 'local';
+      await trials.patchJudgment(judgment.id, { state: local && !signal.aborted ? 'failed' : 'pending', error: why });
+      if (!local) await this.stopFor(trial.id, `the ${judgment.judge === 'model' ? 'model judge' : 'evaluator'} could not judge attempt ${judgment.attempt_id}: ${why}`);
+    }
+    const now = await trials.getTrial(trial.id);
+    if (now) await this.settle(now);
   }
 
-  // Moves a trial on once a stage of it has nothing left to do.
-  protected async settle(trial: TrialRow): Promise<TrialRow> {
+  private async judgingLeft(trial: TrialRow): Promise<boolean> {
+    return (await this.deps.trials.listJudgments(trial.id)).some(({ state }) => state === 'pending' || state === 'running');
+  }
+
+  // Moves a trial on once a stage of it has nothing left to do: from its runs to the judging, and from that to the
+  // stakeholder.
+  private async settle(trial: TrialRow): Promise<TrialRow> {
     const { trials } = this.deps;
     if (trial.state !== 'running' && trial.state !== 'judging') return trial;
-    if ((await trials.listResults(trial.id)).some(({ state }) => state !== 'done')) return trial.state === 'running' ? trial : trials.patchTrial(trial.id, { state: 'running' });
-    return trial.state === 'judging' ? trial : trials.patchTrial(trial.id, { state: 'judging' });
+    const stage = (await trials.listResults(trial.id)).some(({ state }) => state !== 'done') ? 'running' : (await this.judgingLeft(trial)) ? 'judging' : 'awaiting_answer';
+    return stage === trial.state ? trial : trials.patchTrial(trial.id, { state: stage });
   }
 
   protected begin(key: string, trialId: number, work: (signal: AbortSignal) => Promise<void>): void {
