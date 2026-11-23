@@ -226,4 +226,65 @@ export const migrations: Record<string, Migration> = {
       await sql`ALTER TABLE inbox_items ADD COLUMN waivable TEXT NOT NULL DEFAULT '[]'`.execute(db);
     },
   },
+  '006_trials': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      // A change to what a role knows, before it is committed. Its files sit on disk; base says what each committed
+      // file was when the draft first changed it.
+      await sql`
+        CREATE TABLE drafts (
+          id INTEGER PRIMARY KEY,
+          role_id TEXT NOT NULL,
+          project_id INTEGER REFERENCES projects(id),
+          title TEXT NOT NULL,
+          state TEXT NOT NULL CHECK (state IN ('open', 'committed', 'discarded')),
+          base TEXT NOT NULL DEFAULT '{}',
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        )`.execute(db);
+      // One try of a draft on past attempts of its role. knowledge is the committed files and the draft's as they
+      // were when it began, so every run of it reads the same thing.
+      await sql`
+        CREATE TABLE trials (
+          id INTEGER PRIMARY KEY,
+          draft_id INTEGER NOT NULL REFERENCES drafts(id),
+          role_id TEXT NOT NULL,
+          state TEXT NOT NULL CHECK (state IN ('running', 'judging', 'awaiting_answer', 'agreed', 'not_agreed', 'stopped')),
+          stop_reason TEXT,
+          expectations TEXT NOT NULL,
+          tasks TEXT NOT NULL,
+          knowledge TEXT NOT NULL,
+          cap_usd REAL NOT NULL,
+          spent_usd REAL NOT NULL DEFAULT 0,
+          human TEXT,
+          verdict TEXT,
+          commits TEXT,
+          created_at TEXT NOT NULL,
+          ended_at TEXT
+        )`.execute(db);
+      await sql`
+        CREATE TABLE trial_results (
+          id INTEGER PRIMARY KEY,
+          trial_id INTEGER NOT NULL REFERENCES trials(id),
+          attempt_id INTEGER NOT NULL REFERENCES attempts(id),
+          arm TEXT NOT NULL CHECK (arm IN ('stored', 'current', 'draft')),
+          state TEXT NOT NULL CHECK (state IN ('pending', 'running', 'done')),
+          output TEXT,
+          measured TEXT,
+          fingerprint TEXT,
+          error TEXT,
+          UNIQUE (trial_id, attempt_id, arm)
+        )`.execute(db);
+      await sql`
+        CREATE TABLE trial_judgments (
+          id INTEGER PRIMARY KEY,
+          trial_id INTEGER NOT NULL REFERENCES trials(id),
+          attempt_id INTEGER NOT NULL REFERENCES attempts(id),
+          judge TEXT NOT NULL CHECK (judge IN ('model', 'evaluator', 'local')),
+          state TEXT NOT NULL CHECK (state IN ('pending', 'running', 'done', 'failed')),
+          answers TEXT,
+          error TEXT,
+          UNIQUE (trial_id, attempt_id, judge)
+        )`.execute(db);
+    },
+  },
 };
