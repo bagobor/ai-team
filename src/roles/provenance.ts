@@ -18,7 +18,8 @@ export type CharterLine = { text: string; sha: string | null; source: Source | n
 
 export type LessonFile = { path: string; kind: 'charter' | 'playbook' | 'config' | 'schema' | 'other'; add: number; del: number; diff: string; clipped: boolean; untracked: boolean };
 
-export type Lesson = { sha: string | null; source: Source | 'uncommitted'; date: string | null; author: string | null; subject: string; body: string; files: LessonFile[] };
+// trial is the trial a change passed before it was committed. The API fills it in; a change without one was never tried.
+export type Lesson = { sha: string | null; source: Source | 'uncommitted'; date: string | null; author: string | null; subject: string; body: string; files: LessonFile[]; trial?: number };
 
 export type RoleFacts = { department: string | null; mission: string | null; model: string | null; budgets: Budgets | null; produces: string[] };
 

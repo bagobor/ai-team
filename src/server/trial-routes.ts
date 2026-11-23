@@ -1,6 +1,7 @@
 import type { Context, Hono } from 'hono';
 import type { EngineDeps } from '../engine/runner.ts';
 import { MEMORY_KINDS, type MemoryKind } from '../knowledge/entries.ts';
+import { commitTrial, undoTrial } from '../trials/commit.ts';
 import { addEntry, changeEntry, discardDraft, keepOverLive, removeEntry, setCharter, startDraft, viewDraft, type DraftDeps, type EntryFile, type EntryInput } from '../trials/drafts.ts';
 import { Refused } from '../trials/errors.ts';
 import { pastAttempts, suggestFine } from '../trials/source.ts';
@@ -130,4 +131,8 @@ export function trialRoutes(app: Hono, deps: EngineDeps & { trialRunner?: TrialR
     if (typeof choices !== 'object' || choices === null || Object.values(choices).some((choice) => typeof choice !== 'string')) throw new Refused('choices must give, for each attempt id, the letter of the better result or "same"');
     return tried(c, (await answerTrial(trying, idOf(c), choices as Record<string, string>)).id);
   });
+
+  app.post('/api/trials/:n/commit', async (c) => tried(c, (await commitTrial(trying, idOf(c))).id));
+
+  app.post('/api/trials/:n/undo', async (c) => tried(c, (await undoTrial(trying, idOf(c))).id));
 }

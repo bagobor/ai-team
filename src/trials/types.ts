@@ -51,7 +51,9 @@ export type TrialRow = {
   // Per attempt id, which of the two compared results the stakeholder found better.
   human: Record<string, Arm | 'same'> | null;
   verdict: Verdict | null;
-  commits: { knowledge?: string; state?: string } | null;
+  // The commits its draft became: in the knowledge repo for the charter and playbook, in the project's state repo for
+  // memory. undone holds the commits that took those back.
+  commits: { knowledge?: string; state?: string; undone?: { knowledge?: string; state?: string } } | null;
   created_at: string;
   ended_at: string | null;
 };

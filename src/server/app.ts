@@ -22,6 +22,7 @@ import { listRoles, roleMemory, roleProvenance } from '../roles/provenance.ts';
 import { DEFAULT_SEED } from '../setup/setup.ts';
 import { SAFE_ID, TicketError } from '../tickets/ticket.ts';
 import { Refused } from '../trials/errors.ts';
+import { TrialStore } from '../trials/store.ts';
 import type { TrialRunner } from '../trials/trial.ts';
 import { streamEvents } from './events-stream.ts';
 import { trialRoutes } from './trial-routes.ts';
@@ -300,11 +301,17 @@ export function createApp(deps: EngineDeps & { runner: Runner; seedDir?: string;
 
   app.get('/api/roles', async (c) => c.json(await listRoles(provenanceDirs)));
 
+  // Each change that came from a trial is marked with it, so the page can tell a tried change from one made by hand.
   app.get('/api/roles/:id/provenance', async (c) => {
     const id = c.req.param('id');
     const provenance = await roleProvenance(provenanceDirs, id);
     if (provenance === null) throw new NotFound(`Unknown role ${id}`);
-    return c.json(provenance);
+    const trials = await new TrialStore(deps.db).listTrials({ roleId: id });
+    const lessons = provenance.lessons.map((lesson) => {
+      const trial = trials.find(({ commits }) => lesson.sha !== null && (commits?.knowledge === lesson.sha || commits?.undone?.knowledge === lesson.sha));
+      return trial ? { ...lesson, trial: trial.id } : lesson;
+    });
+    return c.json({ ...provenance, lessons });
   });
 
   app.get('/api/roles/:id/memory/:name', async (c) => {
