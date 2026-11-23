@@ -21,7 +21,9 @@ import { stateRepoDir } from '../paths.ts';
 import { listRoles, roleMemory, roleProvenance } from '../roles/provenance.ts';
 import { DEFAULT_SEED } from '../setup/setup.ts';
 import { SAFE_ID, TicketError } from '../tickets/ticket.ts';
+import { Refused } from '../trials/errors.ts';
 import { streamEvents } from './events-stream.ts';
+import { trialRoutes } from './trial-routes.ts';
 
 class BadRequest extends Error {}
 class NotFound extends Error {}
@@ -134,6 +136,7 @@ export function createApp(deps: EngineDeps & { runner: Runner; seedDir?: string 
     if (err instanceof BadRequest) return fail(c, 400, err.message);
     if (err instanceof NotFound) return fail(c, 404, err.message);
     if (err instanceof Conflict) return fail(c, 409, err.message);
+    if (err instanceof Refused) return fail(c, err.status, err.message);
     console.error(err);
     return fail(c, 500, 'Something went wrong in the daemon. Its log has the details.');
   });
@@ -308,6 +311,8 @@ export function createApp(deps: EngineDeps & { runner: Runner; seedDir?: string 
     if (memory === null) throw new NotFound(`Unknown role ${id}`);
     return c.json(memory);
   });
+
+  trialRoutes(app, deps);
 
   // The status comes from the registry and nowhere else: only a QA verification task can change it there.
   app.get('/api/projects/:name/acs', async (c) => {
