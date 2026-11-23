@@ -4,6 +4,7 @@ import { MEMORY_KINDS, type MemoryKind } from '../knowledge/entries.ts';
 import { addEntry, changeEntry, discardDraft, keepOverLive, removeEntry, setCharter, startDraft, viewDraft, type DraftDeps, type EntryFile, type EntryInput } from '../trials/drafts.ts';
 import { Refused } from '../trials/errors.ts';
 import { TrialStore } from '../trials/store.ts';
+import { TrialRunner } from '../trials/trial.ts';
 
 const ENTRY_FILES: EntryFile[] = ['playbook', 'memory_project', 'memory_role'];
 
@@ -40,9 +41,10 @@ function entryInput(body: Record<string, unknown>, needsText: boolean): EntryInp
 }
 
 // Drafts of a change to what a role knows, and trying them. Each answer is the draft as it now stands.
-export function trialRoutes(app: Hono, deps: EngineDeps): void {
+export function trialRoutes(app: Hono, deps: EngineDeps & { trialRunner?: TrialRunner }): void {
   const trials = new TrialStore(deps.db, deps.now);
   const drafts: DraftDeps = { paths: deps.paths, store: deps.store, trials, ...(deps.now ? { now: deps.now } : {}) };
+  const runner = deps.trialRunner ?? new TrialRunner({ ...deps, trials });
 
   const shown = async (c: Context, id: number) => {
     const draft = await trials.getDraft(id);

@@ -42,7 +42,10 @@ export type TrialRow = {
   stop_reason: string | null;
   expectations: string[];
   tasks: TrialTask[];
-  knowledge: { current: Knowledge; draft: Knowledge };
+  // What tasks of the role read when the trial began: the live files, and the draft's. project is the one whose memory
+  // those hold, if the draft changes any. A task of another project reads that project's memory in every run of it,
+  // which is kept here too, by project name.
+  knowledge: { project: string | null; current: Knowledge; draft: Knowledge; elsewhere: Record<string, Pick<Knowledge, 'memory_project' | 'memory_role'>> };
   cap_usd: number;
   spent_usd: number;
   // Per attempt id, which of the two compared results the stakeholder found better.

@@ -26,7 +26,7 @@ describe('the trial store', () => {
       role_id: 'engineer',
       expectations: ['Does the report list every command?'],
       tasks: [{ attemptId, group: 'problem', letters: { A: 'draft', B: 'stored' } }],
-      knowledge: { current: NONE, draft: { ...NONE, playbook: '## PB-1\n' } },
+      knowledge: { project: null, current: NONE, draft: { ...NONE, playbook: '## PB-1\n' }, elsewhere: {} },
       cap_usd: 10,
       results: [
         { attempt_id: attemptId, arm: 'stored', state: 'done', output: { summary: 'Did it' }, measured: { parses: true, checks: true, changed: true, tests: true, usd: 0.2, note: null }, fingerprint: 'abc' },

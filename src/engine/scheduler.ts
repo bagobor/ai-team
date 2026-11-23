@@ -5,6 +5,10 @@ import type { TaskState } from './fsm.ts';
 import type { EngineDeps, Runner } from './runner.ts';
 import type { TaskRow } from './store.ts';
 
+// Work that is no project's own, such as trying a change to what a role knows. It gets a worker only when one is free
+// and no task is waiting for it, and a task never waits for it: a task starts whatever of this is running.
+export type Background = { liveCount(): number; tick(free: number): Promise<void> };
+
 const DEFAULT_INTERVAL_MS = 1000;
 const GLOB_CHARS = /[*?[{!(]/;
 // A ticket in review still has work on its way to the integration branch, so another ticket on those paths must wait for it.
@@ -79,6 +83,7 @@ export class Scheduler {
     private readonly deps: EngineDeps,
     private readonly runner: Runner,
     private readonly conductor?: Pick<Conductor, 'tick'>,
+    private readonly background?: Background,
   ) {}
 
   tick(): Promise<void> {
@@ -145,13 +150,22 @@ export class Scheduler {
     const position = new Map(priorityOrder(tasks).map(({ id }, i) => [id, i]));
     ready.sort((a, b) => position.get(a.id)! - position.get(b.id)!);
 
+    let waiting = false;
     for (const task of ready) {
-      if (this.runner.liveCount() >= config.maxWorkers) break;
+      if (this.runner.liveCount() >= config.maxWorkers) {
+        waiting = true;
+        break;
+      }
       if (holders.some((holder) => overlaps(holder, task))) {
         await this.block(task, 'path_lock');
       } else if (await this.startIfAllowed(task)) {
         holders.push(task);
       }
+    }
+
+    if (this.background && !waiting) {
+      const free = config.maxWorkers - this.runner.liveCount() - this.background.liveCount();
+      await this.background.tick(free).catch((err: unknown) => console.error('The background work failed:', err));
     }
   }
 

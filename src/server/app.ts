@@ -22,6 +22,7 @@ import { listRoles, roleMemory, roleProvenance } from '../roles/provenance.ts';
 import { DEFAULT_SEED } from '../setup/setup.ts';
 import { SAFE_ID, TicketError } from '../tickets/ticket.ts';
 import { Refused } from '../trials/errors.ts';
+import type { TrialRunner } from '../trials/trial.ts';
 import { streamEvents } from './events-stream.ts';
 import { trialRoutes } from './trial-routes.ts';
 
@@ -128,7 +129,8 @@ const unframed: MiddlewareHandler = async (c, next) => {
 };
 
 // seedDir is where the seed's history lives, for a role's provenance. Tests point it at a repo of their own.
-export function createApp(deps: EngineDeps & { runner: Runner; seedDir?: string }): Hono {
+// trialRunner is the daemon's, which holds the trial runs in flight. Without one, a trial can be laid out and nothing runs it.
+export function createApp(deps: EngineDeps & { runner: Runner; seedDir?: string; trialRunner?: TrialRunner }): Hono {
   const { store, log, runner } = deps;
   const app = new Hono();
 
