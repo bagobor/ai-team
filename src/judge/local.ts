@@ -35,6 +35,8 @@ export async function localJudge({ url, model }: LocalJudge, request: JudgeReque
       temperature: 0,
       logprobs: true,
       top_logprobs: 10,
+      // A model that thinks first would spend its one word on the thinking and answer nothing.
+      reasoning_effort: 'none',
     };
     const timeout = AbortSignal.timeout(TIMEOUT_MS);
     const response = await fetch(`${url.replace(/\/$/, '')}/chat/completions`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), signal: signal ? AbortSignal.any([signal, timeout]) : timeout });
