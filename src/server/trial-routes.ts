@@ -3,8 +3,10 @@ import type { EngineDeps } from '../engine/runner.ts';
 import { MEMORY_KINDS, type MemoryKind } from '../knowledge/entries.ts';
 import { addEntry, changeEntry, discardDraft, keepOverLive, removeEntry, setCharter, startDraft, viewDraft, type DraftDeps, type EntryFile, type EntryInput } from '../trials/drafts.ts';
 import { Refused } from '../trials/errors.ts';
+import { pastAttempts, suggestFine } from '../trials/source.ts';
 import { TrialStore } from '../trials/store.ts';
-import { TrialRunner } from '../trials/trial.ts';
+import { startTrial, TrialRunner, UNDER_WAY, type TrialDeps } from '../trials/trial.ts';
+import { answerTrial, summaryOf, viewTrial } from '../trials/view.ts';
 
 const ENTRY_FILES: EntryFile[] = ['playbook', 'memory_project', 'memory_role'];
 
@@ -40,11 +42,25 @@ function entryInput(body: Record<string, unknown>, needsText: boolean): EntryInp
   return { text: needsText || body.text !== undefined ? text(body, 'text') : '', ...(sources === undefined ? {} : { sources: sources as string[] }), ...(kind === undefined ? {} : { kind: kind as MemoryKind }) };
 }
 
-// Drafts of a change to what a role knows, and trying them. Each answer is the draft as it now stands.
+// A list the body must hold, of the one kind of thing.
+function listOf<T extends 'string' | 'number'>(body: Record<string, unknown>, field: string, kind: T): (T extends 'string' ? string : number)[] {
+  const value = body[field];
+  if (!Array.isArray(value) || value.some((one) => typeof one !== kind || (kind === 'number' && !Number.isSafeInteger(one)))) throw new Refused(`${field} must be a list of ${kind === 'string' ? 'texts' : 'attempt ids'}`);
+  return value as (T extends 'string' ? string : number)[];
+}
+
+function capOf(body: Record<string, unknown>): { capUsd?: number } {
+  if (body.capUsd === undefined) return {};
+  if (typeof body.capUsd !== 'number' || !Number.isFinite(body.capUsd)) throw new Refused('capUsd must be a number');
+  return { capUsd: body.capUsd };
+}
+
+// Drafts of a change to what a role knows, and trying them. Each answer is the draft or the trial as it now stands.
 export function trialRoutes(app: Hono, deps: EngineDeps & { trialRunner?: TrialRunner }): void {
   const trials = new TrialStore(deps.db, deps.now);
   const drafts: DraftDeps = { paths: deps.paths, store: deps.store, trials, ...(deps.now ? { now: deps.now } : {}) };
-  const runner = deps.trialRunner ?? new TrialRunner({ ...deps, trials });
+  const trying: TrialDeps = { ...deps, trials };
+  const runner = deps.trialRunner ?? new TrialRunner(trying);
 
   const shown = async (c: Context, id: number) => {
     const draft = await trials.getDraft(id);
@@ -75,5 +91,43 @@ export function trialRoutes(app: Hono, deps: EngineDeps & { trialRunner?: TrialR
 
   app.post('/api/drafts/:n/keep', async (c) => shown(c, (await keepOverLive(drafts, idOf(c))).id));
 
-  app.post('/api/drafts/:n/discard', async (c) => shown(c, (await discardDraft(drafts, idOf(c))).id));
+  // A trial of it that has not ended has nothing left to say, so it is stopped with the draft.
+  app.post('/api/drafts/:n/discard', async (c) => {
+    const id = idOf(c);
+    const discarded = await discardDraft(drafts, id);
+    for (const trial of await trials.listTrials({ draftId: id, states: UNDER_WAY })) await runner.stop(trial.id, 'its draft was discarded');
+    return shown(c, discarded.id);
+  });
+
+  const tried = async (c: Context, id: number) => {
+    const trial = await trials.getTrial(id);
+    if (!trial) throw new Refused(`There is no trial ${id}`, 404);
+    return c.json(await viewTrial(trying, trial));
+  };
+
+  // What a trial can be made of: the role's past attempts, and the ones offered as tasks that went fine.
+  app.get('/api/roles/:id/attempts', async (c) => {
+    const attempts = await pastAttempts(deps, c.req.param('id'), c.req.query('project'));
+    return c.json({ attempts, fine: suggestFine(attempts).map(({ attemptId }) => attemptId) });
+  });
+
+  app.get('/api/drafts/:n/trials', async (c) => c.json((await trials.listTrials({ draftId: idOf(c) })).map(summaryOf)));
+
+  app.post('/api/drafts/:n/trials', async (c) => {
+    const body = await bodyOf(c);
+    const trial = await startTrial(trying, idOf(c), { expectations: listOf(body, 'expectations', 'string'), problem: listOf(body, 'problem', 'number'), fine: listOf(body, 'fine', 'number'), ...capOf(body) });
+    return tried(c, trial.id);
+  });
+
+  app.get('/api/trials/:n', async (c) => tried(c, idOf(c)));
+
+  app.post('/api/trials/:n/stop', async (c) => tried(c, (await runner.stop(idOf(c))).id));
+
+  app.post('/api/trials/:n/resume', async (c) => tried(c, (await runner.resume(idOf(c), capOf(await bodyOf(c)).capUsd)).id));
+
+  app.post('/api/trials/:n/answer', async (c) => {
+    const { choices } = await bodyOf(c);
+    if (typeof choices !== 'object' || choices === null || Object.values(choices).some((choice) => typeof choice !== 'string')) throw new Refused('choices must give, for each attempt id, the letter of the better result or "same"');
+    return tried(c, (await answerTrial(trying, idOf(c), choices as Record<string, string>)).id);
+  });
 }
