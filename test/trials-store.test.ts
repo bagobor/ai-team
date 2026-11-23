@@ -29,7 +29,7 @@ describe('the trial store', () => {
       knowledge: { current: NONE, draft: { ...NONE, playbook: '## PB-1\n' } },
       cap_usd: 10,
       results: [
-        { attempt_id: attemptId, arm: 'stored', state: 'done', output: { summary: 'Did it' }, measured: { parses: true, checks: true, changed: true, tests: true, usd: 0.2, turns: null, note: null }, fingerprint: 'abc' },
+        { attempt_id: attemptId, arm: 'stored', state: 'done', output: { summary: 'Did it' }, measured: { parses: true, checks: true, changed: true, tests: true, usd: 0.2, note: null }, fingerprint: 'abc' },
         { attempt_id: attemptId, arm: 'draft', state: 'pending', output: null, measured: null, fingerprint: null },
       ],
       judgments: [{ attempt_id: attemptId, judge: 'model' }],
@@ -70,7 +70,7 @@ describe('the trial store', () => {
     const [, pending] = await trials.listResults(trial.id);
     const [judgment] = await trials.listJudgments(trial.id);
 
-    await trials.patchResult(pending!.id, { state: 'done', output: { summary: 'Better' }, measured: { parses: true, checks: false, changed: true, tests: null, usd: 0.3, turns: 12, note: 'node --test failed' } });
+    await trials.patchResult(pending!.id, { state: 'done', output: { summary: 'Better' }, measured: { parses: true, checks: false, changed: true, tests: null, usd: 0.3, note: 'node --test failed' } });
     await trials.patchJudgment(judgment!.id, { state: 'done', answers: [{ arm: 'draft', expectation: 0, p: 1, passage: 'Ran node --test' }] });
     await trials.addSpend(trial.id, 0.3);
     const after = await trials.addSpend(trial.id, 0.25);

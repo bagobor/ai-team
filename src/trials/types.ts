@@ -22,8 +22,9 @@ export type TrialTask = { attemptId: number; group: 'problem' | 'fine'; letters:
 
 export type TrialState = 'running' | 'judging' | 'awaiting_answer' | 'agreed' | 'not_agreed' | 'stopped';
 
-// What can be counted about one result. checks, changed and tests are a ticket's, and null for any other task.
-export type Measured = { parses: boolean; checks: boolean | null; changed: boolean | null; tests: boolean | null; usd: number | null; turns: number | null; note: string | null };
+// What can be counted about one result. checks, changed and tests are a ticket's, and null for any other task or
+// where the run never got that far. note says in words what went wrong.
+export type Measured = { parses: boolean; checks: boolean | null; changed: boolean | null; tests: boolean | null; usd: number | null; note: string | null };
 
 export type JudgeName = 'model' | 'evaluator' | 'local';
 

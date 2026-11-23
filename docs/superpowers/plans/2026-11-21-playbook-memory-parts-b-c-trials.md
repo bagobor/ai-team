@@ -15,18 +15,20 @@ A replay uses the stored task text byte for byte, so the inputs are always what 
 - **The charter and the output contract as separate texts.** All 695 stored prompts hold exactly one `## Output contract` heading and no repository instructions, so the prompt splits there without guessing.
 - **The reference files.** Many tasks tell the role to read a file in `.aiteam-reference/` in its worktree (the whole Tech Design, the Test Plan, the verification commands). Those files were written into the worktree and not kept.
 
-Every pin in a stored task carries its version, so the reference files can be rebuilt from the same document versions. I checked this against a copy of the database, counting an attempt as rebuilt only when every input also came back word for word:
+Every pin in a stored task carries its version, so the reference files can be rebuilt from the same document versions. An attempt counts as rebuilt only when every input also comes back as the stored task has it.
 
-| Role | Attempts | Replayable today | Purposes with none |
-|---|---|---|---|
-| Engineer | 135 | 129 | |
-| Code Reviewer | 108 | 106 | |
-| QA Engineer | 61 | 45 | `cr_recommendation` |
-| Tech Lead | 44 | 34 | `revise_design` |
-| PM | 74 | 29 | most of `cr_recommendation` and `milestone_review` |
-| Eng Lead | 39 | 11 | `revise_scope` |
+The first measurement, on a copy of the database, compared the inputs word for word and accepted 354 of the 463 attempts. Task 4 found why the rest failed: a version's text never changes, but what the engine keeps about it does. Its status goes from approved to stale to superseded, what it was derived from is re-pinned, and a criterion goes from unverified to passing. Those lines are in the input a worker was given and in no reference file. Comparing without them:
 
-Every role has enough for a trial. Task 1 keeps the reference files with each new attempt, so everything run from then on is replayable. Why some old inputs don't come back word for word is not known yet; Task 4 looks, and widens the count where that is safe.
+| Role | Attempts | Replayable |
+|---|---|---|
+| Engineer | 135 | 134 |
+| Code Reviewer | 108 | 106 |
+| QA Engineer | 61 | 61 |
+| Tech Lead | 46 | 44 |
+| PM | 74 | 71 |
+| Eng Lead | 39 | 39 |
+
+Task 1 keeps the reference files with each new attempt, so everything run from then on needs no rebuilding.
 
 ## Global constraints
 

@@ -13,7 +13,7 @@ import { fenced, oneLine } from './apply/text.ts';
 import type { EngineDeps } from './runner.ts';
 import type { ProjectRow } from './store.ts';
 
-const REFERENCE_DIR = '.aiteam-reference';
+export const REFERENCE_DIR = '.aiteam-reference';
 const REFERENCE_FILE = 'verification.md';
 const DESIGN_FILE = 'tech-design.md';
 const POINTER = `The commands that verify each criterion are in \`${REFERENCE_DIR}/${REFERENCE_FILE}\` in your working directory, word for word, under a heading for each criterion, and nowhere else in your inputs. Read the whole file, not just its start, before you write, run or judge any command. That file is a copy for you to read: it isn't in the repository, and it won't exist when the engine runs the commands in your output, so none of them may use it.`;
